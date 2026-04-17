@@ -79,6 +79,7 @@ class Trajectory_Simulator
 	double prev_time_sec;       // previous step time in seconds (for dt calculation)
 	double prev_r_km;           // previous step radius in km
 	double prev_v2_km2s2;       // previous step v² in (km/s)²
+	double prev_dt_sec;         // previous step dt in seconds (for last-step accumulation)
 
 	void Accumulate_Bincount_Step(double r_km, double v2_km2s2, double dt_sec);
 
@@ -98,6 +99,8 @@ class Trajectory_Simulator
 	// Snapshot support
 	SnapshotConfig snapshot_config;
 	std::string snapshot_output_dir;
+	unsigned int current_mpi_rank;
+	unsigned long int current_trajectory_id;
 
 	Trajectory_Simulator(const Solar_Model& model, unsigned long int max_time_steps = 1e12, long int max_scatterings = 1e11, double max_distance = 2.0 * libphysica::natural_units::rSun);
 

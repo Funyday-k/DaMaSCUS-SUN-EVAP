@@ -48,6 +48,12 @@ class Simulation_Data
 	std::array<double, NUM_BINS> not_captured_dt_hist;
 	std::array<double, NUM_BINS> not_captured_v2dt_hist;
 
+	// Per-bin sum of squares for error estimation
+	std::array<double, NUM_BINS> captured_dt_sq_hist;      // Σ (per-traj dt)²
+	std::array<double, NUM_BINS> captured_v2dt_sq_hist;    // Σ (per-traj v²dt)²
+	std::array<double, NUM_BINS> not_captured_dt_sq_hist;
+	std::array<double, NUM_BINS> not_captured_v2dt_sq_hist;
+
 	// Evaporation records
 	std::vector<EvaporationRecord> evaporation_records;
 

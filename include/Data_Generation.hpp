@@ -2,6 +2,7 @@
 #define __Data_Generation_hpp_
 
 #include <vector>
+#include <string>
 
 #include "libphysica/Natural_Units.hpp"
 #include "libphysica/Statistics.hpp"
@@ -12,17 +13,25 @@
 
 namespace DaMaSCUS_SUN
 {
+
+// Evaporation time record for a single captured trajectory
+struct EvaporationRecord
+{
+	unsigned long int trajectory_id;
+	double t_evap;    // seconds
+	bool truncated;   // true if last step had E <= 0
+};
+
 class Simulation_Data
 {
   private:
 	// Configuration
-	unsigned int min_sample_size_above_threshold;
-	double minimum_speed_threshold;
-	unsigned int isoreflection_rings;
-	double initial_and_final_radius			   = 2.0 * libphysica::natural_units::rSun; //////////1.1
+	unsigned int target_captured_per_rank;   // ceil(sample_size / N_ranks)
+	unsigned long int max_trajectories_per_rank;
+	double initial_and_final_radius = 2.0 * libphysica::natural_units::rSun;
 	unsigned int minimum_number_of_scatterings = 1;
 	long int maximum_number_of_scatterings = 1e11;
-	unsigned long int maximum_free_time_steps  = 1e12;
+	unsigned long int maximum_free_time_steps = 1e12;
 
 	// Results
 	unsigned long int number_of_trajectories;
@@ -31,23 +40,38 @@ class Simulation_Data
 	unsigned long int number_of_captured_particles;
 	double average_number_of_scatterings;
 	double computing_time;
+	bool early_stopped;
 
-	std::vector<unsigned long int> number_of_data_points;
+	// Aggregated bincount histograms
+	std::array<double, NUM_BINS> captured_dt_hist;
+	std::array<double, NUM_BINS> captured_v2dt_hist;
+	std::array<double, NUM_BINS> not_captured_dt_hist;
+	std::array<double, NUM_BINS> not_captured_v2dt_hist;
+
+	// Evaporation records
+	std::vector<EvaporationRecord> evaporation_records;
 
 	// MPI
 	int mpi_rank, mpi_processes;
 	void Perform_MPI_Reductions();
 
+	// For reflection spectrum compatibility (kept but not actively used in new logic)
+	unsigned int isoreflection_rings;
+	double minimum_speed_threshold;
+	std::vector<unsigned long int> number_of_data_points;
 	double KDE_boundary_correction_factor = 0.75;
 
   public:
 	std::vector<std::vector<libphysica::DataPoint>> data;
 
-	Simulation_Data(unsigned int sample_size, double u_min = 0.0, unsigned int iso_rings = 1);
+	Simulation_Data(unsigned int sample_size, unsigned int max_trajectories, double u_min = 0.0, unsigned int iso_rings = 1);
 
 	void Configure(double initial_radius, unsigned int min_scattering, long int max_scattering, unsigned long int max_free_steps = 1e12);
 
-	void Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, unsigned int fixed_seed = 0);
+	void Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, SnapshotConfig snapshot_cfg = SnapshotConfig(), unsigned int fixed_seed = 0);
+
+	// Output files
+	void Write_Output_Files(const std::string& output_dir, obscura::DM_Particle& DM);
 
 	double Free_Ratio() const;
 	double Capture_Ratio() const;

@@ -26,9 +26,9 @@ class Configuration : public obscura::Configuration
 	std::string run_mode;
 	unsigned int isoreflection_rings, interpolation_points;
 	unsigned int sample_size, cross_sections;
+	unsigned int max_trajectories;
 	double cross_section_min, cross_section_max;
 	bool compute_halo_constraints, perform_full_scan;
-	int recording_step_override;
 	explicit Configuration(std::string cfg_filename, int MPI_rank = 0);
 
 	void Print_Summary(int mpi_rank = 0) override;

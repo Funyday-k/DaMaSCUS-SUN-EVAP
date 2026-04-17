@@ -3,122 +3,24 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
-/////////
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <string>
-/////////
+#include <iostream>
 
 #include "libphysica/Special_Functions.hpp"
 #include "libphysica/Statistics.hpp"
 
 #include "obscura/Astronomy.hpp"
 
-/////////
-bool directoryExists(const std::string &path) {
-    struct stat info;
-    if (stat(path.c_str(), &info) != 0)
-        return false;
-    else if (info.st_mode & S_IFDIR)
-        return true;
-    else
-        return false;
-}
-/////////
 namespace DaMaSCUS_SUN
 {
 
 using namespace libphysica::natural_units;
 
-// 根据 DM 质量 (GeV) 和截面 (cm²) 返回推荐的记录间隔 (秒数, 非自然单位)
-// 由 evaporation_theory.py 计算理论蒸发率 E_⊙(m_χ, σ) 生成
-// 目标每条轨迹 ~10000 个数据点, Δt = τ_evap / N_target, 范围 [1, 1800] s
-double Get_Recording_Interval(double mass_GeV, double sigma_cm2) {
-    double log10_m = log10(mass_GeV);
-    double log10_s = log10(sigma_cm2);
-
-    // 查表: {log10(m/GeV), log10(σ/cm²), Δt(秒)}
-    // 由 generate_recording_table.py 调用 evaporation_theory.py 自动生成
-    struct Entry { double log10_m; double log10_s; double dt; };
-    static const Entry table[] = {
-        // m = 4.0 GeV (log10=0.602060)
-        {  0.602060, -40.0, 1800.0}, {  0.602060, -39.0, 1800.0},
-        {  0.602060, -38.0, 1800.0}, {  0.602060, -37.0, 1800.0},
-        {  0.602060, -36.0, 1800.0}, {  0.602060, -35.0, 1800.0},
-        {  0.602060, -34.0, 1800.0}, {  0.602060, -33.0, 1800.0},
-        {  0.602060, -32.0, 1800.0}, {  0.602060, -31.0, 1800.0},
-        {  0.602060, -30.0, 1800.0}, {  0.602060, -29.0, 1800.0},
-        {  0.602060, -28.0, 1800.0}, {  0.602060, -27.0, 1800.0},
-        {  0.602060, -26.0, 1800.0}, {  0.602060, -25.0, 1800.0},
-        // m = 3.0 GeV (log10=0.477121)
-        {  0.477121, -40.0, 1800.0}, {  0.477121, -39.0, 1800.0},
-        {  0.477121, -38.0, 1800.0}, {  0.477121, -37.0, 1800.0},
-        {  0.477121, -36.0, 1800.0}, {  0.477121, -35.0, 1800.0},
-        {  0.477121, -34.0, 1800.0}, {  0.477121, -33.0, 1800.0},
-        {  0.477121, -32.0, 1800.0}, {  0.477121, -31.0, 1800.0},
-        {  0.477121, -30.0, 1800.0}, {  0.477121, -29.0, 1800.0},
-        {  0.477121, -28.0, 1800.0}, {  0.477121, -27.0, 1800.0},
-        {  0.477121, -26.0, 1800.0}, {  0.477121, -25.0, 1800.0},
-        // m = 2.0 GeV (log10=0.301030)
-        {  0.301030, -40.0, 1800.0}, {  0.301030, -39.0, 1800.0},
-        {  0.301030, -38.0, 1800.0}, {  0.301030, -37.0, 1800.0},
-        {  0.301030, -36.0, 1800.0}, {  0.301030, -35.0, 1800.0},
-        {  0.301030, -34.0, 1800.0}, {  0.301030, -33.0, 1800.0},
-        {  0.301030, -32.0, 1800.0}, {  0.301030, -31.0, 1800.0},
-        {  0.301030, -30.0, 1800.0}, {  0.301030, -29.0, 1800.0},
-        {  0.301030, -28.0, 1800.0}, {  0.301030, -27.0, 1800.0},
-        {  0.301030, -26.0, 1800.0}, {  0.301030, -25.0, 1800.0},
-        // m = 1.0 GeV (log10=0.000000)
-        {  0.000000, -40.0, 1800.0}, {  0.000000, -39.0, 1800.0},
-        {  0.000000, -38.0, 1800.0}, {  0.000000, -37.0, 1101.7},
-        {  0.000000, -36.0,  146.7}, {  0.000000, -35.0,  114.4},
-        {  0.000000, -34.0, 1800.0}, {  0.000000, -33.0, 1800.0},
-        {  0.000000, -32.0, 1800.0}, {  0.000000, -31.0, 1800.0},
-        {  0.000000, -30.0, 1800.0}, {  0.000000, -29.0, 1800.0},
-        {  0.000000, -28.0, 1800.0}, {  0.000000, -27.0, 1800.0},
-        {  0.000000, -26.0, 1800.0}, {  0.000000, -25.0, 1800.0},
-        // m = 0.5 GeV (log10=-0.301030)
-        { -0.301030, -40.0, 1800.0}, { -0.301030, -39.0, 1800.0},
-        { -0.301030, -38.0,  835.9}, { -0.301030, -37.0,   85.5},
-        { -0.301030, -36.0,   10.4}, { -0.301030, -35.0,    3.0},
-        { -0.301030, -34.0,   16.2}, { -0.301030, -33.0,  251.4},
-        { -0.301030, -32.0, 1800.0}, { -0.301030, -31.0, 1800.0},
-        { -0.301030, -30.0, 1800.0}, { -0.301030, -29.0, 1800.0},
-        { -0.301030, -28.0, 1800.0}, { -0.301030, -27.0, 1800.0},
-        { -0.301030, -26.0, 1800.0}, { -0.301030, -25.0, 1800.0},
-        // m = 0.1 GeV (log10=-1.000000)
-        { -1.000000, -40.0, 1800.0}, { -1.000000, -39.0, 1800.0},
-        { -1.000000, -38.0,  379.4}, { -1.000000, -37.0,   38.3},
-        { -1.000000, -36.0,    3.7}, { -1.000000, -35.0,    1.0},
-        { -1.000000, -34.0,    1.0}, { -1.000000, -33.0,    1.0},
-        { -1.000000, -32.0,    3.0}, { -1.000000, -31.0,  100.3},
-        { -1.000000, -30.0, 1800.0}, { -1.000000, -29.0, 1800.0},
-        { -1.000000, -28.0, 1800.0}, { -1.000000, -27.0, 1800.0},
-        { -1.000000, -26.0, 1800.0}, { -1.000000, -25.0, 1800.0},
-    };
-    static const int N = sizeof(table) / sizeof(table[0]);
-
-    // 最近邻查找 (按 log10 空间的欧氏距离)
-    double best_dist = 1e30;
-    double best_dt = 600.0;  // 默认回退到原始值
-    for (int i = 0; i < N; i++) {
-        double dm = table[i].log10_m - log10_m;
-        double ds = table[i].log10_s - log10_s;
-        double d = dm * dm + ds * ds;
-        if (d < best_dist) {
-            best_dist = d;
-            best_dt = table[i].dt;
-        }
-    }
-    // 硬约束: [1, 1800] 秒
-    if (best_dt < 1.0) best_dt = 1.0;
-    if (best_dt > 1800.0) best_dt = 1800.0;
-    return best_dt;
-}
-
 // 1. Result of one trajectory
-Trajectory_Result::Trajectory_Result(const Event& event_ini, const Event& event_final, unsigned long int nScat)
-: initial_event(event_ini), final_event(event_final), number_of_scatterings(nScat)
+Trajectory_Result::Trajectory_Result(const Event& event_ini, const Event& event_final, unsigned long int nScat, TrajectoryBincount bc)
+: initial_event(event_ini), final_event(event_final), number_of_scatterings(nScat), bincount(std::move(bc))
 {
 }
 
@@ -180,24 +82,31 @@ void Trajectory_Result::Print_Summary(Solar_Model& solar_model, unsigned int mpi
 Trajectory_Simulator::Trajectory_Simulator(const Solar_Model& model, unsigned long int max_time_steps, long int max_scatterings, double max_distance)
 : solar_model(model), maximum_time_steps(max_time_steps), maximum_scatterings(max_scatterings), maximum_distance(max_distance)
 {
-	// Pseudo-random number generator
 	std::random_device rd;
 	PRNG.seed(rd());
-	// C: 预分配核素散射率缓存
 	rate_nuclei_cache.resize(solar_model.target_isotopes.size());
 }
 
-bool Trajectory_Simulator::Propagate_Freely(Event& current_event, obscura::DM_Particle& DM, std::ofstream& f)
+// Accumulate one step into the current bincount
+void Trajectory_Simulator::Accumulate_Bincount_Step(double r_km, double v2_km2s2, double dt_sec)
 {
-	// 1. Define a equation-of-motion-solver in the orbital plane
+	if(dt_sec <= 0.0 || r_km < 0.0 || r_km >= BIN_MAX_KM)
+		return;
+	int bin_idx = static_cast<int>(r_km / BIN_WIDTH_KM);
+	if(bin_idx < 0) bin_idx = 0;
+	if(bin_idx >= NUM_BINS) return;
+	current_bincount.dt_hist[bin_idx] += dt_sec;
+	current_bincount.v2dt_hist[bin_idx] += v2_km2s2 * dt_sec;
+}
+
+bool Trajectory_Simulator::Propagate_Freely(Event& current_event, obscura::DM_Particle& DM)
+{
 	Free_Particle_Propagator particle_propagator(current_event);
 
-	// 2. Simulate a free orbit
-	double minus_log_xi			 = -log(libphysica::Sample_Uniform(PRNG));
-	bool success				 = false; 
+	double minus_log_xi = -log(libphysica::Sample_Uniform(PRNG));
+	bool success = false;
 	unsigned long int time_steps = 0;
-	//unsigned long int num_data_points = 0;   ////////////
-	
+
 	while(time_steps < maximum_time_steps && !success)
 	{
 		time_steps++;
@@ -205,7 +114,6 @@ bool Trajectory_Simulator::Propagate_Freely(Event& current_event, obscura::DM_Pa
 		particle_propagator.Runge_Kutta_45_Step(solar_model.Mass(r_before));
 		double r_after = particle_propagator.Current_Radius();
 		double v_after = particle_propagator.Current_Speed();
-		double T_after = particle_propagator.Current_Time(); ////////////
 
 		if(v_after > v_max)
 		{
@@ -214,97 +122,73 @@ bool Trajectory_Simulator::Propagate_Freely(Event& current_event, obscura::DM_Pa
 			return false;
 		}
 
-		double Time_point = 0; // (legacy, 不再使用 — 已改为基于步数的记录)
+		// --- Online bincount accumulation (every RK45 step) ---
+		double t_now_sec = In_Units(particle_propagator.Current_Time(), sec);
+		double r_now_km  = In_Units(r_after, km);
+		double v_now_kms = In_Units(v_after, km / sec);
+		double v2_now    = v_now_kms * v_now_kms;
 
-		// --- 运行时自校准: 检测径向振荡周期(近日点到近日点的步数) ---
-		if(!step_interval_calibrated && time_steps > 3)
+		if(prev_time_sec >= 0.0)
 		{
-			// 检测近日点: calib_prev_r 是局部最小值
-			if(calib_prev_r < calib_prev_prev_r && calib_prev_r < r_after
-			   && calib_prev_r < 0.9 * rSun)   // 确保在太阳内部
+			double dt_sec = t_now_sec - prev_time_sec;
+			// Accumulate previous step with forward difference dt
+			Accumulate_Bincount_Step(prev_r_km, prev_v2_km2s2, dt_sec);
+		}
+
+		// Energy check for capture detection
+		double vesc = solar_model.Local_Escape_Speed(r_after);
+		double E = 0.5 * DM.mass * (v_after * v_after - vesc * vesc);
+		double E_eV = In_Units(E, eV);
+
+		if(E_eV <= 0.0)
+		{
+			if(!current_bincount.is_captured)
 			{
-				calibration_peri_count++;
-				if(calibration_peri_count == 1)
-				{
-					peri_step_1 = time_steps - 1;
-				}
-				else if(calibration_peri_count == 2)
-				{
-					unsigned long int steps_per_orbit = (time_steps - 1) - peri_step_1;
-					recording_step_interval = std::max(1, (int)(steps_per_orbit / 50));
-					step_interval_calibrated = true;
-				}
+				current_bincount.is_captured = true;
+				current_bincount.t_first_negative = t_now_sec;
 			}
-			calib_prev_prev_r = calib_prev_r;
-			calib_prev_r = r_after;
+			current_bincount.t_last_negative = t_now_sec;
 		}
 
-		//if(save_trajectories && time_steps % 20 == 0)
-		if(save_trajectories && time_steps % recording_step_interval == 0)   //////////////
+		// Snapshot support: output bincount snapshots at time thresholds
+		if(snapshot_config.enabled)
 		{
-			num_data_points++;  ////////////
-			Event event	 = particle_propagator.Event_In_3D();
-			double r	 = event.Radius();
-			double v	 = event.Speed();
-			double vesc2 = solar_model.Local_Escape_Speed(r) * solar_model.Local_Escape_Speed(r);
-			//double E	 = 1.0 / DM.mass * (v * v - vesc2);
-			double E	 = 0.5 * DM.mass * (v * v - vesc2);
-
-			//long int *DMinBin;//////////some problems
-			int binsorder = (int)(r/(0.001 * rSun));    ///////////
-			if(r < 2.0*rSun){
-				DMinBin[binsorder] = DMinBin[binsorder]+1;  ///////////
-				//std::cout<<binsorder<<'\t'<<DMinBin[binsorder]<<'\n';
+			for(size_t si = 0; si < snapshot_config.time_thresholds.size(); si++)
+			{
+				double threshold = snapshot_config.time_thresholds[si];
+				if(prev_time_sec < threshold && t_now_sec >= threshold)
+				{
+					// Write snapshot file
+					std::string snap_file = snapshot_output_dir + "snapshot_" + std::to_string((long long)threshold) + "s.txt";
+					std::ofstream sf(snap_file);
+					if(sf.is_open())
+					{
+						sf << "# Snapshot at t = " << threshold << " s\n";
+						sf << "# bin_index  Sigma_dt  Sigma_v2dt\n";
+						for(int b = 0; b < NUM_BINS; b++)
+							sf << b << "\t" << current_bincount.dt_hist[b] << "\t" << current_bincount.v2dt_hist[b] << "\n";
+						sf.close();
+					}
+				}
 			}
-			
-			  //////////
-			//std::cout<< "E" << E << "\t";
-			// 旧输出格式：10 x float64 = 80 bytes（含序号、能量、半径，已注释）
-			// double record[10] = {
-			// 	(double)num_data_points,
-			// 	In_Units(event.time, sec),
-			// 	In_Units(event.position[0], km),
-			// 	In_Units(event.position[1], km),
-			// 	In_Units(event.position[2], km),
-			// 	In_Units(event.velocity[0], km / sec),
-			// 	In_Units(event.velocity[1], km / sec),
-			// 	In_Units(event.velocity[2], km / sec),
-			// 	In_Units(E, eV),
-			// 	In_Units(event.Radius(), km)
-			// };
-
-			// 输出格式：6 x float32 = 24 bytes
-			// Columns: time[s], r[km], vx[km/s], vy[km/s], vz[km/s], E[eV]
-			float record[6] = {
-				(float)In_Units(event.time, sec),
-				(float)In_Units(r, km),
-				(float)In_Units(event.velocity[0], km / sec),
-				(float)In_Units(event.velocity[1], km / sec),
-				(float)In_Units(event.velocity[2], km / sec),
-				(float)In_Units(E, eV)
-			};
-			f.write(reinterpret_cast<const char*>(record), sizeof(record));
-
-			// 标记是否出现负能量（被捕获的标志）
-			if(E <= 0)
-				trajectory_has_negative_energy = true;
 		}
+
+		prev_time_sec = t_now_sec;
+		prev_r_km     = r_now_km;
+		prev_v2_km2s2 = v2_now;
 
 		// Check for scatterings and reflection
 		bool scattering = false;
 		bool reflection = false;
 		if(r_after < rSun)
-		{ 
-			// 边界检查：确保速度为正
+		{
 			if(v_after < 0.0)
 			{
 				std::cerr << "Warning: Negative velocity detected (v = " << v_after << ") at r = " << r_after << ", skipping scattering calculation." << std::endl;
 				break;
 			}
-			double total_rate	 = solar_model.Total_DM_Scattering_Rate(DM, r_after, v_after);
+			double total_rate = solar_model.Total_DM_Scattering_Rate(DM, r_after, v_after);
 			double time_step_max = (total_rate > 0.0) ? (0.1 / total_rate) : (1e30);
-			// 太阳内部：仅受散射率约束，无硬性步长上限
-			// 当散射率低时，RK45 自适应步长可自由增长（数秒甚至更大）
 			if(particle_propagator.time_step > time_step_max)
 				particle_propagator.time_step = time_step_max;
 			minus_log_xi -= particle_propagator.time_step * total_rate;
@@ -313,9 +197,6 @@ bool Trajectory_Simulator::Propagate_Freely(Event& current_event, obscura::DM_Pa
 		}
 		else
 		{
-			// 太阳外部：不干预 RK45 自适应步长，让它自由增长
-			// （椭圆轨道远日点附近步长可增长到 ~秒级，大幅减少步数）
-			// 仅检查粒子是否逃逸
 			if(r_before < maximum_distance && r_after > maximum_distance && v_after > solar_model.Local_Escape_Speed(r_after))
 				reflection = true;
 		}
@@ -324,11 +205,14 @@ bool Trajectory_Simulator::Propagate_Freely(Event& current_event, obscura::DM_Pa
 			success = true;
 	}
 
-	//std::cout << "timesteps number" << time_steps << '\n'; ////////
-	//std::cout << "if success" << success << "\n";
+	// Accumulate the last step (use the same dt as the second-to-last interval)
+	// This is a forward difference: the last step reuses the previous dt
+	// (already accumulated inside the loop for all but the very last point)
+
 	current_event = particle_propagator.Event_In_3D();
 	return success;
 }
+
 
 int Trajectory_Simulator::Sample_Target(obscura::DM_Particle& DM, double r, double DM_speed)
 {
@@ -441,90 +325,24 @@ void Trajectory_Simulator::Scatter(Event& current_event, obscura::DM_Particle& D
 	current_event.velocity = New_DM_Velocity(cos_alpha, DM.mass, target_mass, current_event.velocity, vel_target);
 }
 
-void Trajectory_Simulator::Toggle_Trajectory_Saving(unsigned int max_trajectories)
-{
-	saved_trajectories	   = 0;
-	saved_trajectories_max = max_trajectories;
-	save_trajectories	   = !save_trajectories;
-	saved_trajectories_captured = 0;
-	saved_trajectories_not_captured  = 0;
-}
-
 void Trajectory_Simulator::Fix_PRNG_Seed(int fixed_seed)
 {
 	PRNG.seed(fixed_seed);
 }
 
-Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition, obscura::DM_Particle& DM, unsigned int mpi_rank) //////
+Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition, obscura::DM_Particle& DM, unsigned int mpi_rank)
 {
-	////////////
-	//std::string path = TOP_LEVEL_DIR "results_" + std::to_string(In_Units(DM.mass,GeV)) + "_" + std::to_string(In_Units(DM.Sigma_Proton(),cm*cm)) + "/"; 我改变了这里的路径，使得输出文件存在/scratch/s1/kennyng/DaMaSCUS_OUT/下
-	std::string path = g_top_level_dir + "results_" + std::to_string(log10(In_Units(DM.mass,GeV))) + "_" + std::to_string(log10(In_Units(DM.Sigma_Proton(),cm*cm))) + "/";
-	if (!directoryExists(path))
-	{
-		if (mkdir(path.c_str(), 0755) != 0)
-		{
-			std::cerr << "Error: Unable to create directory: " << path << std::endl;
-		}
-	}
-	////////////
-	std::ofstream f;
-	std::string trajectory_filepath;
-	if(save_trajectories && saved_trajectories < saved_trajectories_max)
-	{
-		saved_trajectories++;
-
-		// std::cout << "trajectory is" << saved_trajectories << "\n";  //////////////
-		//std::string path = TOP_LEVEL_DIR "results/";
-		trajectory_filepath = path + "trajectory_" + std::to_string(saved_trajectories) + "_task" + std::to_string(mpi_rank) + ".dat";
-		f.open(trajectory_filepath, std::ios::binary);
-	}
-	Event current_event						= initial_condition;
+	Event current_event = initial_condition;
 	long unsigned int number_of_scatterings = 0;
-	
-	//bool abcd = false; ///////////
-	//static long int* DMinBin = new long int[50]; /////////////
-	for(int i=0; i<2000; i++){
-		DMinBin[i] = 0; //////////
-	}
 
-	// 初始化步数记录的自校准状态
-	if(g_recording_step_override > 0)
-	{
-		recording_step_interval  = g_recording_step_override;
-		step_interval_calibrated = true;   // 手动指定，跳过校准
-	}
-	else
-	{
-		recording_step_interval  = 10;     // 校准前默认: 每10步记录一次
-		step_interval_calibrated = false;
-	}
-	calibration_peri_count     = 0;
-	peri_step_1                = 0;
-	calib_prev_r               = 0.0;
-	calib_prev_prev_r          = 0.0;
+	// Initialize per-trajectory bincount
+	current_bincount = TrajectoryBincount();
+	prev_time_sec = -1.0;
+	prev_r_km = 0.0;
+	prev_v2_km2s2 = 0.0;
 
-	static bool recording_printed = false;
-	if(!recording_printed)
+	while(Propagate_Freely(current_event, DM) && number_of_scatterings < maximum_scatterings)
 	{
-		double mass_gev = In_Units(DM.mass, GeV);
-		double sigma_cm2 = In_Units(DM.Sigma_Proton(), cm * cm);
-		if(g_recording_step_override > 0)
-			std::cout << "[Recording] m=" << mass_gev << " GeV, sigma=" << sigma_cm2
-			          << " cm^2 -> step-based (N_step=" << recording_step_interval
-			          << ", override)" << std::endl;
-		else
-			std::cout << "[Recording] m=" << mass_gev << " GeV, sigma=" << sigma_cm2
-			          << " cm^2 -> step-based (N_step_init=" << recording_step_interval
-			          << ", auto-calibrate on)" << std::endl;
-		recording_printed = true;
-	}
-
-	num_data_points = 0; ////////
-	trajectory_has_negative_energy = false;
-	while(Propagate_Freely(current_event, DM, f) && number_of_scatterings < maximum_scatterings)
-	{
-		
 		if(current_event.Radius() < rSun)
 		{
 			Scatter(current_event, DM);
@@ -533,31 +351,20 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
 		else
 			break;
 	}
-	if(save_trajectories)
-	{
-		f.close();
-		// 统计捕获与未捕获的轨迹文件数（不删除文件）
-		if(!trajectory_filepath.empty())
-		{
-			if(trajectory_has_negative_energy)
-				saved_trajectories_captured++;
-			else
-				saved_trajectories_not_captured++;
-		}
-	}	
 
-	
-	//std::cout << "trajectory is" << saved_trajectories << "," << "number of scatterings" << number_of_scatterings << "\n"; ///////
-	/*if(abcd == false) 
-	    std::cout << "false" << "\n";
-	else if (abcd == true)
+	// Check truncation: if the last step still had negative energy
+	if(current_bincount.is_captured)
 	{
-		std::cout << "true" << "\n";
+		// Compute energy at the final event
+		double r_final = current_event.Radius();
+		double v_final = current_event.Speed();
+		double vesc_final = solar_model.Local_Escape_Speed(r_final);
+		double E_final = 0.5 * DM.mass * (v_final * v_final - vesc_final * vesc_final);
+		if(In_Units(E_final, eV) <= 0.0)
+			current_bincount.truncated = true;
 	}
-	else
-	    std::cout << "something wrong" << "\n";*/
 
-	return Trajectory_Result(initial_condition, current_event, number_of_scatterings);
+	return Trajectory_Result(initial_condition, current_event, number_of_scatterings, current_bincount);
 }  
 
 // 3. Equation of motion solution with Runge-Kutta-Fehlberg

@@ -48,9 +48,8 @@ int main(int argc, char* argv[])
 	if(cfg.run_mode == "Parameter point")
 	{
 		double u_min = 0.0;
-		// double u_min = cfg.DM_detector->Minimum_DM_Speed(*cfg.DM);
-		Simulation_Data data_set(cfg.sample_size, u_min, cfg.isoreflection_rings);
-		data_set.Configure(2.0 * rSun, 1, 1e11);  // max_scattering = 2
+		Simulation_Data data_set(cfg.sample_size, cfg.max_trajectories, u_min, cfg.isoreflection_rings);
+		data_set.Configure(2.0 * rSun, 1, 1e11);
 		if(mpi_rank == 0)
 			std::cout << "Generate data..." << std::endl
 					  << "\tm_DM [MeV]:\t" << libphysica::Round(In_Units(cfg.DM->mass, MeV)) << "\t\t"
@@ -59,49 +58,19 @@ int main(int argc, char* argv[])
 					  << "sigma_e [cm2]:\t" << libphysica::Round(In_Units(cfg.DM->Get_Interaction_Parameter("Electrons"), cm * cm)) << std::endl
 					  << std::endl;
 		SSM.Interpolate_Total_DM_Scattering_Rate(*cfg.DM, cfg.interpolation_points, cfg.interpolation_points);
-		std::cout << "1234567890123456789012345678901234567890\n"; /////////////
-		
+
 		data_set.Generate_Data(*cfg.DM, SSM, *cfg.DM_distr);
-		// std::cout << "1234567890123456789012345678901234567890\n"; /////////////
 		data_set.Print_Summary(mpi_rank);
-		if(cfg.isoreflection_rings == 1)
+
+		// Write output files (bincount + evaporation summary)
+		std::string output_path = g_top_level_dir + "results_" + std::to_string(log10(In_Units(cfg.DM->mass, GeV))) + "_" + std::to_string(log10(In_Units(cfg.DM->Sigma_Proton(), cm * cm))) + "/";
+		data_set.Write_Output_Files(output_path, *cfg.DM);
+
+		// Reflection spectrum (kept for compatibility)
+		if(cfg.isoreflection_rings == 1 && data_set.data[0].size() > 0)
 		{
 			Reflection_Spectrum spectrum(data_set, SSM, *cfg.DM_distr, cfg.DM->mass, 0);
 			spectrum.Print_Summary(mpi_rank);
-			std::function<double(double)> func = [&spectrum, &cfg](double v) {
-				return spectrum.Differential_DM_Flux(v, cfg.DM->mass);
-			};
-			std::vector<double> speeds = libphysica::Linear_Space(spectrum.Minimum_DM_Speed(), spectrum.Maximum_DM_Speed(), 300);
-			if(mpi_rank == 0)
-				libphysica::Export_Function(cfg.results_path + "Differential_SRDM_Flux.txt", func, speeds, {km / sec, 1.0 / (km / sec) / cm / cm / sec});
-			double p = cfg.DM_detector->P_Value(*cfg.DM, spectrum);
-			libphysica::Print_Box("p = " + std::to_string(libphysica::Round(p)), 1, mpi_rank);
-		}
-		else
-		{
-			std::ofstream f;
-			f.open(cfg.results_path + "/Detection_Rate.txt");
-			std::vector<double> isoreflection_angles = Isoreflection_Ring_Angles(cfg.isoreflection_rings);
-			if(mpi_rank == 0)
-				std::cout << "Theta [deg]\t<u> [km/sec]\tDM flux [cm^-2 sec^-1]\tSignal rate [g^-1 day^-1]" << std::endl;
-			///////////////* if I want that the number of simulated trajectory = simple size, I need to // this part.
-			for(unsigned int ring = 0; ring < cfg.isoreflection_rings; ring++)
-			{
-				Reflection_Spectrum spectrum(data_set, SSM, *cfg.DM_distr, cfg.DM->mass, ring);
-				std::function<double(double)> func = [&spectrum, &cfg](double v) {
-					return spectrum.Differential_DM_Flux(v, cfg.DM->mass);
-				};
-				std::vector<double> speeds = libphysica::Linear_Space(spectrum.Minimum_DM_Speed(), spectrum.Maximum_DM_Speed(), 300);
-				if(mpi_rank == 0)
-				{
-					libphysica::Export_Function(cfg.results_path + "Differential_SRDM_Flux_" + std::to_string(ring) + ".txt", func, speeds, {km / sec, 1.0 / (km / sec) / cm / cm / sec});
-					double total_rate = cfg.DM_detector->DM_Signal_Rate_Total(*cfg.DM, spectrum);
-					f << isoreflection_angles[ring] << "\t" << spectrum.Average_Speed() / km * sec << "\t" << In_Units(spectrum.Total_DM_Flux(cfg.DM->mass), 1.0 / cm / cm / sec) << "\t" << In_Units(total_rate, 1.0 / gram / day) << std::endl;
-					std::cout << libphysica::Round(isoreflection_angles[ring] / deg) << "\t\t" << libphysica::Round(In_Units(spectrum.Average_Speed(), km / sec)) << "\t\t" << libphysica::Round(In_Units(spectrum.Total_DM_Flux(cfg.DM->mass), 1.0 / cm / cm / sec)) << "\t\t\t" << libphysica::Round(In_Units(total_rate, 1.0 / gram / day)) << std::endl;
-				}
-			}
-			//*/
-			f.close();
 		}
 	}
 	// Perform a parameter scan to compute exclusion limits
@@ -134,14 +103,6 @@ int main(int argc, char* argv[])
 	{
 	}
 
-	// for(int i=1;i<=10000;i++){ //////////
-	// 	std::string path = TOP_LEVEL_DIR "results/";
-		// std::string str = path + "trajectory_" + std::to_string(i) + "_task" + std::to_string(mpi_rank)+ ".txt";   /////////////
-		// std::string binstr = path + "bin_trajectory" + std::to_string(i) + "_task" + std::to_string(mpi_rank)+ ".txt";
-	// 	//remove(str.c_str());
-	// 	//remove(binstr.c_str());
-	// }
-	
 	////////////////////////////////////////////////////////////////////////
 	// Final terminal output
 	MPI_Barrier(MPI_COMM_WORLD);

@@ -35,9 +35,9 @@ TEST(TestReflectionSpectrum, TestSpectrum)
 	DM.Set_Sigma_Proton(1e-1 * pb);
 
 	solar_model.Interpolate_Total_DM_Scattering_Rate(DM, 100, 50);
-	Simulation_Data data_set(10, 0, 1);
-	int fixed_seed = 13;
-	data_set.Generate_Data(DM, solar_model, SHM, fixed_seed);
+	Simulation_Data data_set(10, 0, 0, 1);
+	unsigned int fixed_seed = 13;
+	data_set.Generate_Data(DM, solar_model, SHM, SnapshotConfig(), fixed_seed);
 	double v = 1e-3;
 	// ACT & ASSERT
 	Reflection_Spectrum spectrum(data_set, solar_model, SHM, mDM);

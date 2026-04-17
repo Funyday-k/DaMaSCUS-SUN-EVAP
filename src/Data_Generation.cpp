@@ -2,9 +2,14 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <fstream>
+#include <iomanip>
+#include <limits>
 #include <mpi.h>
+#include <numeric>
+#include <sys/stat.h>
 #include <vector>
-#include <iomanip>  // P1: for std::setprecision, std::scientific
 
 #include "libphysica/Natural_Units.hpp"
 #include "libphysica/Special_Functions.hpp"
@@ -17,143 +22,133 @@ namespace DaMaSCUS_SUN
 
 using namespace libphysica::natural_units;
 
-Simulation_Data::Simulation_Data(unsigned int sample_size, double u_min, unsigned int iso_rings)
-: min_sample_size_above_threshold(sample_size), minimum_speed_threshold(u_min), isoreflection_rings(iso_rings), number_of_trajectories(0), number_of_free_particles(0), number_of_reflected_particles(0), number_of_captured_particles(0), average_number_of_scatterings(0.0), computing_time(0.0), number_of_data_points(std::vector<unsigned long int>(iso_rings, 0)), data(iso_rings, std::vector<libphysica::DataPoint>())
+Simulation_Data::Simulation_Data(unsigned int sample_size, unsigned int max_trajectories, double u_min, unsigned int iso_rings)
+: minimum_speed_threshold(u_min), isoreflection_rings(iso_rings),
+  number_of_trajectories(0), number_of_free_particles(0), number_of_reflected_particles(0), number_of_captured_particles(0),
+  average_number_of_scatterings(0.0), computing_time(0.0), early_stopped(false),
+  number_of_data_points(std::vector<unsigned long int>(iso_rings, 0)),
+  data(iso_rings, std::vector<libphysica::DataPoint>())
 {
     MPI_Comm_size(MPI_COMM_WORLD, &mpi_processes);
     MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+
+    target_captured_per_rank = (sample_size + mpi_processes - 1) / mpi_processes;  // ceil division
+    if(max_trajectories == 0)
+        max_trajectories_per_rank = std::numeric_limits<unsigned long int>::max();  // no limit
+    else
+        max_trajectories_per_rank = (max_trajectories + mpi_processes - 1) / mpi_processes;
+
+    captured_dt_hist.fill(0.0);
+    captured_v2dt_hist.fill(0.0);
+    not_captured_dt_hist.fill(0.0);
+    not_captured_v2dt_hist.fill(0.0);
 }
 
 void Simulation_Data::Configure(double initial_radius, unsigned int min_scattering, long int max_scattering, unsigned long int max_free_steps)
 {
-	initial_and_final_radius	  = initial_radius;
+	initial_and_final_radius      = initial_radius;
 	minimum_number_of_scatterings = min_scattering;
 	maximum_number_of_scatterings = max_scattering;
-	maximum_free_time_steps		  = max_free_steps;
+	maximum_free_time_steps       = max_free_steps;
 }
 
-void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, unsigned int fixed_seed)
+void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, SnapshotConfig snapshot_cfg, unsigned int fixed_seed)
 {
 	auto time_start = std::chrono::system_clock::now();
 
-	// MPI ring communication
-	int mpi_source		= (mpi_rank == 0) ? mpi_processes - 1 : mpi_rank - 1;
-	int mpi_destination = (mpi_rank == mpi_processes - 1) ? 0 : mpi_rank + 1;
-	int mpi_tag			= 0;
-	MPI_Status mpi_status;
-	MPI_Request mpi_request;
-
 	// Configure the simulator
 	Trajectory_Simulator simulator(solar_model, maximum_free_time_steps, maximum_number_of_scatterings, initial_and_final_radius);
-	simulator.Toggle_Trajectory_Saving(100000);
 	if(fixed_seed != 0)
 		simulator.Fix_PRNG_Seed(fixed_seed);
 
-	// Get the MPI ring communication started by sending the data counters
-	std::vector<unsigned long int> local_counter_new(isoreflection_rings, 0);
-	if(mpi_rank == 0)
-		MPI_Isend(&number_of_data_points.front(), isoreflection_rings, MPI_UNSIGNED_LONG, mpi_destination, mpi_tag, MPI_COMM_WORLD, &mpi_request);
+	// Snapshot configuration
+	if(snapshot_cfg.enabled)
+	{
+		simulator.snapshot_config = snapshot_cfg;
+		std::string base_path = g_top_level_dir + "results_" + std::to_string(log10(In_Units(DM.mass, GeV))) + "_" + std::to_string(log10(In_Units(DM.Sigma_Proton(), cm * cm))) + "/";
+		struct stat info;
+		if(stat(base_path.c_str(), &info) != 0)
+			mkdir(base_path.c_str(), 0755);
+		simulator.snapshot_output_dir = base_path;
+	}
 
-	MPI_Barrier(MPI_COMM_WORLD);
-	unsigned int smallest_sample_size = 0;
-	// 移除：extern int traj_captured[10000];    /////////////
-	while(smallest_sample_size < min_sample_size_above_threshold)
+	unsigned long int local_captured = 0;
+	unsigned long int local_total = 0;
+	early_stopped = false;
+
+	while(local_captured < target_captured_per_rank && local_total < max_trajectories_per_rank)
 	{
 		Event IC = Initial_Conditions(halo_model, solar_model, simulator.PRNG);
 		Hyperbolic_Kepler_Shift(IC, initial_and_final_radius);
 		Trajectory_Result trajectory = simulator.Simulate(IC, DM, mpi_rank);
 
+		local_total++;
 		number_of_trajectories++;
-
-		//std::cout << "trajectory is" << number_of_trajectories << "\n";  ///////////
-		//std::cout << "simple size" << min_sample_size_above_threshold << "\n";
 		average_number_of_scatterings = 1.0 / number_of_trajectories * ((number_of_trajectories - 1) * average_number_of_scatterings + trajectory.number_of_scatterings);
 
-		if(trajectory.Particle_Captured(solar_model))
-		{	
+		if(trajectory.bincount.is_captured)
+		{
 			number_of_captured_particles++;
-		
-			// 注意：被捕获粒子不递增样本大小（因为不生成数据点）
+			local_captured++;
+
+			// Accumulate captured bincount
+			for(int b = 0; b < NUM_BINS; b++)
+			{
+				captured_dt_hist[b]   += trajectory.bincount.dt_hist[b];
+				captured_v2dt_hist[b] += trajectory.bincount.v2dt_hist[b];
+			}
+
+			// Record evaporation time
+			EvaporationRecord rec;
+			rec.trajectory_id = number_of_trajectories;
+			rec.t_evap = trajectory.bincount.t_last_negative - trajectory.bincount.t_first_negative;
+			rec.truncated = trajectory.bincount.truncated;
+			evaporation_records.push_back(rec);
 		}
 		else
 		{
-			if(trajectory.Particle_Free())
-			{	
-				number_of_free_particles++;
-				//smallest_sample_size++;  // 保持注释：自由粒子不直接递增
-				//continue;   //////////The 3rd continue is original.
+			// Accumulate non-captured bincount
+			for(int b = 0; b < NUM_BINS; b++)
+			{
+				not_captured_dt_hist[b]   += trajectory.bincount.dt_hist[b];
+				not_captured_v2dt_hist[b] += trajectory.bincount.v2dt_hist[b];
 			}
+
+			if(trajectory.Particle_Free())
+				number_of_free_particles++;
 			else if(trajectory.Particle_Reflected())
 			{
 				number_of_reflected_particles++;
-				//smallest_sample_size++;  // 保持注释：反射粒子不直接递增
-				//continue; ////////////
-
-			}	
-			else
-			{
-				//smallest_sample_size++;  // 保持注释：其他情况不递增
-				continue;
-
-			}
-				
-			Hyperbolic_Kepler_Shift(trajectory.final_event, 1.0 * AU);
-			double v_final = trajectory.final_event.Speed();
-			if(trajectory.number_of_scatterings >= minimum_number_of_scatterings && v_final > KDE_boundary_correction_factor * minimum_speed_threshold)
-			{
-				unsigned int isoreflection_ring = (isoreflection_rings == 1) ? 0 : trajectory.final_event.Isoreflection_Ring(obscura::Sun_Velocity(), isoreflection_rings);
-				if(v_final > minimum_speed_threshold)
-					local_counter_new[isoreflection_ring]++;
-				data[isoreflection_ring].push_back(libphysica::DataPoint(v_final));
-				
-				// 新增：在这里递增样本大小，因为数据点已生成
-				smallest_sample_size++;
-			}
-			// Check if data counters arrived.
-			int mpi_flag;
-			MPI_Iprobe(mpi_source, MPI_ANY_TAG, MPI_COMM_WORLD, &mpi_flag, &mpi_status);
-			if(mpi_flag)
-			{
-				// Receive and increment the data counters
-				MPI_Recv(&number_of_data_points.front(), isoreflection_rings, MPI_UNSIGNED_LONG, mpi_source, MPI_ANY_TAG, MPI_COMM_WORLD, &mpi_status);
-				unsigned long int smallest_sample_size_old = *std::min_element(std::begin(number_of_data_points), std::end(number_of_data_points));
-				//unsigned long int smallest_sample_size_old = smallest_sample_size - 1; ////////////
-				for(unsigned int i = 0; i < isoreflection_rings; i++)
+				// Keep reflection data for compatibility (if needed)
+				Hyperbolic_Kepler_Shift(trajectory.final_event, 1.0 * AU);
+				double v_final = trajectory.final_event.Speed();
+				if(trajectory.number_of_scatterings >= minimum_number_of_scatterings && v_final > KDE_boundary_correction_factor * minimum_speed_threshold)
 				{
-					number_of_data_points[i] += local_counter_new[i];
-					local_counter_new[i] = 0;
+					unsigned int isoreflection_ring = (isoreflection_rings == 1) ? 0 : trajectory.final_event.Isoreflection_Ring(obscura::Sun_Velocity(), isoreflection_rings);
+					data[isoreflection_ring].push_back(libphysica::DataPoint(v_final));
 				}
-
-				smallest_sample_size = *std::min_element(std::begin(number_of_data_points), std::end(number_of_data_points));
-				// Check if we are done
-				if(smallest_sample_size_old < min_sample_size_above_threshold && smallest_sample_size >= min_sample_size_above_threshold)
-					mpi_tag = mpi_source + 1;
-				else if(smallest_sample_size_old >= min_sample_size_above_threshold)
-					mpi_tag = mpi_status.MPI_TAG;
-
-				// Progress bar
-				if(smallest_sample_size_old < smallest_sample_size && mpi_rank % 10 == 0)
-				{
-					double time = 1e-6 * std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now() - time_start).count();
-					libphysica::Print_Progress_Bar(1.0 * smallest_sample_size / min_sample_size_above_threshold, 0, 44, time);
-				}
-				// Pass on the counters, unless you are the very last process.
-				if(mpi_tag != (mpi_rank + 1))
-					MPI_Isend(&number_of_data_points.front(), isoreflection_rings, MPI_UNSIGNED_LONG, mpi_destination, mpi_tag, MPI_COMM_WORLD, &mpi_request);
 			}
+		}
+
+		// Progress bar (periodic)
+		if(local_total % 100 == 0 && mpi_rank == 0)
+		{
+			double progress = std::min(1.0, 1.0 * local_captured / target_captured_per_rank);
+			double time_elapsed = 1e-6 * std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now() - time_start).count();
+			libphysica::Print_Progress_Bar(progress, 0, 44, time_elapsed);
 		}
 	}
 
-	// 输出轨迹文件捕获统计（由 Simulate() 中的 trajectory_has_negative_energy 判断）
-	std::cout << "Task[" << mpi_rank << "]: trajectory files captured=" 
-	          << simulator.saved_trajectories_captured_count()
-	          << ", not captured=" << simulator.saved_trajectories_not_captured_count() << std::endl;
+	if(local_total >= max_trajectories_per_rank && local_captured < target_captured_per_rank)
+		early_stopped = true;
 
 	auto time_end  = std::chrono::system_clock::now();
 	computing_time = 1e-6 * std::chrono::duration_cast<std::chrono::microseconds>(time_end - time_start).count();
-	libphysica::Print_Progress_Bar(1.0, mpi_rank, 44, computing_time);
 	if(mpi_rank == 0)
+	{
+		libphysica::Print_Progress_Bar(1.0, 0, 44, computing_time);
 		std::cout << std::endl;
+	}
 	MPI_Barrier(MPI_COMM_WORLD);
 	Perform_MPI_Reductions();
 }
@@ -168,35 +163,112 @@ void Simulation_Data::Perform_MPI_Reductions()
 	MPI_Allreduce(MPI_IN_PLACE, &average_number_of_scatterings, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 	average_number_of_scatterings /= number_of_trajectories;
 
-	MPI_Datatype mpi_datapoint;
-	MPI_Type_contiguous(2, MPI_DOUBLE, &mpi_datapoint);
-	MPI_Type_commit(&mpi_datapoint);
-	std::vector<std::vector<libphysica::DataPoint>> global_data;
-	for(unsigned int i = 0; i < isoreflection_rings; i++)
-	{
-		// 1. How many data points did this worker gather?
-		unsigned long int local_number_of_data_points = data[i].size();
-		// 2. Every worker needs to know how much every worker did.
-		std::vector<unsigned long int> data_points_of_workers(mpi_processes);
-		MPI_Allgather(&local_number_of_data_points, 1, MPI_UNSIGNED_LONG, data_points_of_workers.data(), 1, MPI_UNSIGNED_LONG, MPI_COMM_WORLD);
-		// 3. How many data points did all workers gather in total?
-		number_of_data_points[i] = std::accumulate(data_points_of_workers.begin(), data_points_of_workers.end(), 0);
+	// Reduce bincount histograms across all ranks
+	MPI_Allreduce(MPI_IN_PLACE, captured_dt_hist.data(), NUM_BINS, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+	MPI_Allreduce(MPI_IN_PLACE, captured_v2dt_hist.data(), NUM_BINS, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+	MPI_Allreduce(MPI_IN_PLACE, not_captured_dt_hist.data(), NUM_BINS, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+	MPI_Allreduce(MPI_IN_PLACE, not_captured_v2dt_hist.data(), NUM_BINS, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
-		// 4. Collect info on the data packages to be received.
-		std::vector<int> receive_counter(mpi_processes);
-		std::vector<int> receive_displacements(mpi_processes);
-		for(int j = 0; j < mpi_processes; j++)
-		{
-			receive_counter[j]		 = data_points_of_workers[j];
-			receive_displacements[j] = (j == 0) ? 0 : receive_displacements[j - 1] + data_points_of_workers[j - 1];
-		}
-		// 5. Gather data packages
-		std::vector<libphysica::DataPoint> ring_data(number_of_data_points[i]);
-		MPI_Allgatherv(&data[i].front(), local_number_of_data_points, mpi_datapoint, &ring_data.front(), receive_counter.data(), receive_displacements.data(), mpi_datapoint, MPI_COMM_WORLD);
-		global_data.push_back(ring_data);
+	// Reduce early_stopped flag (any rank early stopped => global flag)
+	int local_es = early_stopped ? 1 : 0;
+	int global_es = 0;
+	MPI_Allreduce(&local_es, &global_es, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+	early_stopped = (global_es > 0);
+
+	// Gather evaporation records from all ranks
+	// First gather counts
+	int local_evap_count = evaporation_records.size();
+	std::vector<int> evap_counts(mpi_processes);
+	MPI_Allgather(&local_evap_count, 1, MPI_INT, evap_counts.data(), 1, MPI_INT, MPI_COMM_WORLD);
+
+	int total_evap = std::accumulate(evap_counts.begin(), evap_counts.end(), 0);
+
+	// Pack local evaporation data: (trajectory_id, t_evap, truncated)
+	// Use doubles for MPI transfer
+	std::vector<double> local_evap_data(local_evap_count * 3);
+	for(int i = 0; i < local_evap_count; i++)
+	{
+		local_evap_data[3*i]     = static_cast<double>(evaporation_records[i].trajectory_id);
+		local_evap_data[3*i + 1] = evaporation_records[i].t_evap;
+		local_evap_data[3*i + 2] = evaporation_records[i].truncated ? 1.0 : 0.0;
 	}
-	data = global_data;
+
+	std::vector<int> recv_counts(mpi_processes), displacements(mpi_processes);
+	for(int j = 0; j < mpi_processes; j++)
+	{
+		recv_counts[j] = evap_counts[j] * 3;
+		displacements[j] = (j == 0) ? 0 : displacements[j-1] + recv_counts[j-1];
+	}
+
+	std::vector<double> global_evap_data(total_evap * 3);
+	MPI_Allgatherv(local_evap_data.data(), local_evap_count * 3, MPI_DOUBLE,
+	               global_evap_data.data(), recv_counts.data(), displacements.data(), MPI_DOUBLE, MPI_COMM_WORLD);
+
+	// Unpack into evaporation_records
+	evaporation_records.clear();
+	evaporation_records.resize(total_evap);
+	for(int i = 0; i < total_evap; i++)
+	{
+		evaporation_records[i].trajectory_id = static_cast<unsigned long int>(global_evap_data[3*i]);
+		evaporation_records[i].t_evap        = global_evap_data[3*i + 1];
+		evaporation_records[i].truncated     = (global_evap_data[3*i + 2] > 0.5);
+	}
+
 	MPI_Allreduce(MPI_IN_PLACE, &computing_time, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+}
+
+void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura::DM_Particle& DM)
+{
+	if(mpi_rank != 0)
+		return;
+
+	// Create output directory
+	struct stat info;
+	if(stat(output_dir.c_str(), &info) != 0)
+		mkdir(output_dir.c_str(), 0755);
+
+	double mass_gev = In_Units(DM.mass, GeV);
+	double sigma_cm2 = In_Units(DM.Sigma_Proton(), cm * cm);
+
+	auto write_header = [&](std::ofstream& f) {
+		f << "# DM_mass_GeV = " << std::scientific << std::setprecision(6) << mass_gev << "\n";
+		f << "# DM_sigma_cm2 = " << std::scientific << std::setprecision(6) << sigma_cm2 << "\n";
+		f << "# total_trajectories = " << number_of_trajectories << "\n";
+		f << "# captured_particles = " << number_of_captured_particles << "\n";
+		f << "# capture_rate = " << std::fixed << std::setprecision(8) << Capture_Ratio() << "\n";
+		if(early_stopped)
+			f << "# EARLY_STOP: max_trajectories reached\n";
+	};
+
+	// 1. Captured bincount
+	{
+		std::ofstream f(output_dir + "/captured_bincount.txt");
+		write_header(f);
+		f << "# bin_index  Sigma_dt[s]  Sigma_v2dt[km2/s]\n";
+		for(int b = 0; b < NUM_BINS; b++)
+			f << b << "\t" << std::scientific << std::setprecision(10) << captured_dt_hist[b] << "\t" << captured_v2dt_hist[b] << "\n";
+		f.close();
+	}
+
+	// 2. Not-captured bincount
+	{
+		std::ofstream f(output_dir + "/not_captured_bincount.txt");
+		write_header(f);
+		f << "# bin_index  Sigma_dt[s]  Sigma_v2dt[km2/s]\n";
+		for(int b = 0; b < NUM_BINS; b++)
+			f << b << "\t" << std::scientific << std::setprecision(10) << not_captured_dt_hist[b] << "\t" << not_captured_v2dt_hist[b] << "\n";
+		f.close();
+	}
+
+	// 3. Evaporation summary
+	{
+		std::ofstream f(output_dir + "/evaporation_summary.txt");
+		write_header(f);
+		f << "# trajectory_id  t_evap[s]  truncated(0/1)\n";
+		for(const auto& rec : evaporation_records)
+			f << rec.trajectory_id << "\t" << std::scientific << std::setprecision(10) << rec.t_evap << "\t" << (rec.truncated ? 1 : 0) << "\n";
+		f.close();
+	}
 }
 
 double Simulation_Data::Free_Ratio() const
@@ -234,47 +306,46 @@ void Simulation_Data::Print_Summary(unsigned int mpi_rank)
 {
 	if(mpi_rank == 0)
 	{
-		unsigned long int number_of_data_points_tot = std::accumulate(number_of_data_points.begin(), number_of_data_points.end(), 0);
 		std::cout << SEPARATOR
 				  << "Simulation data summary" << std::endl
 				  << std::endl
-				  << "Configuration:" << std::endl
-				  << "DM speed threshold [km/sec]:\t" << libphysica::Round(In_Units(minimum_speed_threshold, km / sec)) << std::endl
-				  << "Minimum sample size:\t\t" << min_sample_size_above_threshold << std::endl
-				  << "Isoreflection rings:\t\t" << isoreflection_rings << std::endl
-				  << std::endl
 				  << "Results:" << std::endl
 				  << "Simulated trajectories:\t\t" << number_of_trajectories << std::endl
-				  << "Generated data points (total):\t" << number_of_data_points_tot << std::endl
 				  << "Average # of scatterings:\t" << libphysica::Round(average_number_of_scatterings) << std::endl
 				  << "Free particles [%]:\t\t" << libphysica::Round(100.0 * Free_Ratio()) << std::endl
 				  << "Reflected particles [%]:\t" << libphysica::Round(100.0 * Reflection_Ratio()) << std::endl
-				  << "Captured particles [%]:\t\t" << libphysica::Round(100.0 * Capture_Ratio()) << std::endl;
+				  << "Captured particles [%]:\t\t" << libphysica::Round(100.0 * Capture_Ratio()) << std::endl
+				  << "Captured count:\t\t\t" << number_of_captured_particles << std::endl;
 
-		if(isoreflection_rings > 1)
+		if(early_stopped)
+			std::cout << "*** EARLY STOP: max_trajectories reached ***" << std::endl;
+
+		// Evaporation time median (non-truncated only)
+		std::vector<double> non_truncated_evap;
+		for(const auto& rec : evaporation_records)
 		{
-			std::cout << std::endl
-					  << "Ring\tData points\tRelative [%]\t<u> [km/sec]\tu_max [km/sec]" << std::endl;
-			for(unsigned int i = 0; i < isoreflection_rings; i++)
-			{
-				if(data[i].size()>0){  /////////add if, but the contents are original
-					double rel_number_of_data_points = 100.0 * number_of_data_points[i] / number_of_data_points_tot;
-					std::vector<double> u_average	 = libphysica::Weighted_Average(data[i]);
-					double u_max					 = Highest_Speed(i);
-					std::cout << i + 1 << "\t" << number_of_data_points[i] << "\t\t" << libphysica::Round(rel_number_of_data_points) << "\t\t" << libphysica::Round(In_Units(u_average[0], km / sec)) << " +- " << libphysica::Round(In_Units(u_average[1], km / sec)) << "\t" << libphysica::Round(In_Units(u_max, km / sec)) << std::endl;
-				}
-			}
+			if(!rec.truncated)
+				non_truncated_evap.push_back(rec.t_evap);
+		}
+		if(!non_truncated_evap.empty())
+		{
+			std::sort(non_truncated_evap.begin(), non_truncated_evap.end());
+			double median;
+			size_t n = non_truncated_evap.size();
+			if(n % 2 == 0)
+				median = 0.5 * (non_truncated_evap[n/2 - 1] + non_truncated_evap[n/2]);
+			else
+				median = non_truncated_evap[n/2];
+			std::cout << "Evaporation time median [s]:\t" << std::scientific << std::setprecision(4) << median << " (" << non_truncated_evap.size() << " non-truncated)" << std::endl;
 		}
 		else
 		{
-			std::vector<double> u_average = libphysica::Weighted_Average(data[0]);
-			double u_max				  = Highest_Speed();
-			std::cout << "<u> [km/sec]:\t\t\t" << libphysica::Round(In_Units(u_average[0], km / sec)) << " +- " << libphysica::Round(In_Units(u_average[1], km / sec)) << std::endl
-					  << "u_max [km/sec]:\t\t\t" << libphysica::Round(In_Units(u_max, km / sec)) << std::endl;
+			std::cout << "Evaporation time median:\tN/A (all truncated or no captures)" << std::endl;
 		}
+
 		std::cout << std::endl
 				  << "Trajectory rate [1/s]:\t\t" << libphysica::Round(1.0 * number_of_trajectories / computing_time) << std::endl
-				  << "Data generation rate [1/s]:\t" << libphysica::Round(1.0 * number_of_data_points_tot / computing_time) << std::endl
+				  << "Capture rate [1/s]:\t\t" << libphysica::Round(1.0 * number_of_captured_particles / computing_time) << std::endl
 				  << "Simulation time:\t\t" << libphysica::Time_Display(computing_time) << std::endl;
 
 		std::cout << SEPARATOR << std::endl;

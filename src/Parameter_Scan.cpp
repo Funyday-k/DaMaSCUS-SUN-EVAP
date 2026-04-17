@@ -14,7 +14,7 @@
 #include "Reflection_Spectrum.hpp"
 
 std::string g_top_level_dir;  // 全局输出目录，从config文件读取
-int g_recording_step_override = 0;  // 步数记录覆盖值, 0=自动校准, >0=固定每N步记录
+unsigned int g_max_trajectories = 0;  // 最大轨迹数安全阀
 
 namespace DaMaSCUS_SUN
 {
@@ -150,14 +150,15 @@ void Configuration::Import_Parameter_Scan_Parameter()
 	}
 	try
 	{
-		recording_step_override = config.lookup("recording_step_override");
-		g_recording_step_override = recording_step_override;
+		int mt = config.lookup("max_trajectories");
+		max_trajectories = mt;
+		g_max_trajectories = max_trajectories;
 	}
 	catch(const SettingNotFoundException& nfex)
 	{
-		// 可选参数，默认为0（自动校准）
-		recording_step_override = 0;
-		g_recording_step_override = 0;
+		// Optional: default to sample_size * 1000
+		max_trajectories = sample_size * 1000;
+		g_max_trajectories = max_trajectories;
 	}
 
 	if(run_mode != "Parameter point" && run_mode != "Parameter scan" && run_mode != "Custom")

@@ -1,0 +1,70 @@
+# Build
+/build/
+*.o
+*.a
+*.so
+*.so.*
+
+# Binary outputs
+bin/DaMaSCUS-SUN
+tests/test_Dark_Photon
+tests/test_Data_Generation
+tests/test_Parameter_Scan
+tests/test_Reflection_Spectrum
+tests/test_Simulation_Trajectory
+tests/test_Simulation_Utilities
+tests/test_Solar_Model
+
+# External dependencies (fetched by CMake)
+/external/
+
+# Data and results
+/data/
+/results/
+/PREVIOUS_WORK/
+/traj1gev_1e-30/
+/Trajectoies/
+/evaporation/
+/bincount/
+
+# Trajectory and output files
+*.dat
+
+# Job files
+job-*
+bin/job-*
+
+# Library binaries
+/lib/
+
+# PDF
+/PDF/
+
+# IDE and editor
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+*.DS_Store
+.depend
+
+# Codecov files
+coverage.info
+*.gcov
+*.gcda
+*.gcno
+
+# CMake
+CMakeLists.txt.user
+CMakeCache.txt
+CMakeFiles
+CMakeScripts
+Testing
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps

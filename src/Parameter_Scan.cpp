@@ -161,6 +161,31 @@ void Configuration::Import_Parameter_Scan_Parameter()
 		g_max_trajectories = max_trajectories;
 	}
 
+	// Snapshot configuration (optional)
+	try
+	{
+		bool snap_enabled = config.lookup("snapshot_enabled");
+		snapshot_config.enabled = snap_enabled;
+	}
+	catch(const SettingNotFoundException& nfex)
+	{
+		snapshot_config.enabled = false;
+	}
+	if(snapshot_config.enabled)
+	{
+		try
+		{
+			const Setting& thresholds = config.lookup("snapshot_time_thresholds");
+			for(int i = 0; i < thresholds.getLength(); i++)
+				snapshot_config.time_thresholds.push_back((double)thresholds[i]);
+		}
+		catch(const SettingNotFoundException& nfex)
+		{
+			// Default thresholds
+			snapshot_config.time_thresholds = {1000.0, 10000.0, 100000.0};
+		}
+	}
+
 	if(run_mode != "Parameter point" && run_mode != "Parameter scan" && run_mode != "Custom")
 	{
 		std::cerr << "Error in Configuration::Import_Parameter_Scan_Parameter(): Run mode " << run_mode << " not recognized." << std::endl;

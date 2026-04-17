@@ -8,6 +8,7 @@
 #include "obscura/Direct_Detection.hpp"
 
 #include "Solar_Model.hpp"
+#include "Simulation_Trajectory.hpp"
 
 namespace DaMaSCUS_SUN
 {
@@ -27,6 +28,7 @@ class Configuration : public obscura::Configuration
 	unsigned int isoreflection_rings, interpolation_points;
 	unsigned int sample_size, cross_sections;
 	unsigned int max_trajectories;
+	SnapshotConfig snapshot_config;
 	double cross_section_min, cross_section_max;
 	bool compute_halo_constraints, perform_full_scan;
 	explicit Configuration(std::string cfg_filename, int MPI_rank = 0);

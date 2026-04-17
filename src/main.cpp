@@ -59,7 +59,7 @@ int main(int argc, char* argv[])
 					  << std::endl;
 		SSM.Interpolate_Total_DM_Scattering_Rate(*cfg.DM, cfg.interpolation_points, cfg.interpolation_points);
 
-		data_set.Generate_Data(*cfg.DM, SSM, *cfg.DM_distr);
+		data_set.Generate_Data(*cfg.DM, SSM, *cfg.DM_distr, cfg.snapshot_config);
 		data_set.Print_Summary(mpi_rank);
 
 		// Write output files (bincount + evaporation summary)

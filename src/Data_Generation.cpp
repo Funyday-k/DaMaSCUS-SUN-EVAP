@@ -42,6 +42,10 @@ Simulation_Data::Simulation_Data(unsigned int sample_size, unsigned int max_traj
     captured_v2dt_hist.fill(0.0);
     not_captured_dt_hist.fill(0.0);
     not_captured_v2dt_hist.fill(0.0);
+    captured_dt_sq_hist.fill(0.0);
+    captured_v2dt_sq_hist.fill(0.0);
+    not_captured_dt_sq_hist.fill(0.0);
+    not_captured_v2dt_sq_hist.fill(0.0);
 }
 
 void Simulation_Data::Configure(double initial_radius, unsigned int min_scattering, long int max_scattering, unsigned long int max_free_steps)
@@ -96,6 +100,8 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 			{
 				captured_dt_hist[b]   += trajectory.bincount.dt_hist[b];
 				captured_v2dt_hist[b] += trajectory.bincount.v2dt_hist[b];
+				captured_dt_sq_hist[b]   += trajectory.bincount.dt_hist[b] * trajectory.bincount.dt_hist[b];
+				captured_v2dt_sq_hist[b] += trajectory.bincount.v2dt_hist[b] * trajectory.bincount.v2dt_hist[b];
 			}
 
 			// Record evaporation time
@@ -112,6 +118,8 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 			{
 				not_captured_dt_hist[b]   += trajectory.bincount.dt_hist[b];
 				not_captured_v2dt_hist[b] += trajectory.bincount.v2dt_hist[b];
+				not_captured_dt_sq_hist[b]   += trajectory.bincount.dt_hist[b] * trajectory.bincount.dt_hist[b];
+				not_captured_v2dt_sq_hist[b] += trajectory.bincount.v2dt_hist[b] * trajectory.bincount.v2dt_hist[b];
 			}
 
 			if(trajectory.Particle_Free())
@@ -168,6 +176,10 @@ void Simulation_Data::Perform_MPI_Reductions()
 	MPI_Allreduce(MPI_IN_PLACE, captured_v2dt_hist.data(), NUM_BINS, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 	MPI_Allreduce(MPI_IN_PLACE, not_captured_dt_hist.data(), NUM_BINS, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 	MPI_Allreduce(MPI_IN_PLACE, not_captured_v2dt_hist.data(), NUM_BINS, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+	MPI_Allreduce(MPI_IN_PLACE, captured_dt_sq_hist.data(), NUM_BINS, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+	MPI_Allreduce(MPI_IN_PLACE, captured_v2dt_sq_hist.data(), NUM_BINS, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+	MPI_Allreduce(MPI_IN_PLACE, not_captured_dt_sq_hist.data(), NUM_BINS, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+	MPI_Allreduce(MPI_IN_PLACE, not_captured_v2dt_sq_hist.data(), NUM_BINS, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
 	// Reduce early_stopped flag (any rank early stopped => global flag)
 	int local_es = early_stopped ? 1 : 0;
@@ -235,7 +247,28 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 		f << "# DM_sigma_cm2 = " << std::scientific << std::setprecision(6) << sigma_cm2 << "\n";
 		f << "# total_trajectories = " << number_of_trajectories << "\n";
 		f << "# captured_particles = " << number_of_captured_particles << "\n";
-		f << "# capture_rate = " << std::fixed << std::setprecision(8) << Capture_Ratio() << "\n";
+		double p_cap = Capture_Ratio();
+		f << "# capture_rate = " << std::fixed << std::setprecision(8) << p_cap << "\n";
+		// Capture rate error (Wilson interval, 95% CL)
+		{
+			double N = static_cast<double>(number_of_trajectories);
+			double p = p_cap;
+			double z = 1.96;
+			double sigma_p = (N > 0) ? sqrt(p * (1.0 - p) / N) : 0.0;
+			f << "# capture_rate_err = " << std::fixed << std::setprecision(8) << sigma_p << "\n";
+			if(N > 0)
+			{
+				double denom = 1.0 + z * z / N;
+				double center = p + z * z / (2.0 * N);
+				double spread = z * sqrt(p * (1.0 - p) / N + z * z / (4.0 * N * N));
+				double ci_lower = (center - spread) / denom;
+				double ci_upper = (center + spread) / denom;
+				if(ci_lower < 0.0) ci_lower = 0.0;
+				if(ci_upper > 1.0) ci_upper = 1.0;
+				f << "# capture_rate_CI_95_lower = " << std::fixed << std::setprecision(8) << ci_lower << "\n";
+				f << "# capture_rate_CI_95_upper = " << std::fixed << std::setprecision(8) << ci_upper << "\n";
+			}
+		}
 		if(early_stopped)
 			f << "# EARLY_STOP: max_trajectories reached\n";
 	};
@@ -244,9 +277,27 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 	{
 		std::ofstream f(output_dir + "/captured_bincount.txt");
 		write_header(f);
-		f << "# bin_index  Sigma_dt[s]  Sigma_v2dt[km2/s]\n";
+		f << "# bin_index  Sigma_dt[s]  Sigma_v2dt[km2/s]  err_dt[s]  err_v2dt[km2/s]\n";
+		double N_cap = static_cast<double>(number_of_captured_particles);
 		for(int b = 0; b < NUM_BINS; b++)
-			f << b << "\t" << std::scientific << std::setprecision(10) << captured_dt_hist[b] << "\t" << captured_v2dt_hist[b] << "\n";
+		{
+			double err_dt = 0.0, err_v2dt = 0.0;
+			if(N_cap > 1)
+			{
+				double mean_dt = captured_dt_hist[b] / N_cap;
+				double var_dt  = captured_dt_sq_hist[b] / N_cap - mean_dt * mean_dt;
+				if(var_dt < 0.0) var_dt = 0.0;
+				err_dt = sqrt(N_cap * var_dt);
+
+				double mean_v2dt = captured_v2dt_hist[b] / N_cap;
+				double var_v2dt  = captured_v2dt_sq_hist[b] / N_cap - mean_v2dt * mean_v2dt;
+				if(var_v2dt < 0.0) var_v2dt = 0.0;
+				err_v2dt = sqrt(N_cap * var_v2dt);
+			}
+			f << b << "\t" << std::scientific << std::setprecision(10)
+			  << captured_dt_hist[b] << "\t" << captured_v2dt_hist[b]
+			  << "\t" << err_dt << "\t" << err_v2dt << "\n";
+		}
 		f.close();
 	}
 
@@ -254,9 +305,27 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 	{
 		std::ofstream f(output_dir + "/not_captured_bincount.txt");
 		write_header(f);
-		f << "# bin_index  Sigma_dt[s]  Sigma_v2dt[km2/s]\n";
+		f << "# bin_index  Sigma_dt[s]  Sigma_v2dt[km2/s]  err_dt[s]  err_v2dt[km2/s]\n";
+		double N_nc = static_cast<double>(number_of_trajectories - number_of_captured_particles);
 		for(int b = 0; b < NUM_BINS; b++)
-			f << b << "\t" << std::scientific << std::setprecision(10) << not_captured_dt_hist[b] << "\t" << not_captured_v2dt_hist[b] << "\n";
+		{
+			double err_dt = 0.0, err_v2dt = 0.0;
+			if(N_nc > 1)
+			{
+				double mean_dt = not_captured_dt_hist[b] / N_nc;
+				double var_dt  = not_captured_dt_sq_hist[b] / N_nc - mean_dt * mean_dt;
+				if(var_dt < 0.0) var_dt = 0.0;
+				err_dt = sqrt(N_nc * var_dt);
+
+				double mean_v2dt = not_captured_v2dt_hist[b] / N_nc;
+				double var_v2dt  = not_captured_v2dt_sq_hist[b] / N_nc - mean_v2dt * mean_v2dt;
+				if(var_v2dt < 0.0) var_v2dt = 0.0;
+				err_v2dt = sqrt(N_nc * var_v2dt);
+			}
+			f << b << "\t" << std::scientific << std::setprecision(10)
+			  << not_captured_dt_hist[b] << "\t" << not_captured_v2dt_hist[b]
+			  << "\t" << err_dt << "\t" << err_v2dt << "\n";
+		}
 		f.close();
 	}
 
@@ -316,6 +385,26 @@ void Simulation_Data::Print_Summary(unsigned int mpi_rank)
 				  << "Reflected particles [%]:\t" << libphysica::Round(100.0 * Reflection_Ratio()) << std::endl
 				  << "Captured particles [%]:\t\t" << libphysica::Round(100.0 * Capture_Ratio()) << std::endl
 				  << "Captured count:\t\t\t" << number_of_captured_particles << std::endl;
+
+		// Capture rate error (Wilson interval)
+		{
+			double N = static_cast<double>(number_of_trajectories);
+			double p = Capture_Ratio();
+			double z = 1.96;
+			double sigma_p = (N > 0) ? sqrt(p * (1.0 - p) / N) : 0.0;
+			std::cout << "Capture rate error (1σ):\t" << std::fixed << std::setprecision(6) << sigma_p << std::endl;
+			if(N > 0)
+			{
+				double denom = 1.0 + z * z / N;
+				double center = p + z * z / (2.0 * N);
+				double spread = z * sqrt(p * (1.0 - p) / N + z * z / (4.0 * N * N));
+				double ci_lower = (center - spread) / denom;
+				double ci_upper = (center + spread) / denom;
+				if(ci_lower < 0.0) ci_lower = 0.0;
+				if(ci_upper > 1.0) ci_upper = 1.0;
+				std::cout << "Capture rate 95% CI:\t\t[" << std::fixed << std::setprecision(6) << ci_lower << ", " << ci_upper << "]" << std::endl;
+			}
+		}
 
 		if(early_stopped)
 			std::cout << "*** EARLY STOP: max_trajectories reached ***" << std::endl;

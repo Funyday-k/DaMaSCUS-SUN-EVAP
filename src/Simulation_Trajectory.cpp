@@ -80,7 +80,7 @@ void Trajectory_Result::Print_Summary(Solar_Model& solar_model, unsigned int mpi
 
 // 2. Simulator
 Trajectory_Simulator::Trajectory_Simulator(const Solar_Model& model, unsigned long int max_time_steps, long int max_scatterings, double max_distance)
-: solar_model(model), maximum_time_steps(max_time_steps), maximum_scatterings(max_scatterings), maximum_distance(max_distance)
+: solar_model(model), maximum_time_steps(max_time_steps), maximum_scatterings(max_scatterings), maximum_distance(max_distance), current_mpi_rank(0), current_trajectory_id(0)
 {
 	std::random_device rd;
 	PRNG.seed(rd());
@@ -111,7 +111,9 @@ bool Trajectory_Simulator::Propagate_Freely(Event& current_event, obscura::DM_Pa
 	{
 		time_steps++;
 		double r_before = particle_propagator.Current_Radius();
+		double t_before = particle_propagator.Current_Time();
 		particle_propagator.Runge_Kutta_45_Step(solar_model.Mass(r_before));
+		double actual_dt = particle_propagator.Current_Time() - t_before;
 		double r_after = particle_propagator.Current_Radius();
 		double v_after = particle_propagator.Current_Speed();
 
@@ -133,6 +135,7 @@ bool Trajectory_Simulator::Propagate_Freely(Event& current_event, obscura::DM_Pa
 			double dt_sec = t_now_sec - prev_time_sec;
 			// Accumulate previous step with forward difference dt
 			Accumulate_Bincount_Step(prev_r_km, prev_v2_km2s2, dt_sec);
+			prev_dt_sec = dt_sec;
 		}
 
 		// Energy check for capture detection
@@ -158,8 +161,8 @@ bool Trajectory_Simulator::Propagate_Freely(Event& current_event, obscura::DM_Pa
 				double threshold = snapshot_config.time_thresholds[si];
 				if(prev_time_sec < threshold && t_now_sec >= threshold)
 				{
-					// Write snapshot file
-					std::string snap_file = snapshot_output_dir + "snapshot_" + std::to_string((long long)threshold) + "s.txt";
+					// Write snapshot file with rank and trajectory id
+					std::string snap_file = snapshot_output_dir + "snapshot_" + std::to_string((long long)threshold) + "s_rank" + std::to_string(current_mpi_rank) + "_traj" + std::to_string(current_trajectory_id) + ".txt";
 					std::ofstream sf(snap_file);
 					if(sf.is_open())
 					{
@@ -191,7 +194,7 @@ bool Trajectory_Simulator::Propagate_Freely(Event& current_event, obscura::DM_Pa
 			double time_step_max = (total_rate > 0.0) ? (0.1 / total_rate) : (1e30);
 			if(particle_propagator.time_step > time_step_max)
 				particle_propagator.time_step = time_step_max;
-			minus_log_xi -= particle_propagator.time_step * total_rate;
+			minus_log_xi -= actual_dt * total_rate;
 			if(minus_log_xi < 0.0)
 				scattering = true;
 		}
@@ -205,9 +208,11 @@ bool Trajectory_Simulator::Propagate_Freely(Event& current_event, obscura::DM_Pa
 			success = true;
 	}
 
-	// Accumulate the last step (use the same dt as the second-to-last interval)
-	// This is a forward difference: the last step reuses the previous dt
-	// (already accumulated inside the loop for all but the very last point)
+	// Accumulate the last step using the last known dt
+	if(prev_dt_sec > 0.0)
+	{
+		Accumulate_Bincount_Step(prev_r_km, prev_v2_km2s2, prev_dt_sec);
+	}
 
 	current_event = particle_propagator.Event_In_3D();
 	return success;
@@ -340,6 +345,9 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
 	prev_time_sec = -1.0;
 	prev_r_km = 0.0;
 	prev_v2_km2s2 = 0.0;
+	prev_dt_sec = 0.0;
+	current_mpi_rank = mpi_rank;
+	current_trajectory_id++;
 
 	while(Propagate_Freely(current_event, DM) && number_of_scatterings < maximum_scatterings)
 	{
@@ -405,6 +413,9 @@ double Free_Particle_Propagator::dphi_dt(double r)
 
 void Free_Particle_Propagator::Runge_Kutta_45_Step(double mass)
 {
+	bool accepted = false;
+	while(!accepted)
+	{
 	// RK coefficients:
 	double k_r[6];
 	double k_v[6];
@@ -435,9 +446,9 @@ void Free_Particle_Propagator::Runge_Kutta_45_Step(double mass)
 	k_p[5] = time_step * dphi_dt(radius - 8.0 / 27.0 * k_r[0] + 2.0 * k_r[1] - 3544.0 / 2565.0 * k_r[2] + 1859.0 / 4104.0 * k_r[3] - 11.0 / 40.0 * k_r[4]);
 
 	// New values with Runge Kutta 4 and Runge Kutta 5
-	double radius_4	  = radius + 25.0 / 216.0 * k_r[0] + 1408.0 / 2565.0 * k_r[2] + 2197.0 / 4101.0 * k_r[3] - 1.0 / 5.0 * k_r[4];
-	double v_radial_4 = v_radial + 25.0 / 216.0 * k_v[0] + 1408.0 / 2565.0 * k_v[2] + 2197.0 / 4101.0 * k_v[3] - 1.0 / 5.0 * k_v[4];
-	double phi_4	  = phi + 25.0 / 216.0 * k_p[0] + 1408.0 / 2565.0 * k_p[2] + 2197.0 / 4101.0 * k_p[3] - 1.0 / 5.0 * k_p[4];
+	double radius_4	  = radius + 25.0 / 216.0 * k_r[0] + 1408.0 / 2565.0 * k_r[2] + 2197.0 / 4104.0 * k_r[3] - 1.0 / 5.0 * k_r[4];
+	double v_radial_4 = v_radial + 25.0 / 216.0 * k_v[0] + 1408.0 / 2565.0 * k_v[2] + 2197.0 / 4104.0 * k_v[3] - 1.0 / 5.0 * k_v[4];
+	double phi_4	  = phi + 25.0 / 216.0 * k_p[0] + 1408.0 / 2565.0 * k_p[2] + 2197.0 / 4104.0 * k_p[3] - 1.0 / 5.0 * k_p[4];
 
 	double radius_5	  = radius + 16.0 / 135.0 * k_r[0] + 6656.0 / 12825.0 * k_r[2] + 28561.0 / 56430.0 * k_r[3] - 9.0 / 50.0 * k_r[4] + 2.0 / 55.0 * k_r[5];
 	double v_radial_5 = v_radial + 16.0 / 135.0 * k_v[0] + 6656.0 / 12825.0 * k_v[2] + 28561.0 / 56430.0 * k_v[3] - 9.0 / 50.0 * k_v[4] + 2.0 / 55.0 * k_v[5];
@@ -465,19 +476,14 @@ void Free_Particle_Propagator::Runge_Kutta_45_Step(double mass)
 		v_radial  = v_radial_4;
 		phi		  = phi_4;
 		time_step = time_step_new;
+		accepted  = true;
 	}
 	else
 	{
 		time_step = time_step_new;
-		Runge_Kutta_45_Step(mass);
+		// Loop continues with smaller time_step (was recursive call before Q1 fix)
 	}
-	// 旧方法：固定步长，不根据误差调整（已注释）
-	// time	  = time + time_step;
-	// radius	  = radius_4;
-	// if(radius < 0.0)
-	// 	radius = 0.0;
-	// v_radial  = v_radial_4;
-	// phi		  = phi_4;
+  }   // end while(!accepted)
 }
 
 double Free_Particle_Propagator::Current_Time()

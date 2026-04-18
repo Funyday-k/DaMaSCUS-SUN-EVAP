@@ -79,6 +79,7 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 	unsigned long int local_captured = 0;
 	unsigned long int local_total = 0;
 	early_stopped = false;
+	int last_progress_milestone = -1;
 
 	while(local_captured < target_captured_per_rank && local_total < max_trajectories_per_rank)
 	{
@@ -138,12 +139,17 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 			}
 		}
 
-		// Progress bar (periodic)
-		if(local_total % 100 == 0 && mpi_rank == 0)
+		// Progress bar (every 20%)
+		if(mpi_rank == 0)
 		{
 			double progress = std::min(1.0, 1.0 * local_captured / target_captured_per_rank);
-			double time_elapsed = 1e-6 * std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now() - time_start).count();
-			libphysica::Print_Progress_Bar(progress, 0, 44, time_elapsed);
+			int milestone = static_cast<int>(progress * 5);  // 0=0%,1=20%,...,5=100%
+			if(milestone > last_progress_milestone)
+			{
+				last_progress_milestone = milestone;
+				double time_elapsed = 1e-6 * std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now() - time_start).count();
+				libphysica::Print_Progress_Bar(progress, 0, 44, time_elapsed);
+			}
 		}
 	}
 

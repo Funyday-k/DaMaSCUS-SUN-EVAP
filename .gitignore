@@ -34,6 +34,10 @@ tests/test_Solar_Model
 job-*
 bin/job-*
 
+# Local config files (user-specific)
+bin/config_Lingyu.cfg
+bin/config_*.cfg
+
 # Library binaries
 /lib/
 

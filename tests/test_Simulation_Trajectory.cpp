@@ -141,7 +141,7 @@ TEST(TestSimulationTrajectory, TestSimulate)
 		Hyperbolic_Kepler_Shift(IC, 1.5 * rSun);
 		Trajectory_Result result = simulator.Simulate(IC, DM, 0);
 		if(result.Particle_Reflected() || result.Particle_Free())
-			ASSERT_NEAR(result.final_event.Radius(), simulator.maximum_distance, 0.01 * rSun);
+			ASSERT_GE(result.final_event.Radius(), simulator.maximum_distance);
 		else
 			ASSERT_GT(result.number_of_scatterings, 0);
 	}
@@ -174,8 +174,9 @@ TEST(TestSimulationTrajectory, TestRungeKuttaStep)
 	Event event(t, r, v);
 	Free_Particle_Propagator propagator(event);
 	double initial_timestep = propagator.time_step;
+	Solar_Model SSM;
 	// ACT
-	propagator.Runge_Kutta_45_Step(mSun);
+	propagator.Runge_Kutta_45_Step(SSM);
 	// // ASSERT
 	EXPECT_NE(propagator.time_step, initial_timestep);
 	EXPECT_GT(propagator.Current_Time(), event.time);

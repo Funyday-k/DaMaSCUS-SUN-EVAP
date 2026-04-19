@@ -128,7 +128,8 @@ class Free_Particle_Propagator
 
 	explicit Free_Particle_Propagator(const Event& event);
 
-	void Runge_Kutta_45_Step(double mass);
+	void Runge_Kutta_45_Step(Solar_Model& solar_model);
+	void Runge_Kutta_45_Step(double constant_mass);
 
 	double Current_Time();
 	double Current_Radius();

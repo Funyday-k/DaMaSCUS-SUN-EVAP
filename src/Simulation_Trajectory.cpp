@@ -112,7 +112,7 @@ bool Trajectory_Simulator::Propagate_Freely(Event& current_event, obscura::DM_Pa
 		time_steps++;
 		double r_before = particle_propagator.Current_Radius();
 		double t_before = particle_propagator.Current_Time();
-		particle_propagator.Runge_Kutta_45_Step(solar_model.Mass(r_before));
+		particle_propagator.Runge_Kutta_45_Step(solar_model);
 		double actual_dt = particle_propagator.Current_Time() - t_before;
 		double r_after = particle_propagator.Current_Radius();
 		double v_after = particle_propagator.Current_Speed();
@@ -411,7 +411,7 @@ double Free_Particle_Propagator::dphi_dt(double r)
 	return angular_momentum / r / r;
 }
 
-void Free_Particle_Propagator::Runge_Kutta_45_Step(double mass)
+void Free_Particle_Propagator::Runge_Kutta_45_Step(Solar_Model& solar_model)
 {
 	bool accepted = false;
 	while(!accepted)
@@ -420,30 +420,42 @@ void Free_Particle_Propagator::Runge_Kutta_45_Step(double mass)
 	double k_r[6];
 	double k_v[6];
 	double k_p[6];
+	double r_i;  // intermediate radius for each RK stage
 
+	// Stage 0
 	k_r[0] = time_step * dr_dt(v_radial);
-	k_v[0] = time_step * dv_dt(radius, mass);
+	k_v[0] = time_step * dv_dt(radius, solar_model.Mass(radius));
 	k_p[0] = time_step * dphi_dt(radius);
 
+	// Stage 1
+	r_i = radius + k_r[0] / 4.0;
 	k_r[1] = time_step * dr_dt(v_radial + k_v[0] / 4.0);
-	k_v[1] = time_step * dv_dt(radius + k_r[0] / 4.0, mass);
+	k_v[1] = time_step * dv_dt(r_i, solar_model.Mass(r_i));
 	// k_p[1]=	dt*dphi_dt(radius+k_r[0]/4.0,J);
 
+	// Stage 2
+	r_i = radius + 3.0 / 32.0 * k_r[0] + 9.0 / 32.0 * k_r[1];
 	k_r[2] = time_step * dr_dt(v_radial + 3.0 / 32.0 * k_v[0] + 9.0 / 32.0 * k_v[1]);
-	k_v[2] = time_step * dv_dt(radius + 3.0 / 32.0 * k_r[0] + 9.0 / 32.0 * k_r[1], mass);
-	k_p[2] = time_step * dphi_dt(radius + 3.0 / 32.0 * k_r[0] + 9.0 / 32.0 * k_r[1]);
+	k_v[2] = time_step * dv_dt(r_i, solar_model.Mass(r_i));
+	k_p[2] = time_step * dphi_dt(r_i);
 
+	// Stage 3
+	r_i = radius + 1932.0 / 2197.0 * k_r[0] - 7200.0 / 2197.0 * k_r[1] + 7296.0 / 2197.0 * k_r[2];
 	k_r[3] = time_step * dr_dt(v_radial + 1932.0 / 2197.0 * k_v[0] - 7200.0 / 2197.0 * k_v[1] + 7296.0 / 2197.0 * k_v[2]);
-	k_v[3] = time_step * dv_dt(radius + 1932.0 / 2197.0 * k_r[0] - 7200.0 / 2197.0 * k_r[1] + 7296.0 / 2197.0 * k_r[2], mass);
-	k_p[3] = time_step * dphi_dt(radius + 1932.0 / 2197.0 * k_r[0] - 7200.0 / 2197.0 * k_r[1] + 7296.0 / 2197.0 * k_r[2]);
+	k_v[3] = time_step * dv_dt(r_i, solar_model.Mass(r_i));
+	k_p[3] = time_step * dphi_dt(r_i);
 
+	// Stage 4
+	r_i = radius + 439.0 / 216.0 * k_r[0] - 8.0 * k_r[1] + 3680.0 / 513.0 * k_r[2] - 845.0 / 4104.0 * k_r[3];
 	k_r[4] = time_step * dr_dt(v_radial + 439.0 / 216.0 * k_v[0] - 8.0 * k_v[1] + 3680.0 / 513.0 * k_v[2] - 845.0 / 4104.0 * k_v[3]);
-	k_v[4] = time_step * dv_dt(radius + 439.0 / 216.0 * k_r[0] - 8.0 * k_r[1] + 3680.0 / 513.0 * k_r[2] - 845.0 / 4104.0 * k_r[3], mass);
-	k_p[4] = time_step * dphi_dt(radius + 439.0 / 216.0 * k_r[0] - 8.0 * k_r[1] + 3680.0 / 513.0 * k_r[2] - 845.0 / 4104.0 * k_r[3]);
+	k_v[4] = time_step * dv_dt(r_i, solar_model.Mass(r_i));
+	k_p[4] = time_step * dphi_dt(r_i);
 
+	// Stage 5
+	r_i = radius - 8.0 / 27.0 * k_r[0] + 2.0 * k_r[1] - 3544.0 / 2565.0 * k_r[2] + 1859.0 / 4104.0 * k_r[3] - 11.0 / 40.0 * k_r[4];
 	k_r[5] = time_step * dr_dt(v_radial - 8.0 / 27.0 * k_v[0] + 2.0 * k_v[1] - 3544.0 / 2565.0 * k_v[2] + 1859.0 / 4104.0 * k_v[3] - 11.0 / 40.0 * k_v[4]);
-	k_v[5] = time_step * dv_dt(radius - 8.0 / 27.0 * k_r[0] + 2.0 * k_r[1] - 3544.0 / 2565.0 * k_r[2] + 1859.0 / 4104.0 * k_r[3] - 11.0 / 40.0 * k_r[4], mass);
-	k_p[5] = time_step * dphi_dt(radius - 8.0 / 27.0 * k_r[0] + 2.0 * k_r[1] - 3544.0 / 2565.0 * k_r[2] + 1859.0 / 4104.0 * k_r[3] - 11.0 / 40.0 * k_r[4]);
+	k_v[5] = time_step * dv_dt(r_i, solar_model.Mass(r_i));
+	k_p[5] = time_step * dphi_dt(r_i);
 
 	// New values with Runge Kutta 4 and Runge Kutta 5
 	double radius_4	  = radius + 25.0 / 216.0 * k_r[0] + 1408.0 / 2565.0 * k_r[2] + 2197.0 / 4104.0 * k_r[3] - 1.0 / 5.0 * k_r[4];
@@ -484,6 +496,74 @@ void Free_Particle_Propagator::Runge_Kutta_45_Step(double mass)
 		// Loop continues with smaller time_step (was recursive call before Q1 fix)
 	}
   }   // end while(!accepted)
+}
+
+// Overload with constant mass (for Kepler orbits outside the sun / testing)
+void Free_Particle_Propagator::Runge_Kutta_45_Step(double constant_mass)
+{
+	bool accepted = false;
+	while(!accepted)
+	{
+	double k_r[6];
+	double k_v[6];
+	double k_p[6];
+
+	k_r[0] = time_step * dr_dt(v_radial);
+	k_v[0] = time_step * dv_dt(radius, constant_mass);
+	k_p[0] = time_step * dphi_dt(radius);
+
+	k_r[1] = time_step * dr_dt(v_radial + k_v[0] / 4.0);
+	k_v[1] = time_step * dv_dt(radius + k_r[0] / 4.0, constant_mass);
+
+	k_r[2] = time_step * dr_dt(v_radial + 3.0 / 32.0 * k_v[0] + 9.0 / 32.0 * k_v[1]);
+	k_v[2] = time_step * dv_dt(radius + 3.0 / 32.0 * k_r[0] + 9.0 / 32.0 * k_r[1], constant_mass);
+	k_p[2] = time_step * dphi_dt(radius + 3.0 / 32.0 * k_r[0] + 9.0 / 32.0 * k_r[1]);
+
+	k_r[3] = time_step * dr_dt(v_radial + 1932.0 / 2197.0 * k_v[0] - 7200.0 / 2197.0 * k_v[1] + 7296.0 / 2197.0 * k_v[2]);
+	k_v[3] = time_step * dv_dt(radius + 1932.0 / 2197.0 * k_r[0] - 7200.0 / 2197.0 * k_r[1] + 7296.0 / 2197.0 * k_r[2], constant_mass);
+	k_p[3] = time_step * dphi_dt(radius + 1932.0 / 2197.0 * k_r[0] - 7200.0 / 2197.0 * k_r[1] + 7296.0 / 2197.0 * k_r[2]);
+
+	k_r[4] = time_step * dr_dt(v_radial + 439.0 / 216.0 * k_v[0] - 8.0 * k_v[1] + 3680.0 / 513.0 * k_v[2] - 845.0 / 4104.0 * k_v[3]);
+	k_v[4] = time_step * dv_dt(radius + 439.0 / 216.0 * k_r[0] - 8.0 * k_r[1] + 3680.0 / 513.0 * k_r[2] - 845.0 / 4104.0 * k_r[3], constant_mass);
+	k_p[4] = time_step * dphi_dt(radius + 439.0 / 216.0 * k_r[0] - 8.0 * k_r[1] + 3680.0 / 513.0 * k_r[2] - 845.0 / 4104.0 * k_r[3]);
+
+	k_r[5] = time_step * dr_dt(v_radial - 8.0 / 27.0 * k_v[0] + 2.0 * k_v[1] - 3544.0 / 2565.0 * k_v[2] + 1859.0 / 4104.0 * k_v[3] - 11.0 / 40.0 * k_v[4]);
+	k_v[5] = time_step * dv_dt(radius - 8.0 / 27.0 * k_r[0] + 2.0 * k_r[1] - 3544.0 / 2565.0 * k_r[2] + 1859.0 / 4104.0 * k_r[3] - 11.0 / 40.0 * k_r[4], constant_mass);
+	k_p[5] = time_step * dphi_dt(radius - 8.0 / 27.0 * k_r[0] + 2.0 * k_r[1] - 3544.0 / 2565.0 * k_r[2] + 1859.0 / 4104.0 * k_r[3] - 11.0 / 40.0 * k_r[4]);
+
+	double radius_4	  = radius + 25.0 / 216.0 * k_r[0] + 1408.0 / 2565.0 * k_r[2] + 2197.0 / 4104.0 * k_r[3] - 1.0 / 5.0 * k_r[4];
+	double v_radial_4 = v_radial + 25.0 / 216.0 * k_v[0] + 1408.0 / 2565.0 * k_v[2] + 2197.0 / 4104.0 * k_v[3] - 1.0 / 5.0 * k_v[4];
+	double phi_4	  = phi + 25.0 / 216.0 * k_p[0] + 1408.0 / 2565.0 * k_p[2] + 2197.0 / 4104.0 * k_p[3] - 1.0 / 5.0 * k_p[4];
+
+	double radius_5	  = radius + 16.0 / 135.0 * k_r[0] + 6656.0 / 12825.0 * k_r[2] + 28561.0 / 56430.0 * k_r[3] - 9.0 / 50.0 * k_r[4] + 2.0 / 55.0 * k_r[5];
+	double v_radial_5 = v_radial + 16.0 / 135.0 * k_v[0] + 6656.0 / 12825.0 * k_v[2] + 28561.0 / 56430.0 * k_v[3] - 9.0 / 50.0 * k_v[4] + 2.0 / 55.0 * k_v[5];
+	double phi_5	  = phi + 16.0 / 135.0 * k_p[0] + 6656.0 / 12825.0 * k_p[2] + 28561.0 / 56430.0 * k_p[3] - 9.0 / 50.0 * k_p[4] + 2.0 / 55.0 * k_p[5];
+
+	double errors[3] = {fabs(radius_5 - radius_4), fabs(v_radial_5 - v_radial_4), fabs(phi_5 - phi_4)};
+	double delta = 1e30;
+	for(int i = 0; i < 3; i++)
+	{
+		double d = 0.84 * pow(error_tolerances[i] / errors[i], 0.25);
+		if(d < delta) delta = d;
+	}
+	double time_step_new = delta * time_step;
+
+	if(errors[0] < error_tolerances[0] && errors[1] < error_tolerances[1] && errors[2] < error_tolerances[2])
+	{
+		time	  = time + time_step;
+		radius	  = radius_4;
+		if(radius < 0.0)
+			radius = 0.0;
+		v_radial  = v_radial_4;
+		phi		  = phi_4;
+		time_step = time_step_new;
+		accepted  = true;
+	}
+	else
+	{
+		time_step = time_step_new;
+	}
+  }
 }
 
 double Free_Particle_Propagator::Current_Time()

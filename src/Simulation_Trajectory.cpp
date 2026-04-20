@@ -19,8 +19,8 @@ namespace DaMaSCUS_SUN
 using namespace libphysica::natural_units;
 
 // 1. Result of one trajectory
-Trajectory_Result::Trajectory_Result(const Event& event_ini, const Event& event_final, unsigned long int nScat, TrajectoryBincount bc)
-: initial_event(event_ini), final_event(event_final), number_of_scatterings(nScat), bincount(std::move(bc))
+Trajectory_Result::Trajectory_Result(const Event& event_ini, const Event& event_final, unsigned long int nScat, unsigned long int rk45_steps, TrajectoryBincount bc)
+: initial_event(event_ini), final_event(event_final), number_of_scatterings(nScat), total_rk45_steps(rk45_steps), bincount(std::move(bc))
 {
 }
 
@@ -214,6 +214,9 @@ bool Trajectory_Simulator::Propagate_Freely(Event& current_event, obscura::DM_Pa
 		Accumulate_Bincount_Step(prev_r_km, prev_v2_km2s2, prev_dt_sec);
 	}
 
+	// Accumulate RK45 steps for this Propagate_Freely call
+	total_rk45_steps_current_traj += time_steps;
+
 	current_event = particle_propagator.Event_In_3D();
 	return success;
 }
@@ -348,6 +351,7 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
 	prev_dt_sec = 0.0;
 	current_mpi_rank = mpi_rank;
 	current_trajectory_id++;
+	total_rk45_steps_current_traj = 0;
 
 	while(Propagate_Freely(current_event, DM) && number_of_scatterings < maximum_scatterings)
 	{
@@ -372,7 +376,7 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
 			current_bincount.truncated = true;
 	}
 
-	return Trajectory_Result(initial_condition, current_event, number_of_scatterings, current_bincount);
+	return Trajectory_Result(initial_condition, current_event, number_of_scatterings, total_rk45_steps_current_traj, current_bincount);
 }  
 
 // 3. Equation of motion solution with Runge-Kutta-Fehlberg

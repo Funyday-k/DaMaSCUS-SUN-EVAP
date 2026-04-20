@@ -25,7 +25,7 @@ TEST(TestSimulationTrajectory, TestTrajectoryResultConstructor)
 	Event final_event(t_f, r_f, v_f);
 	unsigned int nscat = 14;
 	// ACT
-	Trajectory_Result result(initial_event, final_event, nscat, TrajectoryBincount{});
+	Trajectory_Result result(initial_event, final_event, nscat, 0, TrajectoryBincount{});
 	// ASSERT
 	EXPECT_EQ(result.initial_event.time, t_i);
 	EXPECT_EQ(result.initial_event.position, r_i);
@@ -51,11 +51,11 @@ TEST(TestSimulationTrajectory, TestParticleReflected)
 	Event reflected_1(t, r_out, v_2);
 
 	// ACT & ASSERT
-	EXPECT_FALSE(Trajectory_Result(initial_event, not_reflected_1, 1, TrajectoryBincount{}).Particle_Reflected());
-	EXPECT_FALSE(Trajectory_Result(initial_event, not_reflected_2, 1, TrajectoryBincount{}).Particle_Reflected());
-	EXPECT_FALSE(Trajectory_Result(initial_event, not_reflected_3, 1, TrajectoryBincount{}).Particle_Reflected());
-	EXPECT_TRUE(Trajectory_Result(initial_event, reflected_1, 1, TrajectoryBincount{}).Particle_Reflected());
-	EXPECT_FALSE(Trajectory_Result(initial_event, reflected_1, 0, TrajectoryBincount{}).Particle_Reflected());
+	EXPECT_FALSE(Trajectory_Result(initial_event, not_reflected_1, 1, 0, TrajectoryBincount{}).Particle_Reflected());
+	EXPECT_FALSE(Trajectory_Result(initial_event, not_reflected_2, 1, 0, TrajectoryBincount{}).Particle_Reflected());
+	EXPECT_FALSE(Trajectory_Result(initial_event, not_reflected_3, 1, 0, TrajectoryBincount{}).Particle_Reflected());
+	EXPECT_TRUE(Trajectory_Result(initial_event, reflected_1, 1, 0, TrajectoryBincount{}).Particle_Reflected());
+	EXPECT_FALSE(Trajectory_Result(initial_event, reflected_1, 0, 0, TrajectoryBincount{}).Particle_Reflected());
 }
 
 TEST(TestSimulationTrajectory, TestParticleFree)
@@ -68,8 +68,8 @@ TEST(TestSimulationTrajectory, TestParticleFree)
 	Event final_event(t, r, v);
 
 	// ACT & ASSERT
-	EXPECT_FALSE(Trajectory_Result(initial_event, final_event, 1, TrajectoryBincount{}).Particle_Free());
-	EXPECT_TRUE(Trajectory_Result(initial_event, final_event, 0, TrajectoryBincount{}).Particle_Free());
+	EXPECT_FALSE(Trajectory_Result(initial_event, final_event, 1, 0, TrajectoryBincount{}).Particle_Free());
+	EXPECT_TRUE(Trajectory_Result(initial_event, final_event, 0, 0, TrajectoryBincount{}).Particle_Free());
 }
 
 TEST(TestSimulationTrajectory, TestParticleCaptured)
@@ -88,10 +88,10 @@ TEST(TestSimulationTrajectory, TestParticleCaptured)
 	Solar_Model solar_model;
 
 	// ACT & ASSERT
-	EXPECT_TRUE(Trajectory_Result(initial_event, captured_1, 0, TrajectoryBincount{}).Particle_Captured(solar_model));
-	EXPECT_FALSE(Trajectory_Result(initial_event, not_captured_2, 0, TrajectoryBincount{}).Particle_Captured(solar_model));
-	EXPECT_TRUE(Trajectory_Result(initial_event, captured_3, 0, TrajectoryBincount{}).Particle_Captured(solar_model));
-	EXPECT_FALSE(Trajectory_Result(initial_event, not_captured, 0, TrajectoryBincount{}).Particle_Captured(solar_model));
+	EXPECT_TRUE(Trajectory_Result(initial_event, captured_1, 0, 0, TrajectoryBincount{}).Particle_Captured(solar_model));
+	EXPECT_FALSE(Trajectory_Result(initial_event, not_captured_2, 0, 0, TrajectoryBincount{}).Particle_Captured(solar_model));
+	EXPECT_TRUE(Trajectory_Result(initial_event, captured_3, 0, 0, TrajectoryBincount{}).Particle_Captured(solar_model));
+	EXPECT_FALSE(Trajectory_Result(initial_event, not_captured, 0, 0, TrajectoryBincount{}).Particle_Captured(solar_model));
 }
 
 // TEST(TestSimulationTrajectory, TestResultPrintSummary)

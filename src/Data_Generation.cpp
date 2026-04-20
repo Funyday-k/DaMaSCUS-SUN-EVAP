@@ -46,6 +46,20 @@ Simulation_Data::Simulation_Data(unsigned int sample_size, unsigned int max_traj
     captured_v2dt_sq_hist.fill(0.0);
     not_captured_dt_sq_hist.fill(0.0);
     not_captured_v2dt_sq_hist.fill(0.0);
+
+    // Initialize computation time statistics
+    total_wall_time_captured = 0.0;
+    total_wall_time_not_captured = 0.0;
+    wall_time_hist_captured.fill(0);
+    wall_time_hist_not_captured.fill(0);
+    wall_time_overflow_captured = 0;
+    wall_time_overflow_not_captured = 0;
+    total_rk45_steps_captured = 0;
+    total_rk45_steps_not_captured = 0;
+    step_count_hist_captured.fill(0);
+    step_count_hist_not_captured.fill(0);
+    step_count_overflow_captured = 0;
+    step_count_overflow_not_captured = 0;
 }
 
 void Simulation_Data::Configure(double initial_radius, unsigned int min_scattering, long int max_scattering, unsigned long int max_free_steps)
@@ -85,11 +99,25 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 	{
 		Event IC = Initial_Conditions(halo_model, solar_model, simulator.PRNG);
 		Hyperbolic_Kepler_Shift(IC, initial_and_final_radius);
+
+		auto traj_t0 = std::chrono::high_resolution_clock::now();
 		Trajectory_Result trajectory = simulator.Simulate(IC, DM, mpi_rank);
+		auto traj_t1 = std::chrono::high_resolution_clock::now();
+		double traj_wall_sec = 1e-6 * std::chrono::duration_cast<std::chrono::microseconds>(traj_t1 - traj_t0).count();
 
 		local_total++;
 		number_of_trajectories++;
 		average_number_of_scatterings = 1.0 / number_of_trajectories * ((number_of_trajectories - 1) * average_number_of_scatterings + trajectory.number_of_scatterings);
+
+		// Helper lambdas for log-histogram binning
+		auto wall_time_bin = [](double t) -> int {
+			if(t <= 0.0) return -1;
+			return static_cast<int>((log10(t) - WALL_TIME_LOG_MIN) * 10.0);
+		};
+		auto step_count_bin = [](unsigned long int s) -> int {
+			if(s == 0) return -1;
+			return static_cast<int>((log10(static_cast<double>(s)) - STEP_COUNT_LOG_MIN) * 10.0);
+		};
 
 		if(trajectory.bincount.is_captured)
 		{
@@ -111,6 +139,16 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 			rec.t_evap = trajectory.bincount.t_last_negative - trajectory.bincount.t_first_negative;
 			rec.truncated = trajectory.bincount.truncated;
 			evaporation_records.push_back(rec);
+
+			// Computation time & step count statistics (captured)
+			total_wall_time_captured += traj_wall_sec;
+			total_rk45_steps_captured += trajectory.total_rk45_steps;
+			int wb = wall_time_bin(traj_wall_sec);
+			if(wb >= 0 && wb < WALL_TIME_BINS) wall_time_hist_captured[wb]++;
+			else if(wb >= WALL_TIME_BINS) wall_time_overflow_captured++;
+			int sb = step_count_bin(trajectory.total_rk45_steps);
+			if(sb >= 0 && sb < STEP_COUNT_BINS) step_count_hist_captured[sb]++;
+			else if(sb >= STEP_COUNT_BINS) step_count_overflow_captured++;
 		}
 		else
 		{
@@ -122,6 +160,16 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 				not_captured_dt_sq_hist[b]   += trajectory.bincount.dt_hist[b] * trajectory.bincount.dt_hist[b];
 				not_captured_v2dt_sq_hist[b] += trajectory.bincount.v2dt_hist[b] * trajectory.bincount.v2dt_hist[b];
 			}
+
+			// Computation time & step count statistics (not captured)
+			total_wall_time_not_captured += traj_wall_sec;
+			total_rk45_steps_not_captured += trajectory.total_rk45_steps;
+			int wb = wall_time_bin(traj_wall_sec);
+			if(wb >= 0 && wb < WALL_TIME_BINS) wall_time_hist_not_captured[wb]++;
+			else if(wb >= WALL_TIME_BINS) wall_time_overflow_not_captured++;
+			int sb = step_count_bin(trajectory.total_rk45_steps);
+			if(sb >= 0 && sb < STEP_COUNT_BINS) step_count_hist_not_captured[sb]++;
+			else if(sb >= STEP_COUNT_BINS) step_count_overflow_not_captured++;
 
 			if(trajectory.Particle_Free())
 				number_of_free_particles++;
@@ -233,6 +281,20 @@ void Simulation_Data::Perform_MPI_Reductions()
 	}
 
 	MPI_Allreduce(MPI_IN_PLACE, &computing_time, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+
+	// Reduce computation time & step count statistics
+	MPI_Allreduce(MPI_IN_PLACE, &total_wall_time_captured, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+	MPI_Allreduce(MPI_IN_PLACE, &total_wall_time_not_captured, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+	MPI_Allreduce(MPI_IN_PLACE, wall_time_hist_captured.data(), WALL_TIME_BINS, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
+	MPI_Allreduce(MPI_IN_PLACE, wall_time_hist_not_captured.data(), WALL_TIME_BINS, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
+	MPI_Allreduce(MPI_IN_PLACE, &wall_time_overflow_captured, 1, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
+	MPI_Allreduce(MPI_IN_PLACE, &wall_time_overflow_not_captured, 1, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
+	MPI_Allreduce(MPI_IN_PLACE, &total_rk45_steps_captured, 1, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
+	MPI_Allreduce(MPI_IN_PLACE, &total_rk45_steps_not_captured, 1, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
+	MPI_Allreduce(MPI_IN_PLACE, step_count_hist_captured.data(), STEP_COUNT_BINS, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
+	MPI_Allreduce(MPI_IN_PLACE, step_count_hist_not_captured.data(), STEP_COUNT_BINS, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
+	MPI_Allreduce(MPI_IN_PLACE, &step_count_overflow_captured, 1, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
+	MPI_Allreduce(MPI_IN_PLACE, &step_count_overflow_not_captured, 1, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
 }
 
 void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura::DM_Particle& DM)
@@ -344,6 +406,55 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 			f << rec.trajectory_id << "\t" << std::scientific << std::setprecision(10) << rec.t_evap << "\t" << (rec.truncated ? 1 : 0) << "\n";
 		f.close();
 	}
+
+	// 4. Computation time & RK45 step count summary
+	{
+		std::ofstream f(output_dir + "/computation_time_summary.txt");
+		write_header(f);
+
+		double mean_wall_cap = (number_of_captured_particles > 0) ? total_wall_time_captured / number_of_captured_particles : 0.0;
+		double mean_wall_nc  = (number_of_trajectories > number_of_captured_particles) ? total_wall_time_not_captured / (number_of_trajectories - number_of_captured_particles) : 0.0;
+		double mean_steps_cap = (number_of_captured_particles > 0) ? static_cast<double>(total_rk45_steps_captured) / number_of_captured_particles : 0.0;
+		double mean_steps_nc  = (number_of_trajectories > number_of_captured_particles) ? static_cast<double>(total_rk45_steps_not_captured) / (number_of_trajectories - number_of_captured_particles) : 0.0;
+
+		f << "# total_wall_time_captured_sec = " << std::scientific << std::setprecision(6) << total_wall_time_captured << "\n";
+		f << "# total_wall_time_not_captured_sec = " << std::scientific << std::setprecision(6) << total_wall_time_not_captured << "\n";
+		f << "# mean_wall_time_captured_sec = " << std::scientific << std::setprecision(6) << mean_wall_cap << "\n";
+		f << "# mean_wall_time_not_captured_sec = " << std::scientific << std::setprecision(6) << mean_wall_nc << "\n";
+		f << "# total_rk45_steps_captured = " << total_rk45_steps_captured << "\n";
+		f << "# total_rk45_steps_not_captured = " << total_rk45_steps_not_captured << "\n";
+		f << "# mean_rk45_steps_captured = " << std::scientific << std::setprecision(6) << mean_steps_cap << "\n";
+		f << "# mean_rk45_steps_not_captured = " << std::scientific << std::setprecision(6) << mean_steps_nc << "\n";
+		f << "#\n";
+
+		// Wall-clock time histogram
+		f << "# [Wall-clock time histogram]\n";
+		f << "# bin_index  log10_t_lower  log10_t_upper  count_captured  count_not_captured\n";
+		for(int b = 0; b < WALL_TIME_BINS; b++)
+		{
+			double lo = WALL_TIME_LOG_MIN + b * 0.1;
+			double hi = lo + 0.1;
+			f << b << "\t" << std::fixed << std::setprecision(1) << lo << "\t" << hi
+			  << "\t" << wall_time_hist_captured[b] << "\t" << wall_time_hist_not_captured[b] << "\n";
+		}
+		f << "# overflow_captured = " << wall_time_overflow_captured << "\n";
+		f << "# overflow_not_captured = " << wall_time_overflow_not_captured << "\n";
+		f << "#\n";
+
+		// RK45 step count histogram
+		f << "# [RK45 step count histogram]\n";
+		f << "# bin_index  log10_steps_lower  log10_steps_upper  count_captured  count_not_captured\n";
+		for(int b = 0; b < STEP_COUNT_BINS; b++)
+		{
+			double lo = STEP_COUNT_LOG_MIN + b * 0.1;
+			double hi = lo + 0.1;
+			f << b << "\t" << std::fixed << std::setprecision(1) << lo << "\t" << hi
+			  << "\t" << step_count_hist_captured[b] << "\t" << step_count_hist_not_captured[b] << "\n";
+		}
+		f << "# overflow_captured = " << step_count_overflow_captured << "\n";
+		f << "# overflow_not_captured = " << step_count_overflow_not_captured << "\n";
+		f.close();
+	}
 }
 
 double Simulation_Data::Free_Ratio() const
@@ -442,6 +553,21 @@ void Simulation_Data::Print_Summary(unsigned int mpi_rank)
 				  << "Trajectory rate [1/s]:\t\t" << libphysica::Round(1.0 * number_of_trajectories / computing_time) << std::endl
 				  << "Capture rate [1/s]:\t\t" << libphysica::Round(1.0 * number_of_captured_particles / computing_time) << std::endl
 				  << "Simulation time:\t\t" << libphysica::Time_Display(computing_time) << std::endl;
+
+		// Per-trajectory computation time & RK45 step count summary
+		std::cout << std::endl
+				  << "Captured wall-clock time:\t" << libphysica::Time_Display(total_wall_time_captured) << std::endl
+				  << "Not-captured wall-clock time:\t" << libphysica::Time_Display(total_wall_time_not_captured) << std::endl;
+		if(number_of_captured_particles > 0)
+			std::cout << "Mean captured traj time:\t\t" << std::scientific << std::setprecision(4) << total_wall_time_captured / number_of_captured_particles << " s" << std::endl;
+		if(number_of_trajectories > number_of_captured_particles)
+			std::cout << "Mean not-captured traj time:\t" << std::scientific << std::setprecision(4) << total_wall_time_not_captured / (number_of_trajectories - number_of_captured_particles) << " s" << std::endl;
+		std::cout << "Total RK45 steps (captured):\t" << total_rk45_steps_captured << std::endl
+				  << "Total RK45 steps (not captured):\t" << total_rk45_steps_not_captured << std::endl;
+		if(number_of_captured_particles > 0)
+			std::cout << "Mean RK45 steps/traj (captured):\t" << std::scientific << std::setprecision(4) << static_cast<double>(total_rk45_steps_captured) / number_of_captured_particles << std::endl;
+		if(number_of_trajectories > number_of_captured_particles)
+			std::cout << "Mean RK45 steps/traj (not cap):\t" << std::scientific << std::setprecision(4) << static_cast<double>(total_rk45_steps_not_captured) / (number_of_trajectories - number_of_captured_particles) << std::endl;
 
 		std::cout << SEPARATOR << std::endl;
 	}

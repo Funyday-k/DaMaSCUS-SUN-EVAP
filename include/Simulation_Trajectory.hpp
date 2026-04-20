@@ -56,9 +56,10 @@ struct Trajectory_Result
 {
 	Event initial_event, final_event;
 	unsigned long int number_of_scatterings;
+	unsigned long int total_rk45_steps;
 	TrajectoryBincount bincount;
 
-	Trajectory_Result(const Event& event_ini, const Event& event_final, unsigned long int nScat, TrajectoryBincount bc);
+	Trajectory_Result(const Event& event_ini, const Event& event_final, unsigned long int nScat, unsigned long int rk45_steps, TrajectoryBincount bc);
 
 	bool Particle_Reflected() const;
 	bool Particle_Free() const;
@@ -82,6 +83,9 @@ class Trajectory_Simulator
 	double prev_dt_sec;         // previous step dt in seconds (for last-step accumulation)
 
 	void Accumulate_Bincount_Step(double r_km, double v2_km2s2, double dt_sec);
+
+	// RK45 step counter for current trajectory
+	unsigned long int total_rk45_steps_current_traj;
 
 	bool Propagate_Freely(Event& current_event, obscura::DM_Particle& DM);
 

@@ -57,6 +57,32 @@ class Simulation_Data
 	// Evaporation records
 	std::vector<EvaporationRecord> evaporation_records;
 
+	// --- Per-trajectory computation time statistics ---
+	double total_wall_time_captured;
+	double total_wall_time_not_captured;
+
+	// Wall-clock time log-histogram: 10^{-4} ~ 10^{8} s, 10 bins per decade, 120 bins
+	static constexpr int WALL_TIME_BINS = 120;
+	static constexpr double WALL_TIME_LOG_MIN = -4.0;
+	static constexpr double WALL_TIME_LOG_MAX = 8.0;
+	std::array<unsigned long int, WALL_TIME_BINS> wall_time_hist_captured;
+	std::array<unsigned long int, WALL_TIME_BINS> wall_time_hist_not_captured;
+	unsigned long int wall_time_overflow_captured;
+	unsigned long int wall_time_overflow_not_captured;
+
+	// --- Per-trajectory RK45 step count statistics ---
+	unsigned long int total_rk45_steps_captured;
+	unsigned long int total_rk45_steps_not_captured;
+
+	// RK45 step count log-histogram: 10^{0} ~ 10^{14}, 10 bins per decade, 140 bins
+	static constexpr int STEP_COUNT_BINS = 140;
+	static constexpr double STEP_COUNT_LOG_MIN = 0.0;
+	static constexpr double STEP_COUNT_LOG_MAX = 14.0;
+	std::array<unsigned long int, STEP_COUNT_BINS> step_count_hist_captured;
+	std::array<unsigned long int, STEP_COUNT_BINS> step_count_hist_not_captured;
+	unsigned long int step_count_overflow_captured;
+	unsigned long int step_count_overflow_not_captured;
+
 	// MPI
 	int mpi_rank, mpi_processes;
 	void Perform_MPI_Reductions();

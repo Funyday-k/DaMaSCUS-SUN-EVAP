@@ -3,12 +3,16 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
 #include <fstream>
 #include <iomanip>
 #include <limits>
 #include <mpi.h>
 #include <numeric>
+#include <sstream>
 #include <sys/stat.h>
+#include <unistd.h>
 #include <vector>
 
 #include "libphysica/Natural_Units.hpp"
@@ -21,6 +25,211 @@ namespace DaMaSCUS_SUN
 {
 
 using namespace libphysica::natural_units;
+
+namespace
+{
+struct Rank_Snapshot_State
+{
+	uint64_t run_id = 0;
+	int32_t snapshot_index = 0;
+	int32_t rank = 0;
+	int32_t done = 0;
+	int32_t trajectory_in_progress = 0;
+	uint64_t local_captured = 0;
+	uint64_t local_total = 0;
+	uint64_t current_trajectory_id = 0;
+	double rank_elapsed_wall_sec = 0.0;
+	double current_trajectory_wall_sec = 0.0;
+	double current_trajectory_physical_sec = 0.0;
+	std::array<double, NUM_BINS> captured_dt_hist{};
+	std::array<double, NUM_BINS> captured_v2dt_hist{};
+};
+
+bool Path_Exists(const std::string& path)
+{
+	struct stat info;
+	return stat(path.c_str(), &info) == 0;
+}
+
+void Ensure_Directory_Exists(const std::string& directory)
+{
+	struct stat info;
+	if(stat(directory.c_str(), &info) != 0)
+		mkdir(directory.c_str(), 0755);
+}
+
+long long Snapshot_Time_Label_Seconds(int snapshot_index, double interval_seconds)
+{
+	return static_cast<long long>(std::llround(snapshot_index * interval_seconds));
+}
+
+std::string Snapshot_Text_File_Path(const std::string& snapshot_root, int snapshot_index, double interval_seconds)
+{
+	return snapshot_root + "snapshot_" + std::to_string(Snapshot_Time_Label_Seconds(snapshot_index, interval_seconds)) + "s.txt";
+}
+
+std::string Rank_Snapshot_Checkpoint_Path(const std::string& rank_snapshot_dir, int rank, int snapshot_index, double interval_seconds)
+{
+	return rank_snapshot_dir + "snapshot_" + std::to_string(Snapshot_Time_Label_Seconds(snapshot_index, interval_seconds)) + "s_rank" + std::to_string(rank) + ".bin";
+}
+
+std::string Rank_Snapshot_Final_Path(const std::string& rank_snapshot_dir, int rank)
+{
+	return rank_snapshot_dir + "rank" + std::to_string(rank) + "_final.bin";
+}
+
+bool Write_Rank_Snapshot_State(const std::string& path, const Rank_Snapshot_State& state)
+{
+	std::string tmp_path = path + ".tmp." + std::to_string(getpid()) + "." + std::to_string(state.rank);
+	std::ofstream file(tmp_path, std::ios::binary | std::ios::trunc);
+	if(!file.is_open())
+		return false;
+
+	file.write(reinterpret_cast<const char*>(&state.run_id), sizeof(state.run_id));
+	file.write(reinterpret_cast<const char*>(&state.snapshot_index), sizeof(state.snapshot_index));
+	file.write(reinterpret_cast<const char*>(&state.rank), sizeof(state.rank));
+	file.write(reinterpret_cast<const char*>(&state.done), sizeof(state.done));
+	file.write(reinterpret_cast<const char*>(&state.trajectory_in_progress), sizeof(state.trajectory_in_progress));
+	file.write(reinterpret_cast<const char*>(&state.local_captured), sizeof(state.local_captured));
+	file.write(reinterpret_cast<const char*>(&state.local_total), sizeof(state.local_total));
+	file.write(reinterpret_cast<const char*>(&state.current_trajectory_id), sizeof(state.current_trajectory_id));
+	file.write(reinterpret_cast<const char*>(&state.rank_elapsed_wall_sec), sizeof(state.rank_elapsed_wall_sec));
+	file.write(reinterpret_cast<const char*>(&state.current_trajectory_wall_sec), sizeof(state.current_trajectory_wall_sec));
+	file.write(reinterpret_cast<const char*>(&state.current_trajectory_physical_sec), sizeof(state.current_trajectory_physical_sec));
+	file.write(reinterpret_cast<const char*>(state.captured_dt_hist.data()), NUM_BINS * sizeof(double));
+	file.write(reinterpret_cast<const char*>(state.captured_v2dt_hist.data()), NUM_BINS * sizeof(double));
+	file.close();
+
+	if(!file.good())
+	{
+		std::remove(tmp_path.c_str());
+		return false;
+	}
+
+	if(std::rename(tmp_path.c_str(), path.c_str()) != 0)
+	{
+		std::remove(tmp_path.c_str());
+		return false;
+	}
+
+	return true;
+}
+
+bool Read_Rank_Snapshot_State(const std::string& path, uint64_t expected_run_id, Rank_Snapshot_State& state)
+{
+	std::ifstream file(path, std::ios::binary);
+	if(!file.is_open())
+		return false;
+
+	file.read(reinterpret_cast<char*>(&state.run_id), sizeof(state.run_id));
+	file.read(reinterpret_cast<char*>(&state.snapshot_index), sizeof(state.snapshot_index));
+	file.read(reinterpret_cast<char*>(&state.rank), sizeof(state.rank));
+	file.read(reinterpret_cast<char*>(&state.done), sizeof(state.done));
+	file.read(reinterpret_cast<char*>(&state.trajectory_in_progress), sizeof(state.trajectory_in_progress));
+	file.read(reinterpret_cast<char*>(&state.local_captured), sizeof(state.local_captured));
+	file.read(reinterpret_cast<char*>(&state.local_total), sizeof(state.local_total));
+	file.read(reinterpret_cast<char*>(&state.current_trajectory_id), sizeof(state.current_trajectory_id));
+	file.read(reinterpret_cast<char*>(&state.rank_elapsed_wall_sec), sizeof(state.rank_elapsed_wall_sec));
+	file.read(reinterpret_cast<char*>(&state.current_trajectory_wall_sec), sizeof(state.current_trajectory_wall_sec));
+	file.read(reinterpret_cast<char*>(&state.current_trajectory_physical_sec), sizeof(state.current_trajectory_physical_sec));
+	file.read(reinterpret_cast<char*>(state.captured_dt_hist.data()), NUM_BINS * sizeof(double));
+	file.read(reinterpret_cast<char*>(state.captured_v2dt_hist.data()), NUM_BINS * sizeof(double));
+
+	if(!file)
+		return false;
+
+	return state.run_id == expected_run_id;
+}
+
+std::string Format_Rank_Status(const Rank_Snapshot_State& state)
+{
+	std::ostringstream stream;
+	stream << std::fixed << std::setprecision(3);
+	if(state.done)
+	{
+		stream << "done";
+	}
+	else
+	{
+		stream << "running";
+	}
+
+	stream << " (captured=" << state.local_captured
+	       << ", completed=" << state.local_total
+	       << ", rank_wall=" << state.rank_elapsed_wall_sec << "s";
+
+	if(state.trajectory_in_progress)
+	{
+		stream << ", current_traj=" << state.current_trajectory_id
+		       << ", traj_wall=" << state.current_trajectory_wall_sec << "s"
+		       << ", traj_physical=" << state.current_trajectory_physical_sec << "s";
+	}
+
+	stream << ")";
+	return stream.str();
+}
+
+bool Try_Write_Merged_Snapshot(const std::string& snapshot_root, const std::string& rank_snapshot_dir, int snapshot_index, double interval_seconds, int mpi_processes, uint64_t run_id)
+{
+	std::array<double, NUM_BINS> sum_dt{}, sum_v2dt{};
+	std::vector<Rank_Snapshot_State> rank_states;
+	rank_states.reserve(mpi_processes);
+	const long long snapshot_time_label = Snapshot_Time_Label_Seconds(snapshot_index, interval_seconds);
+
+	for(int rank = 0; rank < mpi_processes; rank++)
+	{
+		Rank_Snapshot_State state;
+		const std::string checkpoint_path = Rank_Snapshot_Checkpoint_Path(rank_snapshot_dir, rank, snapshot_index, interval_seconds);
+		if(!Read_Rank_Snapshot_State(checkpoint_path, run_id, state))
+		{
+			const std::string final_path = Rank_Snapshot_Final_Path(rank_snapshot_dir, rank);
+			if(!Read_Rank_Snapshot_State(final_path, run_id, state) || !state.done || state.rank_elapsed_wall_sec > snapshot_time_label)
+				return false;
+		}
+
+		rank_states.push_back(state);
+		for(int bin = 0; bin < NUM_BINS; bin++)
+		{
+			sum_dt[bin] += state.captured_dt_hist[bin];
+			sum_v2dt[bin] += state.captured_v2dt_hist[bin];
+		}
+	}
+
+	const std::string output_path = Snapshot_Text_File_Path(snapshot_root, snapshot_index, interval_seconds);
+	const std::string tmp_path = output_path + ".tmp." + std::to_string(getpid()) + "." + std::to_string(snapshot_index);
+	std::ofstream file(tmp_path, std::ios::trunc);
+	if(!file.is_open())
+		return false;
+
+	file << "# Cumulative captured bincount snapshot\n";
+	file << "# snapshot_target_wall_time_s = " << snapshot_time_label << "\n";
+	file << "# snapshot_interval_s = " << std::fixed << std::setprecision(3) << interval_seconds << "\n";
+	file << "# ranks_ready = " << mpi_processes << " / " << mpi_processes << "\n";
+	file << "#\n";
+	file << "# Rank status:\n";
+	for(const Rank_Snapshot_State& state : rank_states)
+		file << "#   rank " << state.rank << ": " << Format_Rank_Status(state) << "\n";
+	file << "#\n";
+	file << "# bin_index  cap_dt[s]  cap_v2dt[km2/s]\n";
+	for(int bin = 0; bin < NUM_BINS; bin++)
+		file << bin << "\t" << std::scientific << std::setprecision(10) << sum_dt[bin] << "\t" << sum_v2dt[bin] << "\n";
+	file.close();
+
+	if(!file.good())
+	{
+		std::remove(tmp_path.c_str());
+		return false;
+	}
+
+	if(std::rename(tmp_path.c_str(), output_path.c_str()) != 0)
+	{
+		std::remove(tmp_path.c_str());
+		return false;
+	}
+
+	return true;
+}
+}
 
 Simulation_Data::Simulation_Data(unsigned int sample_size, unsigned int max_trajectories, double u_min, unsigned int iso_rings)
 : minimum_speed_threshold(u_min), isoreflection_rings(iso_rings),
@@ -73,6 +282,8 @@ void Simulation_Data::Configure(double initial_radius, unsigned int min_scatteri
 void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, SnapshotConfig snapshot_cfg, unsigned int fixed_seed)
 {
 	auto time_start = std::chrono::system_clock::now();
+	unsigned long int local_captured = 0;
+	unsigned long int local_total = 0;
 
 	// Configure the simulator
 	Trajectory_Simulator simulator(solar_model, maximum_free_time_steps, maximum_number_of_scatterings, initial_and_final_radius);
@@ -80,20 +291,74 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 		simulator.Fix_PRNG_Seed(fixed_seed);
 
 	// Snapshot configuration
+	const double snapshot_interval = (snapshot_cfg.interval_seconds > 0.0) ? snapshot_cfg.interval_seconds : 60.0;
+	std::string snapshot_root;
+	std::string rank_snapshot_dir;
+	uint64_t snapshot_run_id = 0;
+	int next_snapshot_index = 1;
 	if(snapshot_cfg.enabled)
 	{
-		simulator.snapshot_config = snapshot_cfg;
-		std::string base_path = g_top_level_dir + "results_" + std::to_string(log10(In_Units(DM.mass, GeV))) + "_" + std::to_string(log10(In_Units(DM.Sigma_Proton(), cm * cm))) + "/";
-		struct stat info;
-		if(stat(base_path.c_str(), &info) != 0)
-			mkdir(base_path.c_str(), 0755);
-		simulator.snapshot_output_dir = base_path;
+		snapshot_root = g_top_level_dir + "results_" + std::to_string(log10(In_Units(DM.mass, GeV))) + "_" + std::to_string(log10(In_Units(DM.Sigma_Proton(), cm * cm))) + "/snapshot/";
+		rank_snapshot_dir = snapshot_root + "rank_snapshot/";
+		Ensure_Directory_Exists(g_top_level_dir + "results_" + std::to_string(log10(In_Units(DM.mass, GeV))) + "_" + std::to_string(log10(In_Units(DM.Sigma_Proton(), cm * cm))) + "/");
+		Ensure_Directory_Exists(snapshot_root);
+		Ensure_Directory_Exists(rank_snapshot_dir);
+		if(mpi_rank == 0)
+			snapshot_run_id = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+		MPI_Bcast(&snapshot_run_id, 1, MPI_UNSIGNED_LONG_LONG, 0, MPI_COMM_WORLD);
 	}
 
-	unsigned long int local_captured = 0;
-	unsigned long int local_total = 0;
+	auto elapsed_since_start = [&]()
+	{
+		return 1e-6 * std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now() - time_start).count();
+	};
+
+	auto build_rank_snapshot_state = [&](bool done)
+	{
+		Rank_Snapshot_State state;
+		state.run_id = snapshot_run_id;
+		state.rank = mpi_rank;
+		state.done = done ? 1 : 0;
+		state.trajectory_in_progress = (!done && simulator.Trajectory_In_Progress()) ? 1 : 0;
+		state.local_captured = static_cast<uint64_t>(local_captured);
+		state.local_total = static_cast<uint64_t>(local_total);
+		state.current_trajectory_id = state.trajectory_in_progress ? static_cast<uint64_t>(simulator.Current_Trajectory_ID()) : 0;
+		state.rank_elapsed_wall_sec = done ? computing_time : elapsed_since_start();
+		state.current_trajectory_wall_sec = state.trajectory_in_progress ? simulator.Current_Trajectory_Wall_Time_Seconds() : 0.0;
+		state.current_trajectory_physical_sec = state.trajectory_in_progress ? simulator.Current_Trajectory_Physical_Time_Seconds() : 0.0;
+		state.captured_dt_hist = captured_dt_hist;
+		state.captured_v2dt_hist = captured_v2dt_hist;
+		return state;
+	};
+
+	auto try_write_ready_snapshots = [&](int max_snapshot_index)
+	{
+		for(int snapshot_index = 1; snapshot_index <= max_snapshot_index; snapshot_index++)
+			Try_Write_Merged_Snapshot(snapshot_root, rank_snapshot_dir, snapshot_index, snapshot_interval, mpi_processes, snapshot_run_id);
+	};
+
+	auto publish_checkpoint_snapshots = [&]()
+	{
+		if(!snapshot_cfg.enabled)
+			return;
+
+		double elapsed = elapsed_since_start();
+		while(elapsed >= next_snapshot_index * snapshot_interval)
+		{
+			Rank_Snapshot_State state = build_rank_snapshot_state(false);
+			state.snapshot_index = next_snapshot_index;
+			Write_Rank_Snapshot_State(Rank_Snapshot_Checkpoint_Path(rank_snapshot_dir, mpi_rank, next_snapshot_index, snapshot_interval), state);
+			try_write_ready_snapshots(next_snapshot_index);
+			next_snapshot_index++;
+		}
+	};
 	early_stopped = false;
 	int last_progress_milestone = -1;
+	if(snapshot_cfg.enabled)
+		simulator.Set_Snapshot_Progress_Callback([&](const Trajectory_Simulator&)
+		{
+			publish_checkpoint_snapshots();
+		});
 
 	while(local_captured < target_captured_per_rank && local_total < max_trajectories_per_rank)
 	{
@@ -199,6 +464,8 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 				libphysica::Print_Progress_Bar(progress, 0, 44, time_elapsed);
 			}
 		}
+
+		publish_checkpoint_snapshots();
 	}
 
 	if(local_total >= max_trajectories_per_rank && local_captured < target_captured_per_rank)
@@ -206,6 +473,20 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 
 	auto time_end  = std::chrono::system_clock::now();
 	computing_time = 1e-6 * std::chrono::duration_cast<std::chrono::microseconds>(time_end - time_start).count();
+
+	publish_checkpoint_snapshots();
+
+	// Final snapshot state: keep per-rank binary under snapshot/rank_snapshot and merge on interval boundaries.
+	if(snapshot_cfg.enabled)
+	{
+		Rank_Snapshot_State final_state = build_rank_snapshot_state(true);
+		final_state.snapshot_index = next_snapshot_index - 1;
+		Write_Rank_Snapshot_State(Rank_Snapshot_Final_Path(rank_snapshot_dir, mpi_rank), final_state);
+
+		int final_snapshot_index = std::max(1, static_cast<int>(std::ceil(computing_time / snapshot_interval)));
+		try_write_ready_snapshots(final_snapshot_index);
+	}
+
 	if(mpi_rank == 0)
 	{
 		libphysica::Print_Progress_Bar(1.0, 0, 44, computing_time);

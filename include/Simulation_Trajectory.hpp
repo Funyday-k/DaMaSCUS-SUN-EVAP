@@ -2,10 +2,12 @@
 #define __Simulation_Trajectory_hpp_
 
 #include <fstream>
+#include <functional>
 #include <random>
 #include <string>
 #include <vector>
 #include <array>
+#include <chrono>
 
 #include "libphysica/Natural_Units.hpp"
 
@@ -44,11 +46,11 @@ struct TrajectoryBincount
 	}
 };
 
-// Snapshot thresholds for robustness testing (physical time in seconds)
+// Snapshot configuration: periodic cumulative bincount output
 struct SnapshotConfig
 {
 	bool enabled = false;
-	std::vector<double> time_thresholds;  // e.g. {1000, 10000, 100000}
+	double interval_seconds = 60.0;  // wall-clock seconds between snapshots
 };
 
 // 1. Result of one trajectory
@@ -86,6 +88,12 @@ class Trajectory_Simulator
 
 	// RK45 step counter for current trajectory
 	unsigned long int total_rk45_steps_current_traj;
+	std::function<void(const Trajectory_Simulator&)> snapshot_progress_callback;
+	bool trajectory_in_progress;
+	double current_trajectory_physical_time_sec;
+	std::chrono::steady_clock::time_point current_trajectory_wall_start;
+
+	void Publish_Snapshot_Progress() const;
 
 	bool Propagate_Freely(Event& current_event, obscura::DM_Particle& DM);
 
@@ -100,18 +108,21 @@ class Trajectory_Simulator
 	unsigned long int maximum_scatterings;
 	double maximum_distance;
 
-	// Snapshot support
-	SnapshotConfig snapshot_config;
-	std::string snapshot_output_dir;
 	unsigned int current_mpi_rank;
 	unsigned long int current_trajectory_id;
 
 	Trajectory_Simulator(const Solar_Model& model, unsigned long int max_time_steps = 1e12, long int max_scatterings = 1e11, double max_distance = 2.0 * libphysica::natural_units::rSun);
 
 	void Fix_PRNG_Seed(int fixed_seed);
+	void Set_Snapshot_Progress_Callback(std::function<void(const Trajectory_Simulator&)> callback);
 
 	void Scatter(Event& current_event, obscura::DM_Particle& DM);
 	Trajectory_Result Simulate(const Event& initial_condition, obscura::DM_Particle& DM, unsigned int mpi_rank);
+
+	bool Trajectory_In_Progress() const;
+	unsigned long int Current_Trajectory_ID() const;
+	double Current_Trajectory_Wall_Time_Seconds() const;
+	double Current_Trajectory_Physical_Time_Seconds() const;
 };
 
 // 3. Equation of motion solution with Runge-Kutta-Fehlberg

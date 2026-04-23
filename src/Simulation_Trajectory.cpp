@@ -80,11 +80,45 @@ void Trajectory_Result::Print_Summary(Solar_Model& solar_model, unsigned int mpi
 
 // 2. Simulator
 Trajectory_Simulator::Trajectory_Simulator(const Solar_Model& model, unsigned long int max_time_steps, long int max_scatterings, double max_distance)
-: solar_model(model), maximum_time_steps(max_time_steps), maximum_scatterings(max_scatterings), maximum_distance(max_distance), current_mpi_rank(0), current_trajectory_id(0)
+: solar_model(model), maximum_time_steps(max_time_steps), maximum_scatterings(max_scatterings), maximum_distance(max_distance), total_rk45_steps_current_traj(0), trajectory_in_progress(false), current_trajectory_physical_time_sec(0.0), current_mpi_rank(0), current_trajectory_id(0)
 {
 	std::random_device rd;
 	PRNG.seed(rd());
 	rate_nuclei_cache.resize(solar_model.target_isotopes.size());
+}
+
+void Trajectory_Simulator::Publish_Snapshot_Progress() const
+{
+	if(snapshot_progress_callback)
+		snapshot_progress_callback(*this);
+}
+
+void Trajectory_Simulator::Set_Snapshot_Progress_Callback(std::function<void(const Trajectory_Simulator&)> callback)
+{
+	snapshot_progress_callback = std::move(callback);
+}
+
+bool Trajectory_Simulator::Trajectory_In_Progress() const
+{
+	return trajectory_in_progress;
+}
+
+unsigned long int Trajectory_Simulator::Current_Trajectory_ID() const
+{
+	return current_trajectory_id;
+}
+
+double Trajectory_Simulator::Current_Trajectory_Wall_Time_Seconds() const
+{
+	if(!trajectory_in_progress)
+		return 0.0;
+
+	return 1.0e-9 * std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - current_trajectory_wall_start).count();
+}
+
+double Trajectory_Simulator::Current_Trajectory_Physical_Time_Seconds() const
+{
+	return current_trajectory_physical_time_sec;
 }
 
 // Accumulate one step into the current bincount
@@ -153,32 +187,11 @@ bool Trajectory_Simulator::Propagate_Freely(Event& current_event, obscura::DM_Pa
 			current_bincount.t_last_negative = t_now_sec;
 		}
 
-		// Snapshot support: output bincount snapshots at time thresholds
-		if(snapshot_config.enabled)
-		{
-			for(size_t si = 0; si < snapshot_config.time_thresholds.size(); si++)
-			{
-				double threshold = snapshot_config.time_thresholds[si];
-				if(prev_time_sec < threshold && t_now_sec >= threshold)
-				{
-					// Write snapshot file with rank and trajectory id
-					std::string snap_file = snapshot_output_dir + "snapshot_" + std::to_string((long long)threshold) + "s_rank" + std::to_string(current_mpi_rank) + "_traj" + std::to_string(current_trajectory_id) + ".txt";
-					std::ofstream sf(snap_file);
-					if(sf.is_open())
-					{
-						sf << "# Snapshot at t = " << threshold << " s\n";
-						sf << "# bin_index  Sigma_dt  Sigma_v2dt\n";
-						for(int b = 0; b < NUM_BINS; b++)
-							sf << b << "\t" << current_bincount.dt_hist[b] << "\t" << current_bincount.v2dt_hist[b] << "\n";
-						sf.close();
-					}
-				}
-			}
-		}
-
 		prev_time_sec = t_now_sec;
 		prev_r_km     = r_now_km;
 		prev_v2_km2s2 = v2_now;
+		current_trajectory_physical_time_sec = t_now_sec;
+		Publish_Snapshot_Progress();
 
 		// Check for scatterings and reflection
 		bool scattering = false;
@@ -352,6 +365,10 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
 	current_mpi_rank = mpi_rank;
 	current_trajectory_id++;
 	total_rk45_steps_current_traj = 0;
+	trajectory_in_progress = true;
+	current_trajectory_physical_time_sec = In_Units(current_event.time, sec);
+	current_trajectory_wall_start = std::chrono::steady_clock::now();
+	Publish_Snapshot_Progress();
 
 	while(Propagate_Freely(current_event, DM) && number_of_scatterings < maximum_scatterings)
 	{
@@ -363,6 +380,7 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
 		else
 			break;
 	}
+	trajectory_in_progress = false;
 
 	// Check truncation: if the last step still had negative energy
 	if(current_bincount.is_captured)

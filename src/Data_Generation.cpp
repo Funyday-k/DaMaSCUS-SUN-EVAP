@@ -28,6 +28,11 @@ using namespace libphysica::natural_units;
 
 namespace
 {
+constexpr int SNAPSHOT_WALL_TIME_BINS = 120;
+constexpr double SNAPSHOT_WALL_TIME_LOG_MIN = -4.0;
+constexpr int SNAPSHOT_STEP_COUNT_BINS = 140;
+constexpr double SNAPSHOT_STEP_COUNT_LOG_MIN = 0.0;
+
 struct Rank_Snapshot_State
 {
 	uint64_t run_id = 0;
@@ -43,7 +48,142 @@ struct Rank_Snapshot_State
 	double current_trajectory_physical_sec = 0.0;
 	std::array<double, NUM_BINS> captured_dt_hist{};
 	std::array<double, NUM_BINS> captured_v2dt_hist{};
+	std::array<double, NUM_BINS> captured_dt_sq_hist{};
+	std::array<double, NUM_BINS> captured_v2dt_sq_hist{};
+	std::array<double, NUM_BINS> not_captured_dt_hist{};
+	std::array<double, NUM_BINS> not_captured_v2dt_hist{};
+	std::array<double, NUM_BINS> not_captured_dt_sq_hist{};
+	std::array<double, NUM_BINS> not_captured_v2dt_sq_hist{};
+	double total_wall_time_captured = 0.0;
+	double total_wall_time_not_captured = 0.0;
+	uint64_t total_rk45_steps_captured = 0;
+	uint64_t total_rk45_steps_not_captured = 0;
+	std::array<uint64_t, SNAPSHOT_WALL_TIME_BINS> wall_time_hist_captured{};
+	std::array<uint64_t, SNAPSHOT_WALL_TIME_BINS> wall_time_hist_not_captured{};
+	uint64_t wall_time_overflow_captured = 0;
+	uint64_t wall_time_overflow_not_captured = 0;
+	std::array<uint64_t, SNAPSHOT_STEP_COUNT_BINS> step_count_hist_captured{};
+	std::array<uint64_t, SNAPSHOT_STEP_COUNT_BINS> step_count_hist_not_captured{};
+	uint64_t step_count_overflow_captured = 0;
+	uint64_t step_count_overflow_not_captured = 0;
+	std::vector<EvaporationRecord> evaporation_records;
 };
+
+struct Snapshot_Report_State
+{
+	long long snapshot_time_label = 0;
+	double snapshot_interval_seconds = 0.0;
+	uint64_t total_trajectories = 0;
+	uint64_t captured_particles = 0;
+	std::array<double, NUM_BINS> captured_dt_hist{};
+	std::array<double, NUM_BINS> captured_v2dt_hist{};
+	std::array<double, NUM_BINS> captured_dt_sq_hist{};
+	std::array<double, NUM_BINS> captured_v2dt_sq_hist{};
+	std::array<double, NUM_BINS> not_captured_dt_hist{};
+	std::array<double, NUM_BINS> not_captured_v2dt_hist{};
+	std::array<double, NUM_BINS> not_captured_dt_sq_hist{};
+	std::array<double, NUM_BINS> not_captured_v2dt_sq_hist{};
+	double total_wall_time_captured = 0.0;
+	double total_wall_time_not_captured = 0.0;
+	uint64_t total_rk45_steps_captured = 0;
+	uint64_t total_rk45_steps_not_captured = 0;
+	std::array<uint64_t, SNAPSHOT_WALL_TIME_BINS> wall_time_hist_captured{};
+	std::array<uint64_t, SNAPSHOT_WALL_TIME_BINS> wall_time_hist_not_captured{};
+	uint64_t wall_time_overflow_captured = 0;
+	uint64_t wall_time_overflow_not_captured = 0;
+	std::array<uint64_t, SNAPSHOT_STEP_COUNT_BINS> step_count_hist_captured{};
+	std::array<uint64_t, SNAPSHOT_STEP_COUNT_BINS> step_count_hist_not_captured{};
+	uint64_t step_count_overflow_captured = 0;
+	uint64_t step_count_overflow_not_captured = 0;
+	std::vector<EvaporationRecord> evaporation_records;
+	std::vector<Rank_Snapshot_State> rank_states;
+};
+
+std::string Format_Rank_Status(const Rank_Snapshot_State& state);
+
+template<typename T>
+void Write_Binary_Value(std::ofstream& file, const T& value)
+{
+	file.write(reinterpret_cast<const char*>(&value), sizeof(T));
+}
+
+template<typename T, size_t N>
+void Write_Binary_Array(std::ofstream& file, const std::array<T, N>& values)
+{
+	file.write(reinterpret_cast<const char*>(values.data()), N * sizeof(T));
+}
+
+template<typename T>
+void Read_Binary_Value(std::ifstream& file, T& value)
+{
+	file.read(reinterpret_cast<char*>(&value), sizeof(T));
+}
+
+template<typename T, size_t N>
+void Read_Binary_Array(std::ifstream& file, std::array<T, N>& values)
+{
+	file.read(reinterpret_cast<char*>(values.data()), N * sizeof(T));
+}
+
+double Capture_Ratio_From_Counts(uint64_t total_trajectories, uint64_t captured_particles)
+{
+	return (total_trajectories > 0) ? static_cast<double>(captured_particles) / static_cast<double>(total_trajectories) : 0.0;
+}
+
+void Write_Report_Header(std::ofstream& file, double mass_gev, double sigma_cm2, uint64_t total_trajectories, uint64_t captured_particles, bool early_stopped, long long snapshot_time_label = -1, double snapshot_interval_seconds = 0.0)
+{
+	if(snapshot_time_label >= 0)
+	{
+		file << "# snapshot_target_wall_time_s = " << snapshot_time_label << "\n";
+		file << "# snapshot_interval_s = " << std::fixed << std::setprecision(3) << snapshot_interval_seconds << "\n";
+	}
+
+	file << "# DM_mass_GeV = " << std::scientific << std::setprecision(6) << mass_gev << "\n";
+	file << "# DM_sigma_cm2 = " << std::scientific << std::setprecision(6) << sigma_cm2 << "\n";
+	file << "# total_trajectories = " << total_trajectories << "\n";
+	file << "# captured_particles = " << captured_particles << "\n";
+
+	double p_cap = Capture_Ratio_From_Counts(total_trajectories, captured_particles);
+	file << "# capture_rate = " << std::fixed << std::setprecision(8) << p_cap << "\n";
+
+	{
+		double N = static_cast<double>(total_trajectories);
+		double p = p_cap;
+		double z = 1.96;
+		double sigma_p = (N > 0.0) ? sqrt(p * (1.0 - p) / N) : 0.0;
+		file << "# capture_rate_err = " << std::fixed << std::setprecision(8) << sigma_p << "\n";
+		if(N > 0.0)
+		{
+			double denom = 1.0 + z * z / N;
+			double center = p + z * z / (2.0 * N);
+			double spread = z * sqrt(p * (1.0 - p) / N + z * z / (4.0 * N * N));
+			double ci_lower = (center - spread) / denom;
+			double ci_upper = (center + spread) / denom;
+			if(ci_lower < 0.0) ci_lower = 0.0;
+			if(ci_upper > 1.0) ci_upper = 1.0;
+			file << "# capture_rate_CI_95_lower = " << std::fixed << std::setprecision(8) << ci_lower << "\n";
+			file << "# capture_rate_CI_95_upper = " << std::fixed << std::setprecision(8) << ci_upper << "\n";
+		}
+	}
+
+	if(early_stopped)
+		file << "# EARLY_STOP: max_trajectories reached\n";
+}
+
+std::string Format_Physical_Time_Log10(double physical_time_sec)
+{
+	std::ostringstream stream;
+	stream << std::fixed << std::setprecision(3);
+
+	if(!std::isfinite(physical_time_sec))
+		stream << "nan";
+	else if(physical_time_sec > 0.0)
+		stream << std::log10(physical_time_sec);
+	else
+		stream << "-inf";
+
+	return stream.str();
+}
 
 bool Path_Exists(const std::string& path)
 {
@@ -68,6 +208,11 @@ std::string Snapshot_Text_File_Path(const std::string& snapshot_root, int snapsh
 	return snapshot_root + "snapshot_" + std::to_string(Snapshot_Time_Label_Seconds(snapshot_index, interval_seconds)) + "s.txt";
 }
 
+std::string Snapshot_Report_File_Path(const std::string& snapshot_root, int snapshot_index, double interval_seconds, const std::string& suffix)
+{
+	return snapshot_root + "snapshot_" + std::to_string(Snapshot_Time_Label_Seconds(snapshot_index, interval_seconds)) + "s_" + suffix + ".txt";
+}
+
 std::string Rank_Snapshot_Checkpoint_Path(const std::string& rank_snapshot_dir, int rank, int snapshot_index, double interval_seconds)
 {
 	return rank_snapshot_dir + "snapshot_" + std::to_string(Snapshot_Time_Label_Seconds(snapshot_index, interval_seconds)) + "s_rank" + std::to_string(rank) + ".bin";
@@ -78,6 +223,31 @@ std::string Rank_Snapshot_Final_Path(const std::string& rank_snapshot_dir, int r
 	return rank_snapshot_dir + "rank" + std::to_string(rank) + "_final.bin";
 }
 
+bool Write_Text_File_Atomically(const std::string& path, int unique_tag, const std::function<void(std::ofstream&)>& writer)
+{
+	std::string tmp_path = path + ".tmp." + std::to_string(getpid()) + "." + std::to_string(unique_tag);
+	std::ofstream file(tmp_path, std::ios::trunc);
+	if(!file.is_open())
+		return false;
+
+	writer(file);
+	file.close();
+
+	if(!file.good())
+	{
+		std::remove(tmp_path.c_str());
+		return false;
+	}
+
+	if(std::rename(tmp_path.c_str(), path.c_str()) != 0)
+	{
+		std::remove(tmp_path.c_str());
+		return false;
+	}
+
+	return true;
+}
+
 bool Write_Rank_Snapshot_State(const std::string& path, const Rank_Snapshot_State& state)
 {
 	std::string tmp_path = path + ".tmp." + std::to_string(getpid()) + "." + std::to_string(state.rank);
@@ -85,19 +255,48 @@ bool Write_Rank_Snapshot_State(const std::string& path, const Rank_Snapshot_Stat
 	if(!file.is_open())
 		return false;
 
-	file.write(reinterpret_cast<const char*>(&state.run_id), sizeof(state.run_id));
-	file.write(reinterpret_cast<const char*>(&state.snapshot_index), sizeof(state.snapshot_index));
-	file.write(reinterpret_cast<const char*>(&state.rank), sizeof(state.rank));
-	file.write(reinterpret_cast<const char*>(&state.done), sizeof(state.done));
-	file.write(reinterpret_cast<const char*>(&state.trajectory_in_progress), sizeof(state.trajectory_in_progress));
-	file.write(reinterpret_cast<const char*>(&state.local_captured), sizeof(state.local_captured));
-	file.write(reinterpret_cast<const char*>(&state.local_total), sizeof(state.local_total));
-	file.write(reinterpret_cast<const char*>(&state.current_trajectory_id), sizeof(state.current_trajectory_id));
-	file.write(reinterpret_cast<const char*>(&state.rank_elapsed_wall_sec), sizeof(state.rank_elapsed_wall_sec));
-	file.write(reinterpret_cast<const char*>(&state.current_trajectory_wall_sec), sizeof(state.current_trajectory_wall_sec));
-	file.write(reinterpret_cast<const char*>(&state.current_trajectory_physical_sec), sizeof(state.current_trajectory_physical_sec));
-	file.write(reinterpret_cast<const char*>(state.captured_dt_hist.data()), NUM_BINS * sizeof(double));
-	file.write(reinterpret_cast<const char*>(state.captured_v2dt_hist.data()), NUM_BINS * sizeof(double));
+	Write_Binary_Value(file, state.run_id);
+	Write_Binary_Value(file, state.snapshot_index);
+	Write_Binary_Value(file, state.rank);
+	Write_Binary_Value(file, state.done);
+	Write_Binary_Value(file, state.trajectory_in_progress);
+	Write_Binary_Value(file, state.local_captured);
+	Write_Binary_Value(file, state.local_total);
+	Write_Binary_Value(file, state.current_trajectory_id);
+	Write_Binary_Value(file, state.rank_elapsed_wall_sec);
+	Write_Binary_Value(file, state.current_trajectory_wall_sec);
+	Write_Binary_Value(file, state.current_trajectory_physical_sec);
+	Write_Binary_Array(file, state.captured_dt_hist);
+	Write_Binary_Array(file, state.captured_v2dt_hist);
+	Write_Binary_Array(file, state.captured_dt_sq_hist);
+	Write_Binary_Array(file, state.captured_v2dt_sq_hist);
+	Write_Binary_Array(file, state.not_captured_dt_hist);
+	Write_Binary_Array(file, state.not_captured_v2dt_hist);
+	Write_Binary_Array(file, state.not_captured_dt_sq_hist);
+	Write_Binary_Array(file, state.not_captured_v2dt_sq_hist);
+	Write_Binary_Value(file, state.total_wall_time_captured);
+	Write_Binary_Value(file, state.total_wall_time_not_captured);
+	Write_Binary_Value(file, state.total_rk45_steps_captured);
+	Write_Binary_Value(file, state.total_rk45_steps_not_captured);
+	Write_Binary_Array(file, state.wall_time_hist_captured);
+	Write_Binary_Array(file, state.wall_time_hist_not_captured);
+	Write_Binary_Value(file, state.wall_time_overflow_captured);
+	Write_Binary_Value(file, state.wall_time_overflow_not_captured);
+	Write_Binary_Array(file, state.step_count_hist_captured);
+	Write_Binary_Array(file, state.step_count_hist_not_captured);
+	Write_Binary_Value(file, state.step_count_overflow_captured);
+	Write_Binary_Value(file, state.step_count_overflow_not_captured);
+
+	uint64_t evaporation_count = static_cast<uint64_t>(state.evaporation_records.size());
+	Write_Binary_Value(file, evaporation_count);
+	for(const auto& rec : state.evaporation_records)
+	{
+		uint64_t trajectory_id = static_cast<uint64_t>(rec.trajectory_id);
+		uint8_t truncated = rec.truncated ? 1 : 0;
+		Write_Binary_Value(file, trajectory_id);
+		Write_Binary_Value(file, rec.t_evap);
+		Write_Binary_Value(file, truncated);
+	}
 	file.close();
 
 	if(!file.good())
@@ -121,24 +320,220 @@ bool Read_Rank_Snapshot_State(const std::string& path, uint64_t expected_run_id,
 	if(!file.is_open())
 		return false;
 
-	file.read(reinterpret_cast<char*>(&state.run_id), sizeof(state.run_id));
-	file.read(reinterpret_cast<char*>(&state.snapshot_index), sizeof(state.snapshot_index));
-	file.read(reinterpret_cast<char*>(&state.rank), sizeof(state.rank));
-	file.read(reinterpret_cast<char*>(&state.done), sizeof(state.done));
-	file.read(reinterpret_cast<char*>(&state.trajectory_in_progress), sizeof(state.trajectory_in_progress));
-	file.read(reinterpret_cast<char*>(&state.local_captured), sizeof(state.local_captured));
-	file.read(reinterpret_cast<char*>(&state.local_total), sizeof(state.local_total));
-	file.read(reinterpret_cast<char*>(&state.current_trajectory_id), sizeof(state.current_trajectory_id));
-	file.read(reinterpret_cast<char*>(&state.rank_elapsed_wall_sec), sizeof(state.rank_elapsed_wall_sec));
-	file.read(reinterpret_cast<char*>(&state.current_trajectory_wall_sec), sizeof(state.current_trajectory_wall_sec));
-	file.read(reinterpret_cast<char*>(&state.current_trajectory_physical_sec), sizeof(state.current_trajectory_physical_sec));
-	file.read(reinterpret_cast<char*>(state.captured_dt_hist.data()), NUM_BINS * sizeof(double));
-	file.read(reinterpret_cast<char*>(state.captured_v2dt_hist.data()), NUM_BINS * sizeof(double));
+	Read_Binary_Value(file, state.run_id);
+	Read_Binary_Value(file, state.snapshot_index);
+	Read_Binary_Value(file, state.rank);
+	Read_Binary_Value(file, state.done);
+	Read_Binary_Value(file, state.trajectory_in_progress);
+	Read_Binary_Value(file, state.local_captured);
+	Read_Binary_Value(file, state.local_total);
+	Read_Binary_Value(file, state.current_trajectory_id);
+	Read_Binary_Value(file, state.rank_elapsed_wall_sec);
+	Read_Binary_Value(file, state.current_trajectory_wall_sec);
+	Read_Binary_Value(file, state.current_trajectory_physical_sec);
+	Read_Binary_Array(file, state.captured_dt_hist);
+	Read_Binary_Array(file, state.captured_v2dt_hist);
+	Read_Binary_Array(file, state.captured_dt_sq_hist);
+	Read_Binary_Array(file, state.captured_v2dt_sq_hist);
+	Read_Binary_Array(file, state.not_captured_dt_hist);
+	Read_Binary_Array(file, state.not_captured_v2dt_hist);
+	Read_Binary_Array(file, state.not_captured_dt_sq_hist);
+	Read_Binary_Array(file, state.not_captured_v2dt_sq_hist);
+	Read_Binary_Value(file, state.total_wall_time_captured);
+	Read_Binary_Value(file, state.total_wall_time_not_captured);
+	Read_Binary_Value(file, state.total_rk45_steps_captured);
+	Read_Binary_Value(file, state.total_rk45_steps_not_captured);
+	Read_Binary_Array(file, state.wall_time_hist_captured);
+	Read_Binary_Array(file, state.wall_time_hist_not_captured);
+	Read_Binary_Value(file, state.wall_time_overflow_captured);
+	Read_Binary_Value(file, state.wall_time_overflow_not_captured);
+	Read_Binary_Array(file, state.step_count_hist_captured);
+	Read_Binary_Array(file, state.step_count_hist_not_captured);
+	Read_Binary_Value(file, state.step_count_overflow_captured);
+	Read_Binary_Value(file, state.step_count_overflow_not_captured);
+
+	uint64_t evaporation_count = 0;
+	Read_Binary_Value(file, evaporation_count);
+	state.evaporation_records.clear();
+	state.evaporation_records.reserve(static_cast<size_t>(evaporation_count));
+	for(uint64_t i = 0; i < evaporation_count; i++)
+	{
+		uint64_t trajectory_id = 0;
+		double t_evap = 0.0;
+		uint8_t truncated = 0;
+		Read_Binary_Value(file, trajectory_id);
+		Read_Binary_Value(file, t_evap);
+		Read_Binary_Value(file, truncated);
+		EvaporationRecord rec;
+		rec.trajectory_id = static_cast<unsigned long int>(trajectory_id);
+		rec.t_evap = t_evap;
+		rec.truncated = (truncated != 0);
+		state.evaporation_records.push_back(rec);
+	}
 
 	if(!file)
 		return false;
 
 	return state.run_id == expected_run_id;
+}
+
+void Accumulate_Snapshot_Report_State(Snapshot_Report_State& report, const Rank_Snapshot_State& state)
+{
+	report.total_trajectories += state.local_total;
+	report.captured_particles += state.local_captured;
+	report.total_wall_time_captured += state.total_wall_time_captured;
+	report.total_wall_time_not_captured += state.total_wall_time_not_captured;
+	report.total_rk45_steps_captured += state.total_rk45_steps_captured;
+	report.total_rk45_steps_not_captured += state.total_rk45_steps_not_captured;
+	report.wall_time_overflow_captured += state.wall_time_overflow_captured;
+	report.wall_time_overflow_not_captured += state.wall_time_overflow_not_captured;
+	report.step_count_overflow_captured += state.step_count_overflow_captured;
+	report.step_count_overflow_not_captured += state.step_count_overflow_not_captured;
+
+	for(int bin = 0; bin < NUM_BINS; bin++)
+	{
+		report.captured_dt_hist[bin] += state.captured_dt_hist[bin];
+		report.captured_v2dt_hist[bin] += state.captured_v2dt_hist[bin];
+		report.captured_dt_sq_hist[bin] += state.captured_dt_sq_hist[bin];
+		report.captured_v2dt_sq_hist[bin] += state.captured_v2dt_sq_hist[bin];
+		report.not_captured_dt_hist[bin] += state.not_captured_dt_hist[bin];
+		report.not_captured_v2dt_hist[bin] += state.not_captured_v2dt_hist[bin];
+		report.not_captured_dt_sq_hist[bin] += state.not_captured_dt_sq_hist[bin];
+		report.not_captured_v2dt_sq_hist[bin] += state.not_captured_v2dt_sq_hist[bin];
+	}
+
+	for(int bin = 0; bin < SNAPSHOT_WALL_TIME_BINS; bin++)
+	{
+		report.wall_time_hist_captured[bin] += state.wall_time_hist_captured[bin];
+		report.wall_time_hist_not_captured[bin] += state.wall_time_hist_not_captured[bin];
+	}
+
+	for(int bin = 0; bin < SNAPSHOT_STEP_COUNT_BINS; bin++)
+	{
+		report.step_count_hist_captured[bin] += state.step_count_hist_captured[bin];
+		report.step_count_hist_not_captured[bin] += state.step_count_hist_not_captured[bin];
+	}
+
+	report.evaporation_records.insert(report.evaporation_records.end(), state.evaporation_records.begin(), state.evaporation_records.end());
+}
+
+bool Load_Snapshot_Report_State(const std::string& rank_snapshot_dir, int snapshot_index, double interval_seconds, int mpi_processes, uint64_t run_id, Snapshot_Report_State& report)
+{
+	report = Snapshot_Report_State();
+	report.snapshot_time_label = Snapshot_Time_Label_Seconds(snapshot_index, interval_seconds);
+	report.snapshot_interval_seconds = interval_seconds;
+	report.rank_states.reserve(mpi_processes);
+
+	for(int rank = 0; rank < mpi_processes; rank++)
+	{
+		Rank_Snapshot_State state;
+		const std::string checkpoint_path = Rank_Snapshot_Checkpoint_Path(rank_snapshot_dir, rank, snapshot_index, interval_seconds);
+		if(!Read_Rank_Snapshot_State(checkpoint_path, run_id, state))
+		{
+			const std::string final_path = Rank_Snapshot_Final_Path(rank_snapshot_dir, rank);
+			if(!Read_Rank_Snapshot_State(final_path, run_id, state) || !state.done || state.rank_elapsed_wall_sec > report.snapshot_time_label)
+				return false;
+		}
+
+		Accumulate_Snapshot_Report_State(report, state);
+		report.rank_states.push_back(state);
+	}
+
+	return true;
+}
+
+bool Write_Snapshot_Report_Files(const std::string& snapshot_root, int snapshot_index, double interval_seconds, double mass_gev, double sigma_cm2, const Snapshot_Report_State& report)
+{
+	if(!Write_Text_File_Atomically(Snapshot_Text_File_Path(snapshot_root, snapshot_index, interval_seconds), snapshot_index, [&](std::ofstream& file)
+	{
+		file << "# Cumulative snapshot report\n";
+		Write_Report_Header(file, mass_gev, sigma_cm2, report.total_trajectories, report.captured_particles, false, report.snapshot_time_label, report.snapshot_interval_seconds);
+
+		double mean_wall_cap = (report.captured_particles > 0) ? report.total_wall_time_captured / static_cast<double>(report.captured_particles) : 0.0;
+		double not_captured_particles = static_cast<double>(report.total_trajectories - report.captured_particles);
+		double mean_wall_nc = (not_captured_particles > 0.0) ? report.total_wall_time_not_captured / not_captured_particles : 0.0;
+		double mean_steps_cap = (report.captured_particles > 0) ? static_cast<double>(report.total_rk45_steps_captured) / static_cast<double>(report.captured_particles) : 0.0;
+		double mean_steps_nc = (not_captured_particles > 0.0) ? static_cast<double>(report.total_rk45_steps_not_captured) / not_captured_particles : 0.0;
+
+		file << "# total_wall_time_captured_sec = " << std::scientific << std::setprecision(6) << report.total_wall_time_captured << "\n";
+		file << "# total_wall_time_not_captured_sec = " << std::scientific << std::setprecision(6) << report.total_wall_time_not_captured << "\n";
+		file << "# mean_wall_time_captured_sec = " << std::scientific << std::setprecision(6) << mean_wall_cap << "\n";
+		file << "# mean_wall_time_not_captured_sec = " << std::scientific << std::setprecision(6) << mean_wall_nc << "\n";
+		file << "# total_rk45_steps_captured = " << report.total_rk45_steps_captured << "\n";
+		file << "# total_rk45_steps_not_captured = " << report.total_rk45_steps_not_captured << "\n";
+		file << "# mean_rk45_steps_captured = " << std::scientific << std::setprecision(6) << mean_steps_cap << "\n";
+		file << "# mean_rk45_steps_not_captured = " << std::scientific << std::setprecision(6) << mean_steps_nc << "\n";
+		file << "# ranks_ready = " << report.rank_states.size() << " / " << report.rank_states.size() << "\n";
+		file << "#\n";
+		file << "# Rank status:\n";
+		for(const Rank_Snapshot_State& state : report.rank_states)
+			file << "#   rank " << state.rank << ": " << Format_Rank_Status(state) << "\n";
+		file << "#\n";
+		file << "# bin_index  cap_dt[s]  cap_v2dt[km2/s]\n";
+		for(int bin = 0; bin < NUM_BINS; bin++)
+			file << bin << "\t" << std::scientific << std::setprecision(10) << report.captured_dt_hist[bin] << "\t" << report.captured_v2dt_hist[bin] << "\n";
+	}))
+		return false;
+
+	if(!Write_Text_File_Atomically(Snapshot_Report_File_Path(snapshot_root, snapshot_index, interval_seconds, "captured_bincount"), snapshot_index, [&](std::ofstream& file)
+	{
+		Write_Report_Header(file, mass_gev, sigma_cm2, report.total_trajectories, report.captured_particles, false, report.snapshot_time_label, report.snapshot_interval_seconds);
+		file << "# bin_index  Sigma_dt[s]  Sigma_v2dt[km2/s]  err_dt[s]  err_v2dt[km2/s]\n";
+		double N_cap = static_cast<double>(report.captured_particles);
+		for(int bin = 0; bin < NUM_BINS; bin++)
+		{
+			double err_dt = 0.0;
+			double err_v2dt = 0.0;
+			if(N_cap > 1.0)
+			{
+				double mean_dt = report.captured_dt_hist[bin] / N_cap;
+				double var_dt = report.captured_dt_sq_hist[bin] / N_cap - mean_dt * mean_dt;
+				if(var_dt < 0.0) var_dt = 0.0;
+				err_dt = sqrt(N_cap * var_dt);
+
+				double mean_v2dt = report.captured_v2dt_hist[bin] / N_cap;
+				double var_v2dt = report.captured_v2dt_sq_hist[bin] / N_cap - mean_v2dt * mean_v2dt;
+				if(var_v2dt < 0.0) var_v2dt = 0.0;
+				err_v2dt = sqrt(N_cap * var_v2dt);
+			}
+
+			file << bin << "\t" << std::scientific << std::setprecision(10)
+			     << report.captured_dt_hist[bin] << "\t" << report.captured_v2dt_hist[bin]
+			     << "\t" << err_dt << "\t" << err_v2dt << "\n";
+		}
+	}))
+		return false;
+
+	if(!Write_Text_File_Atomically(Snapshot_Report_File_Path(snapshot_root, snapshot_index, interval_seconds, "not_captured_bincount"), snapshot_index, [&](std::ofstream& file)
+	{
+		Write_Report_Header(file, mass_gev, sigma_cm2, report.total_trajectories, report.captured_particles, false, report.snapshot_time_label, report.snapshot_interval_seconds);
+		file << "# bin_index  Sigma_dt[s]  Sigma_v2dt[km2/s]  err_dt[s]  err_v2dt[km2/s]\n";
+		double N_nc = static_cast<double>(report.total_trajectories - report.captured_particles);
+		for(int bin = 0; bin < NUM_BINS; bin++)
+		{
+			double err_dt = 0.0;
+			double err_v2dt = 0.0;
+			if(N_nc > 1.0)
+			{
+				double mean_dt = report.not_captured_dt_hist[bin] / N_nc;
+				double var_dt = report.not_captured_dt_sq_hist[bin] / N_nc - mean_dt * mean_dt;
+				if(var_dt < 0.0) var_dt = 0.0;
+				err_dt = sqrt(N_nc * var_dt);
+
+				double mean_v2dt = report.not_captured_v2dt_hist[bin] / N_nc;
+				double var_v2dt = report.not_captured_v2dt_sq_hist[bin] / N_nc - mean_v2dt * mean_v2dt;
+				if(var_v2dt < 0.0) var_v2dt = 0.0;
+				err_v2dt = sqrt(N_nc * var_v2dt);
+			}
+
+			file << bin << "\t" << std::scientific << std::setprecision(10)
+			     << report.not_captured_dt_hist[bin] << "\t" << report.not_captured_v2dt_hist[bin]
+			     << "\t" << err_dt << "\t" << err_v2dt << "\n";
+		}
+	}))
+		return false;
+
+	return true;
 }
 
 std::string Format_Rank_Status(const Rank_Snapshot_State& state)
@@ -162,7 +557,7 @@ std::string Format_Rank_Status(const Rank_Snapshot_State& state)
 	{
 		stream << ", current_traj=" << state.current_trajectory_id
 		       << ", traj_wall=" << state.current_trajectory_wall_sec << "s"
-		       << ", traj_physical=" << state.current_trajectory_physical_sec << "s";
+		       << ", log10_traj_physical_s=" << Format_Physical_Time_Log10(state.current_trajectory_physical_sec);
 	}
 	else if(!state.done)
 	{
@@ -173,65 +568,13 @@ std::string Format_Rank_Status(const Rank_Snapshot_State& state)
 	return stream.str();
 }
 
-bool Try_Write_Merged_Snapshot(const std::string& snapshot_root, const std::string& rank_snapshot_dir, int snapshot_index, double interval_seconds, int mpi_processes, uint64_t run_id)
+bool Try_Write_Merged_Snapshot(const std::string& snapshot_root, const std::string& rank_snapshot_dir, int snapshot_index, double interval_seconds, int mpi_processes, uint64_t run_id, double mass_gev, double sigma_cm2)
 {
-	std::array<double, NUM_BINS> sum_dt{}, sum_v2dt{};
-	std::vector<Rank_Snapshot_State> rank_states;
-	rank_states.reserve(mpi_processes);
-	const long long snapshot_time_label = Snapshot_Time_Label_Seconds(snapshot_index, interval_seconds);
-
-	for(int rank = 0; rank < mpi_processes; rank++)
-	{
-		Rank_Snapshot_State state;
-		const std::string checkpoint_path = Rank_Snapshot_Checkpoint_Path(rank_snapshot_dir, rank, snapshot_index, interval_seconds);
-		if(!Read_Rank_Snapshot_State(checkpoint_path, run_id, state))
-		{
-			const std::string final_path = Rank_Snapshot_Final_Path(rank_snapshot_dir, rank);
-			if(!Read_Rank_Snapshot_State(final_path, run_id, state) || !state.done || state.rank_elapsed_wall_sec > snapshot_time_label)
-				return false;
-		}
-
-		rank_states.push_back(state);
-		for(int bin = 0; bin < NUM_BINS; bin++)
-		{
-			sum_dt[bin] += state.captured_dt_hist[bin];
-			sum_v2dt[bin] += state.captured_v2dt_hist[bin];
-		}
-	}
-
-	const std::string output_path = Snapshot_Text_File_Path(snapshot_root, snapshot_index, interval_seconds);
-	const std::string tmp_path = output_path + ".tmp." + std::to_string(getpid()) + "." + std::to_string(snapshot_index);
-	std::ofstream file(tmp_path, std::ios::trunc);
-	if(!file.is_open())
+	Snapshot_Report_State report;
+	if(!Load_Snapshot_Report_State(rank_snapshot_dir, snapshot_index, interval_seconds, mpi_processes, run_id, report))
 		return false;
 
-	file << "# Cumulative captured bincount snapshot\n";
-	file << "# snapshot_target_wall_time_s = " << snapshot_time_label << "\n";
-	file << "# snapshot_interval_s = " << std::fixed << std::setprecision(3) << interval_seconds << "\n";
-	file << "# ranks_ready = " << mpi_processes << " / " << mpi_processes << "\n";
-	file << "#\n";
-	file << "# Rank status:\n";
-	for(const Rank_Snapshot_State& state : rank_states)
-		file << "#   rank " << state.rank << ": " << Format_Rank_Status(state) << "\n";
-	file << "#\n";
-	file << "# bin_index  cap_dt[s]  cap_v2dt[km2/s]\n";
-	for(int bin = 0; bin < NUM_BINS; bin++)
-		file << bin << "\t" << std::scientific << std::setprecision(10) << sum_dt[bin] << "\t" << sum_v2dt[bin] << "\n";
-	file.close();
-
-	if(!file.good())
-	{
-		std::remove(tmp_path.c_str());
-		return false;
-	}
-
-	if(std::rename(tmp_path.c_str(), output_path.c_str()) != 0)
-	{
-		std::remove(tmp_path.c_str());
-		return false;
-	}
-
-	return true;
+	return Write_Snapshot_Report_Files(snapshot_root, snapshot_index, interval_seconds, mass_gev, sigma_cm2, report);
 }
 }
 
@@ -296,6 +639,8 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 
 	// Snapshot configuration
 	const double snapshot_interval = (snapshot_cfg.interval_seconds > 0.0) ? snapshot_cfg.interval_seconds : 60.0;
+	const double snapshot_mass_gev = In_Units(DM.mass, GeV);
+	const double snapshot_sigma_cm2 = In_Units(DM.Sigma_Proton(), cm * cm);
 	std::string snapshot_root;
 	std::string rank_snapshot_dir;
 	uint64_t snapshot_run_id = 0;
@@ -332,13 +677,32 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 		state.current_trajectory_physical_sec = state.trajectory_in_progress ? simulator.Current_Trajectory_Physical_Time_Seconds() : 0.0;
 		state.captured_dt_hist = captured_dt_hist;
 		state.captured_v2dt_hist = captured_v2dt_hist;
+		state.captured_dt_sq_hist = captured_dt_sq_hist;
+		state.captured_v2dt_sq_hist = captured_v2dt_sq_hist;
+		state.not_captured_dt_hist = not_captured_dt_hist;
+		state.not_captured_v2dt_hist = not_captured_v2dt_hist;
+		state.not_captured_dt_sq_hist = not_captured_dt_sq_hist;
+		state.not_captured_v2dt_sq_hist = not_captured_v2dt_sq_hist;
+		state.total_wall_time_captured = total_wall_time_captured;
+		state.total_wall_time_not_captured = total_wall_time_not_captured;
+		state.total_rk45_steps_captured = static_cast<uint64_t>(total_rk45_steps_captured);
+		state.total_rk45_steps_not_captured = static_cast<uint64_t>(total_rk45_steps_not_captured);
+		std::copy(wall_time_hist_captured.begin(), wall_time_hist_captured.end(), state.wall_time_hist_captured.begin());
+		std::copy(wall_time_hist_not_captured.begin(), wall_time_hist_not_captured.end(), state.wall_time_hist_not_captured.begin());
+		state.wall_time_overflow_captured = static_cast<uint64_t>(wall_time_overflow_captured);
+		state.wall_time_overflow_not_captured = static_cast<uint64_t>(wall_time_overflow_not_captured);
+		std::copy(step_count_hist_captured.begin(), step_count_hist_captured.end(), state.step_count_hist_captured.begin());
+		std::copy(step_count_hist_not_captured.begin(), step_count_hist_not_captured.end(), state.step_count_hist_not_captured.begin());
+		state.step_count_overflow_captured = static_cast<uint64_t>(step_count_overflow_captured);
+		state.step_count_overflow_not_captured = static_cast<uint64_t>(step_count_overflow_not_captured);
+		state.evaporation_records = evaporation_records;
 		return state;
 	};
 
 	auto try_write_ready_snapshots = [&](int max_snapshot_index)
 	{
 		for(int snapshot_index = 1; snapshot_index <= max_snapshot_index; snapshot_index++)
-			Try_Write_Merged_Snapshot(snapshot_root, rank_snapshot_dir, snapshot_index, snapshot_interval, mpi_processes, snapshot_run_id);
+			Try_Write_Merged_Snapshot(snapshot_root, rank_snapshot_dir, snapshot_index, snapshot_interval, mpi_processes, snapshot_run_id, snapshot_mass_gev, snapshot_sigma_cm2);
 	};
 
 	auto publish_checkpoint_snapshots = [&]()
@@ -596,34 +960,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 	double sigma_cm2 = In_Units(DM.Sigma_Proton(), cm * cm);
 
 	auto write_header = [&](std::ofstream& f) {
-		f << "# DM_mass_GeV = " << std::scientific << std::setprecision(6) << mass_gev << "\n";
-		f << "# DM_sigma_cm2 = " << std::scientific << std::setprecision(6) << sigma_cm2 << "\n";
-		f << "# total_trajectories = " << number_of_trajectories << "\n";
-		f << "# captured_particles = " << number_of_captured_particles << "\n";
-		double p_cap = Capture_Ratio();
-		f << "# capture_rate = " << std::fixed << std::setprecision(8) << p_cap << "\n";
-		// Capture rate error (Wilson interval, 95% CL)
-		{
-			double N = static_cast<double>(number_of_trajectories);
-			double p = p_cap;
-			double z = 1.96;
-			double sigma_p = (N > 0) ? sqrt(p * (1.0 - p) / N) : 0.0;
-			f << "# capture_rate_err = " << std::fixed << std::setprecision(8) << sigma_p << "\n";
-			if(N > 0)
-			{
-				double denom = 1.0 + z * z / N;
-				double center = p + z * z / (2.0 * N);
-				double spread = z * sqrt(p * (1.0 - p) / N + z * z / (4.0 * N * N));
-				double ci_lower = (center - spread) / denom;
-				double ci_upper = (center + spread) / denom;
-				if(ci_lower < 0.0) ci_lower = 0.0;
-				if(ci_upper > 1.0) ci_upper = 1.0;
-				f << "# capture_rate_CI_95_lower = " << std::fixed << std::setprecision(8) << ci_lower << "\n";
-				f << "# capture_rate_CI_95_upper = " << std::fixed << std::setprecision(8) << ci_upper << "\n";
-			}
-		}
-		if(early_stopped)
-			f << "# EARLY_STOP: max_trajectories reached\n";
+		Write_Report_Header(f, mass_gev, sigma_cm2, number_of_trajectories, number_of_captured_particles, early_stopped);
 	};
 
 	// 1. Captured bincount

@@ -1,5 +1,7 @@
 #include "gtest/gtest.h"
 
+#include <cmath>
+
 #include "libphysica/Natural_Units.hpp"
 
 #include "obscura/DM_Halo_Models.hpp"
@@ -182,6 +184,29 @@ TEST(TestSimulationTrajectory, TestRungeKuttaStep)
 	EXPECT_GT(propagator.Current_Time(), event.time);
 	EXPECT_GT(propagator.Current_Radius(), event.Radius());
 	EXPECT_LT(propagator.Current_Speed(), event.Speed());
+}
+
+TEST(TestSimulationTrajectory, TestRungeKuttaZeroErrorStepGrowthIsBounded)
+{
+	// ASSERT
+	double t = 0.0;
+	libphysica::Vector r({17.0 * km, 0.0, 0.0});
+	libphysica::Vector v({0.0, km / sec, 0.0});
+	Event event(t, r, v);
+	Free_Particle_Propagator propagator(event);
+	double initial_timestep = propagator.time_step;
+
+	// ACT
+	for(int i = 0; i < 3; i++)
+		propagator.Runge_Kutta_45_Step(0.0);
+
+	// ASSERT
+	EXPECT_TRUE(std::isfinite(propagator.Current_Time()));
+	EXPECT_TRUE(std::isfinite(propagator.time_step));
+	EXPECT_LT(propagator.Current_Time(), 100.0 * initial_timestep);
+	EXPECT_LE(propagator.time_step, 64.0 * initial_timestep);
+	EXPECT_GT(propagator.Current_Radius(), 0.0);
+	EXPECT_GT(propagator.Current_Speed(), 0.0);
 }
 
 TEST(TestSimulationTrajectory, TestPropagatorCurrentRadius)

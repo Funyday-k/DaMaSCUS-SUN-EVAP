@@ -18,6 +18,41 @@ namespace DaMaSCUS_SUN
 
 using namespace libphysica::natural_units;
 
+namespace
+{
+constexpr double RK45_MIN_STEP_FACTOR = 0.1;
+constexpr double RK45_MAX_STEP_FACTOR = 4.0;
+
+bool RK45_Errors_Within_Tolerance(const double errors[3], const double tolerances[3])
+{
+	for(int i = 0; i < 3; i++)
+	{
+		if(!std::isfinite(errors[i]) || errors[i] > tolerances[i])
+			return false;
+	}
+
+	return true;
+}
+
+double RK45_Next_Step_Size(double current_step, const double errors[3], const double tolerances[3])
+{
+	double factor = RK45_MAX_STEP_FACTOR;
+
+	for(int i = 0; i < 3; i++)
+	{
+		if(!std::isfinite(errors[i]) || errors[i] <= 0.0)
+			continue;
+
+		const double candidate = 0.84 * pow(tolerances[i] / errors[i], 0.25);
+		if(std::isfinite(candidate))
+			factor = std::min(factor, candidate);
+	}
+
+	factor = std::max(RK45_MIN_STEP_FACTOR, std::min(factor, RK45_MAX_STEP_FACTOR));
+	return factor * current_step;
+}
+}
+
 // 1. Result of one trajectory
 Trajectory_Result::Trajectory_Result(const Event& event_ini, const Event& event_final, unsigned long int nScat, unsigned long int rk45_steps, TrajectoryBincount bc)
 : initial_event(event_ini), final_event(event_final), number_of_scatterings(nScat), total_rk45_steps(rk45_steps), bincount(std::move(bc))
@@ -490,17 +525,11 @@ void Free_Particle_Propagator::Runge_Kutta_45_Step(Solar_Model& solar_model)
 
 	// Error and adapting the time step (B: 栈数组替代堆分配vector)
 	double errors[3] = {fabs(radius_5 - radius_4), fabs(v_radial_5 - v_radial_4), fabs(phi_5 - phi_4)};
-	double delta = 1e30;
-	for(int i = 0; i < 3; i++)
-	{
-		double d = 0.84 * pow(error_tolerances[i] / errors[i], 0.25);
-		if(d < delta) delta = d;
-	}
-	double time_step_new = delta * time_step;
+	double time_step_new = RK45_Next_Step_Size(time_step, errors, error_tolerances);
 
 	// Check if errors fall below the tolerance
 	// 自适应步长方法：根据误差调整 time_step
-	if(errors[0] < error_tolerances[0] && errors[1] < error_tolerances[1] && errors[2] < error_tolerances[2])
+	if(RK45_Errors_Within_Tolerance(errors, error_tolerances))
 	{
 		time	  = time + time_step;
 		radius	  = radius_4;
@@ -562,15 +591,9 @@ void Free_Particle_Propagator::Runge_Kutta_45_Step(double constant_mass)
 	double phi_5	  = phi + 16.0 / 135.0 * k_p[0] + 6656.0 / 12825.0 * k_p[2] + 28561.0 / 56430.0 * k_p[3] - 9.0 / 50.0 * k_p[4] + 2.0 / 55.0 * k_p[5];
 
 	double errors[3] = {fabs(radius_5 - radius_4), fabs(v_radial_5 - v_radial_4), fabs(phi_5 - phi_4)};
-	double delta = 1e30;
-	for(int i = 0; i < 3; i++)
-	{
-		double d = 0.84 * pow(error_tolerances[i] / errors[i], 0.25);
-		if(d < delta) delta = d;
-	}
-	double time_step_new = delta * time_step;
+	double time_step_new = RK45_Next_Step_Size(time_step, errors, error_tolerances);
 
-	if(errors[0] < error_tolerances[0] && errors[1] < error_tolerances[1] && errors[2] < error_tolerances[2])
+	if(RK45_Errors_Within_Tolerance(errors, error_tolerances))
 	{
 		time	  = time + time_step;
 		radius	  = radius_4;

@@ -164,6 +164,10 @@ std::string Format_Rank_Status(const Rank_Snapshot_State& state)
 		       << ", traj_wall=" << state.current_trajectory_wall_sec << "s"
 		       << ", traj_physical=" << state.current_trajectory_physical_sec << "s";
 	}
+	else if(!state.done)
+	{
+		stream << ", next_traj=" << (state.local_total + 1);
+	}
 
 	stream << ")";
 	return stream.str();

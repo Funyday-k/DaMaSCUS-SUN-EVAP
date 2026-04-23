@@ -175,14 +175,12 @@ void Configuration::Import_Parameter_Scan_Parameter()
 	{
 		try
 		{
-			const Setting& thresholds = config.lookup("snapshot_time_thresholds");
-			for(int i = 0; i < thresholds.getLength(); i++)
-				snapshot_config.time_thresholds.push_back((double)thresholds[i]);
+			double interval = config.lookup("snapshot_interval");
+			snapshot_config.interval_seconds = interval;
 		}
 		catch(const SettingNotFoundException& nfex)
 		{
-			// Default thresholds
-			snapshot_config.time_thresholds = {1000.0, 10000.0, 100000.0};
+			snapshot_config.interval_seconds = 60.0;  // default: 60 seconds
 		}
 	}
 

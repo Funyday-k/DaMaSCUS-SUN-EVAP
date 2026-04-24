@@ -300,14 +300,35 @@ std::string Snapshot_Text_File_Path(const std::string& snapshot_root, int snapsh
 	return snapshot_root + "snapshot_" + std::to_string(Snapshot_Time_Label_Seconds(snapshot_index, interval_seconds)) + "s.txt";
 }
 
-std::string Snapshot_Status_File_Path(const std::string& snapshot_root, int snapshot_index, double interval_seconds)
+void Write_Snapshot_Diagnostics(std::ofstream& file, int snapshot_index, double interval_seconds, int caller_rank, const Snapshot_Load_Diagnostics& diagnostics, bool merged)
 {
-	return snapshot_root + "snapshot_" + std::to_string(Snapshot_Time_Label_Seconds(snapshot_index, interval_seconds)) + "s_status.txt";
+	file << "# snapshot_status = " << (merged ? "merged" : "waiting") << "\n";
+	file << "# snapshot_target_wall_time_s = " << Snapshot_Time_Label_Seconds(snapshot_index, interval_seconds) << "\n";
+	file << "# snapshot_interval_s = " << std::fixed << std::setprecision(3) << interval_seconds << "\n";
+	file << "# attempted_by_rank = " << caller_rank << "\n";
+	file << "# ready_ranks = " << diagnostics.ready_ranks << " / " << diagnostics.per_rank_status.size() << "\n";
+	file << "#\n";
+	file << "# rank_index  source_or_wait_reason\n";
+	for(size_t rank = 0; rank < diagnostics.per_rank_status.size(); rank++)
+		file << rank << "\t" << diagnostics.per_rank_status[rank] << "\n";
 }
 
-std::string Snapshot_Report_File_Path(const std::string& snapshot_root, int snapshot_index, double interval_seconds, const std::string& suffix)
+bool Snapshot_Text_File_Is_Merged(const std::string& path)
 {
-	return snapshot_root + "snapshot_" + std::to_string(Snapshot_Time_Label_Seconds(snapshot_index, interval_seconds)) + "s_" + suffix + ".txt";
+	std::ifstream file(path);
+	if(!file.is_open())
+		return false;
+
+	std::string line;
+	while(std::getline(file, line))
+	{
+		if(line == "# snapshot_status = merged")
+			return true;
+		if(!line.empty() && line[0] != '#')
+			break;
+	}
+
+	return false;
 }
 
 std::string Rank_Snapshot_Checkpoint_Path(const std::string& rank_snapshot_dir, int rank, int snapshot_index, double interval_seconds)
@@ -488,19 +509,11 @@ bool Read_Rank_Snapshot_State(const std::string& path, uint64_t expected_run_id,
 	return state.run_id == expected_run_id;
 }
 
-bool Write_Snapshot_Status_File(const std::string& snapshot_root, int snapshot_index, double interval_seconds, int caller_rank, const Snapshot_Load_Diagnostics& diagnostics, bool merged)
+bool Write_Snapshot_Text_Status(const std::string& snapshot_root, int snapshot_index, double interval_seconds, int caller_rank, const Snapshot_Load_Diagnostics& diagnostics, bool merged)
 {
-	return Write_Text_File_Atomically(Snapshot_Status_File_Path(snapshot_root, snapshot_index, interval_seconds), snapshot_index * 1000 + caller_rank, [&](std::ofstream& file)
+	return Write_Text_File_Atomically(Snapshot_Text_File_Path(snapshot_root, snapshot_index, interval_seconds), snapshot_index * 1000 + caller_rank, [&](std::ofstream& file)
 	{
-		file << "# snapshot_status = " << (merged ? "merged" : "waiting") << "\n";
-		file << "# snapshot_target_wall_time_s = " << Snapshot_Time_Label_Seconds(snapshot_index, interval_seconds) << "\n";
-		file << "# snapshot_interval_s = " << std::fixed << std::setprecision(3) << interval_seconds << "\n";
-		file << "# attempted_by_rank = " << caller_rank << "\n";
-		file << "# ready_ranks = " << diagnostics.ready_ranks << " / " << diagnostics.per_rank_status.size() << "\n";
-		file << "#\n";
-		file << "# rank_index  source_or_wait_reason\n";
-		for(size_t rank = 0; rank < diagnostics.per_rank_status.size(); rank++)
-			file << rank << "\t" << diagnostics.per_rank_status[rank] << "\n";
+		Write_Snapshot_Diagnostics(file, snapshot_index, interval_seconds, caller_rank, diagnostics, merged);
 	});
 }
 
@@ -619,10 +632,12 @@ bool Load_Snapshot_Report_State(const std::string& rank_snapshot_dir, int snapsh
 	return all_ranks_ready;
 }
 
-bool Write_Snapshot_Report_Files(const std::string& snapshot_root, int snapshot_index, double interval_seconds, double mass_gev, double sigma_cm2, const Snapshot_Report_State& report)
+bool Write_Snapshot_Report_File(const std::string& snapshot_root, int snapshot_index, double interval_seconds, double mass_gev, double sigma_cm2, const Snapshot_Report_State& report, int caller_rank, const Snapshot_Load_Diagnostics& diagnostics)
 {
 	if(!Write_Text_File_Atomically(Snapshot_Text_File_Path(snapshot_root, snapshot_index, interval_seconds), snapshot_index, [&](std::ofstream& file)
 	{
+		Write_Snapshot_Diagnostics(file, snapshot_index, interval_seconds, caller_rank, diagnostics, true);
+		file << "#\n";
 		file << "# Cumulative snapshot report\n";
 		Write_Report_Header(file, mass_gev, sigma_cm2, report.total_trajectories, report.captured_particles, false, report.snapshot_time_label, report.snapshot_interval_seconds);
 
@@ -664,40 +679,6 @@ bool Write_Snapshot_Report_Files(const std::string& snapshot_root, int snapshot_
 	}))
 		return false;
 
-	if(!Write_Text_File_Atomically(Snapshot_Report_File_Path(snapshot_root, snapshot_index, interval_seconds, "captured_bincount"), snapshot_index, [&](std::ofstream& file)
-	{
-		Write_Report_Header(file, mass_gev, sigma_cm2, report.total_trajectories, report.captured_particles, false, report.snapshot_time_label, report.snapshot_interval_seconds);
-		file << "# bin_index  Sigma_dt[s]  Sigma_v2dt[km2/s]  err_dt[s]  err_v2dt[km2/s]\n";
-		double N_cap = static_cast<double>(report.captured_particles);
-		for(int bin = 0; bin < NUM_BINS; bin++)
-		{
-			double err_dt = Snapshot_Bin_Error(report.captured_dt_hist[bin], report.captured_dt_sq_hist[bin], N_cap);
-			double err_v2dt = Snapshot_Bin_Error(report.captured_v2dt_hist[bin], report.captured_v2dt_sq_hist[bin], N_cap);
-
-			file << bin << "\t" << std::scientific << std::setprecision(10)
-			     << report.captured_dt_hist[bin] << "\t" << report.captured_v2dt_hist[bin]
-			     << "\t" << err_dt << "\t" << err_v2dt << "\n";
-		}
-	}))
-		return false;
-
-	if(!Write_Text_File_Atomically(Snapshot_Report_File_Path(snapshot_root, snapshot_index, interval_seconds, "not_captured_bincount"), snapshot_index, [&](std::ofstream& file)
-	{
-		Write_Report_Header(file, mass_gev, sigma_cm2, report.total_trajectories, report.captured_particles, false, report.snapshot_time_label, report.snapshot_interval_seconds);
-		file << "# bin_index  Sigma_dt[s]  Sigma_v2dt[km2/s]  err_dt[s]  err_v2dt[km2/s]\n";
-		double N_nc = static_cast<double>(report.total_trajectories - report.captured_particles);
-		for(int bin = 0; bin < NUM_BINS; bin++)
-		{
-			double err_dt = Snapshot_Bin_Error(report.not_captured_dt_hist[bin], report.not_captured_dt_sq_hist[bin], N_nc);
-			double err_v2dt = Snapshot_Bin_Error(report.not_captured_v2dt_hist[bin], report.not_captured_v2dt_sq_hist[bin], N_nc);
-
-			file << bin << "\t" << std::scientific << std::setprecision(10)
-			     << report.not_captured_dt_hist[bin] << "\t" << report.not_captured_v2dt_hist[bin]
-			     << "\t" << err_dt << "\t" << err_v2dt << "\n";
-		}
-	}))
-		return false;
-
 	return true;
 }
 
@@ -735,7 +716,7 @@ std::string Format_Rank_Status(const Rank_Snapshot_State& state)
 
 bool Try_Write_Merged_Snapshot(const std::string& snapshot_root, const std::string& rank_snapshot_dir, int snapshot_index, double interval_seconds, int mpi_processes, uint64_t run_id, double mass_gev, double sigma_cm2, int caller_rank)
 {
-	if(Path_Exists(Snapshot_Text_File_Path(snapshot_root, snapshot_index, interval_seconds)))
+	if(Snapshot_Text_File_Is_Merged(Snapshot_Text_File_Path(snapshot_root, snapshot_index, interval_seconds)))
 	{
 		Cleanup_Snapshot_Checkpoints(rank_snapshot_dir, snapshot_index, interval_seconds, mpi_processes);
 		return true;
@@ -745,14 +726,13 @@ bool Try_Write_Merged_Snapshot(const std::string& snapshot_root, const std::stri
 	Snapshot_Load_Diagnostics diagnostics;
 	if(!Load_Snapshot_Report_State(rank_snapshot_dir, snapshot_index, interval_seconds, mpi_processes, run_id, report, &diagnostics))
 	{
-		Write_Snapshot_Status_File(snapshot_root, snapshot_index, interval_seconds, caller_rank, diagnostics, false);
+		Write_Snapshot_Text_Status(snapshot_root, snapshot_index, interval_seconds, caller_rank, diagnostics, false);
 		return false;
 	}
 
-	if(!Write_Snapshot_Report_Files(snapshot_root, snapshot_index, interval_seconds, mass_gev, sigma_cm2, report))
+	if(!Write_Snapshot_Report_File(snapshot_root, snapshot_index, interval_seconds, mass_gev, sigma_cm2, report, caller_rank, diagnostics))
 		return false;
 
-	Write_Snapshot_Status_File(snapshot_root, snapshot_index, interval_seconds, caller_rank, diagnostics, true);
 	Cleanup_Snapshot_Checkpoints(rank_snapshot_dir, snapshot_index, interval_seconds, mpi_processes);
 	return true;
 }

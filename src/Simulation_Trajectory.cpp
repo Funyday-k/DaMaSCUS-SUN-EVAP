@@ -256,12 +256,6 @@ bool Trajectory_Simulator::Propagate_Freely(Event& current_event, obscura::DM_Pa
 			success = true;
 	}
 
-	// Accumulate the last step using the last known dt
-	if(prev_dt_sec > 0.0)
-	{
-		Accumulate_Bincount_Step(prev_r_km, prev_v2_km2s2, prev_dt_sec);
-	}
-
 	// Accumulate RK45 steps for this Propagate_Freely call
 	total_rk45_steps_current_traj += time_steps;
 
@@ -460,6 +454,10 @@ double Free_Particle_Propagator::dr_dt(double v)
 
 double Free_Particle_Propagator::dv_dt(double r, double mass)
 {
+	// 防止 RK45 中间阶段 r_i ≤ 0（向内飞越球心时的数值越界）
+	// 导致离心项 L²/r³ 符号翻转从而使误差发散、步长无限缩小。
+	// 1 km 远小于任何真实轨迹的转折半径（~10⁴ km），不影响物理结果。
+	if(r < 1.0 * km) r = 1.0 * km;
 	return angular_momentum * angular_momentum / r / r / r - G_Newton * mass / r / r;
 }
 
@@ -543,8 +541,27 @@ void Free_Particle_Propagator::Runge_Kutta_45_Step(Solar_Model& solar_model)
 	}
 	else
 	{
-		time_step = time_step_new;
-		// Loop continues with smaller time_step (was recursive call before Q1 fix)
+		// 绝对最小步长保护：防止步长无限缩小导致死循环
+		// 当粒子轨迹中间阶段 r_i 为负值时（角动量 L≠0 且接近 r≈0），
+		// dv_dt = L²/r³ 会发散，误差无法满足容差，步长每次乘 0.1 直到下溢。
+		// 强制接受：确保内层循环始终能返回，snapshot callback 才能被触发。
+		static const double abs_min_step = 1.0e-8 * sec;  // 10 纳秒物理时间下限
+		if(time_step_new < abs_min_step)
+		{
+			time     = time + abs_min_step;
+			radius   = radius_4;
+			if(radius < 0.0)
+				radius = 0.0;
+			v_radial = v_radial_4;
+			phi      = phi_4;
+			time_step = abs_min_step;
+			accepted  = true;
+		}
+		else
+		{
+			time_step = time_step_new;
+			// Loop continues with smaller time_step (was recursive call before Q1 fix)
+		}
 	}
   }   // end while(!accepted)
 }
@@ -606,7 +623,22 @@ void Free_Particle_Propagator::Runge_Kutta_45_Step(double constant_mass)
 	}
 	else
 	{
-		time_step = time_step_new;
+		static const double abs_min_step = 1.0e-8 * sec;  // 10 纳秒物理时间下限（同 Solar Model 版本）
+		if(time_step_new < abs_min_step)
+		{
+			time     = time + abs_min_step;
+			radius   = radius_4;
+			if(radius < 0.0)
+				radius = 0.0;
+			v_radial = v_radial_4;
+			phi      = phi_4;
+			time_step = abs_min_step;
+			accepted  = true;
+		}
+		else
+		{
+			time_step = time_step_new;
+		}
 	}
   }
 }

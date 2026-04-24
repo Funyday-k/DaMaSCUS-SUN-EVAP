@@ -806,6 +806,12 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 	std::string rank_snapshot_dir;
 	uint64_t snapshot_run_id = 0;
 	int next_snapshot_index = 1;
+	if(snapshot_cfg.enabled && mpi_rank == 0 && snapshot_cfg.max_trajectory_wall_time_sec <= 0.0)
+		std::cerr << "Warning in Generate_Data(): snapshot_enabled=true but max_trajectory_wall_time_sec="
+		          << snapshot_cfg.max_trajectory_wall_time_sec
+		          << " disables the per-trajectory wall-time guard. A single slow trajectory can keep snapshot files in waiting status. "
+		          << "Consider setting max_trajectory_wall_time_sec to a finite value below snapshot_interval="
+		          << snapshot_interval << " s." << std::endl;
 	if(snapshot_cfg.enabled)
 	{
 		snapshot_root = g_top_level_dir + "results_" + std::to_string(log10(In_Units(DM.mass, GeV))) + "_" + std::to_string(log10(In_Units(DM.Sigma_Proton(), cm * cm))) + "/snapshot/";

@@ -209,6 +209,35 @@ TEST(TestSimulationTrajectory, TestRungeKuttaZeroErrorStepGrowthIsBounded)
 	EXPECT_GT(propagator.Current_Speed(), 0.0);
 }
 
+// Regression guard: before the non-finite-error fix, a RK stage that produced
+// NaN errors caused RK45_Next_Step_Size to grow the step geometrically and the
+// inner while(!accepted) loop spun forever, hanging one MPI rank and deadlocking
+// the snapshot / MPI_Barrier path (observed on 0.5 GeV runs at the 300 s snapshot).
+// This test seeds the propagator with a NaN mass so every derivative becomes NaN,
+// then checks that the step returns in bounded time and never pollutes public state
+// with non-finite values.
+TEST(TestSimulationTrajectory, TestRungeKuttaHandlesNonFiniteDerivativesWithoutHanging)
+{
+	double t = 0.0;
+	libphysica::Vector r({17.0 * km, 0.0, 0.0});
+	libphysica::Vector v({0.0, km / sec, 0.0});
+	Event event(t, r, v);
+	Free_Particle_Propagator propagator(event);
+
+	// ACT: a NaN mass makes every dv/dt NaN, hence every stage and every error NaN.
+	const double nan_mass = std::nan("");
+	for(int i = 0; i < 5; i++)
+		propagator.Runge_Kutta_45_Step(nan_mass);
+
+	// ASSERT: propagator must still expose finite public state and not have
+	// exploded the time step to infinity.
+	EXPECT_TRUE(std::isfinite(propagator.Current_Time()));
+	EXPECT_TRUE(std::isfinite(propagator.time_step));
+	EXPECT_TRUE(std::isfinite(propagator.Current_Radius()));
+	EXPECT_TRUE(std::isfinite(propagator.Current_Speed()));
+	EXPECT_GE(propagator.Current_Radius(), 0.0);
+}
+
 TEST(TestSimulationTrajectory, TestPropagatorCurrentRadius)
 {
 	// ASSERT

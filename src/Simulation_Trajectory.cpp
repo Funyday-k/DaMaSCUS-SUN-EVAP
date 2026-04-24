@@ -22,6 +22,10 @@ namespace
 {
 constexpr double RK45_MIN_STEP_FACTOR = 0.1;
 constexpr double RK45_MAX_STEP_FACTOR = 4.0;
+// 单次 Runge_Kutta_45_Step 内层 while(!accepted) 的最大重试次数。
+// 在正常物理场景下 <100 次即可收敛；设为 2000 是为了在极端数值情形下
+// 保证外层循环一定能在有限时间内拿回控制权，从而触发 snapshot 回调。
+constexpr int RK45_MAX_INNER_RETRIES = 2000;
 
 bool RK45_Errors_Within_Tolerance(const double errors[3], const double tolerances[3])
 {
@@ -36,11 +40,20 @@ bool RK45_Errors_Within_Tolerance(const double errors[3], const double tolerance
 
 double RK45_Next_Step_Size(double current_step, const double errors[3], const double tolerances[3])
 {
+	// 若任何一个 error 为 NaN/Inf，说明 RK 中间阶段出现数值崩溃。
+	// 此时必须让步长"缩小"而不是"放大"，否则接下来会继续崩，外层
+	// while(!accepted) 会陷入无限循环（见 DaMaSCUS-SUN-EVAP#rank1-stuck）。
+	for(int i = 0; i < 3; i++)
+	{
+		if(!std::isfinite(errors[i]))
+			return RK45_MIN_STEP_FACTOR * current_step;
+	}
+
 	double factor = RK45_MAX_STEP_FACTOR;
 
 	for(int i = 0; i < 3; i++)
 	{
-		if(!std::isfinite(errors[i]) || errors[i] <= 0.0)
+		if(errors[i] <= 0.0)
 			continue;
 
 		const double candidate = 0.84 * pow(tolerances[i] / errors[i], 0.25);
@@ -186,11 +199,45 @@ bool Trajectory_Simulator::Propagate_Freely(Event& current_event, obscura::DM_Pa
 		double r_after = particle_propagator.Current_Radius();
 		double v_after = particle_propagator.Current_Speed();
 
+		if(!std::isfinite(r_after) || !std::isfinite(v_after) || !std::isfinite(actual_dt))
+		{
+			// 出现 NaN/Inf，轨迹已无法继续。向外传一次进度，再中止这条轨迹，
+			// 避免 rank 被单条坏轨迹卡住导致 snapshot / MPI_Barrier 死锁。
+			std::cerr << "\nWarning in Propagate_Freely(): non-finite state (rank " << current_mpi_rank
+			          << ", traj " << current_trajectory_id << ", r=" << r_after
+			          << ", v=" << v_after << ", dt=" << actual_dt << "). Aborting trajectory." << std::endl;
+			current_trajectory_physical_time_sec = In_Units(particle_propagator.Current_Time(), sec);
+			Publish_Snapshot_Progress();
+			total_rk45_steps_current_traj += time_steps;
+			current_event = particle_propagator.Event_In_3D();
+			return false;
+		}
+
 		if(v_after > v_max)
 		{
 			std::cerr << "\nWarning in Propagate_Freely(): DM speed exceeds the maximum of v_max = " << v_max << std::endl
 					  << "\tAbort simulation." << std::endl;
 			return false;
+		}
+
+		// 单条轨迹 wall-clock 预算：防止任何一条轨迹把整个 rank 永远拖住。
+		// 正常轨迹最多占几秒，阈值由 Trajectory_Simulator::max_trajectory_wall_time_sec 控制
+		// （默认 300s，=0 表示不限）。每 256 步查一次，开销可忽略。
+		if(max_trajectory_wall_time_sec > 0.0 && (time_steps & 0xFFu) == 0u)
+		{
+			double traj_wall = Current_Trajectory_Wall_Time_Seconds();
+			if(traj_wall > max_trajectory_wall_time_sec)
+			{
+				std::cerr << "\nWarning in Propagate_Freely(): trajectory wall-time budget exceeded (rank "
+				          << current_mpi_rank << ", traj " << current_trajectory_id << ", traj_wall="
+				          << traj_wall << "s > " << max_trajectory_wall_time_sec
+				          << "s). Aborting trajectory." << std::endl;
+				current_trajectory_physical_time_sec = In_Units(particle_propagator.Current_Time(), sec);
+				Publish_Snapshot_Progress();
+				total_rk45_steps_current_traj += time_steps;
+				current_event = particle_propagator.Event_In_3D();
+				return false;
+			}
 		}
 
 		// --- Online bincount accumulation (every RK45 step) ---
@@ -469,8 +516,10 @@ double Free_Particle_Propagator::dphi_dt(double r)
 void Free_Particle_Propagator::Runge_Kutta_45_Step(Solar_Model& solar_model)
 {
 	bool accepted = false;
+	int inner_iter = 0;
 	while(!accepted)
 	{
+	inner_iter++;
 	// RK coefficients:
 	double k_r[6];
 	double k_v[6];
@@ -546,14 +595,25 @@ void Free_Particle_Propagator::Runge_Kutta_45_Step(Solar_Model& solar_model)
 		// dv_dt = L²/r³ 会发散，误差无法满足容差，步长每次乘 0.1 直到下溢。
 		// 强制接受：确保内层循环始终能返回，snapshot callback 才能被触发。
 		static const double abs_min_step = 1.0e-8 * sec;  // 10 纳秒物理时间下限
-		if(time_step_new < abs_min_step)
+		const bool reached_min_step  = time_step_new < abs_min_step;
+		const bool reached_iter_cap  = inner_iter >= RK45_MAX_INNER_RETRIES;
+		if(reached_min_step || reached_iter_cap)
 		{
-			time     = time + abs_min_step;
-			radius   = radius_4;
-			if(radius < 0.0)
-				radius = 0.0;
-			v_radial = v_radial_4;
-			phi      = phi_4;
+			// NaN 守卫：若本轮 radius_4/v_radial_4/phi_4 已经是非有限数，
+			// 绝不能把 NaN 写回传播器状态，否则后续的每一步都会继续崩。
+			// 这时保留原状态，只把时间推进 abs_min_step，由外层 Propagate_Freely
+			// 的 is_finite 检查来中止本条轨迹。
+			const bool state_ok =
+			    std::isfinite(radius_4) && std::isfinite(v_radial_4) && std::isfinite(phi_4);
+			time = time + abs_min_step;
+			if(state_ok)
+			{
+				radius = radius_4;
+				if(radius < 0.0)
+					radius = 0.0;
+				v_radial = v_radial_4;
+				phi      = phi_4;
+			}
 			time_step = abs_min_step;
 			accepted  = true;
 		}
@@ -570,8 +630,10 @@ void Free_Particle_Propagator::Runge_Kutta_45_Step(Solar_Model& solar_model)
 void Free_Particle_Propagator::Runge_Kutta_45_Step(double constant_mass)
 {
 	bool accepted = false;
+	int inner_iter = 0;
 	while(!accepted)
 	{
+	inner_iter++;
 	double k_r[6];
 	double k_v[6];
 	double k_p[6];
@@ -624,14 +686,21 @@ void Free_Particle_Propagator::Runge_Kutta_45_Step(double constant_mass)
 	else
 	{
 		static const double abs_min_step = 1.0e-8 * sec;  // 10 纳秒物理时间下限（同 Solar Model 版本）
-		if(time_step_new < abs_min_step)
+		const bool reached_min_step  = time_step_new < abs_min_step;
+		const bool reached_iter_cap  = inner_iter >= RK45_MAX_INNER_RETRIES;
+		if(reached_min_step || reached_iter_cap)
 		{
-			time     = time + abs_min_step;
-			radius   = radius_4;
-			if(radius < 0.0)
-				radius = 0.0;
-			v_radial = v_radial_4;
-			phi      = phi_4;
+			const bool state_ok =
+			    std::isfinite(radius_4) && std::isfinite(v_radial_4) && std::isfinite(phi_4);
+			time = time + abs_min_step;
+			if(state_ok)
+			{
+				radius = radius_4;
+				if(radius < 0.0)
+					radius = 0.0;
+				v_radial = v_radial_4;
+				phi      = phi_4;
+			}
 			time_step = abs_min_step;
 			accepted  = true;
 		}

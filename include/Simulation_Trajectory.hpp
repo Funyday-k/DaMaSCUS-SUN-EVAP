@@ -51,6 +51,10 @@ struct SnapshotConfig
 {
 	bool enabled = false;
 	double interval_seconds = 60.0;  // wall-clock seconds between snapshots
+	// 单条轨迹最长允许的 wall-clock 时间（秒）；超过即中止该轨迹。
+	// 用于防止单条病态轨迹把整个 rank 卡死，从而导致 snapshot/MPI_Barrier 死锁。
+	// 0 表示不限制。默认 300 s。
+	double max_trajectory_wall_time_sec = 300.0;
 };
 
 // 1. Result of one trajectory
@@ -107,6 +111,11 @@ class Trajectory_Simulator
 	unsigned long int maximum_time_steps;
 	unsigned long int maximum_scatterings;
 	double maximum_distance;
+
+	// 单条轨迹的 wall-clock 时间上限（秒）。超过后 Propagate_Freely 会提前返回 false，
+	// 防止任一 rank 被单条病态轨迹卡死从而阻塞 snapshot / MPI_Barrier。
+	// 设为 0 表示不限制。默认 300 s 与 snapshot_interval 量级一致。
+	double max_trajectory_wall_time_sec = 300.0;
 
 	unsigned int current_mpi_rank;
 	unsigned long int current_trajectory_id;

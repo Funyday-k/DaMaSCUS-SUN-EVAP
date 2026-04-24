@@ -184,6 +184,17 @@ void Configuration::Import_Parameter_Scan_Parameter()
 		}
 	}
 
+	// Per-trajectory wall-time budget (seconds). 0 = unlimited. Optional in cfg.
+	try
+	{
+		double wall_budget = config.lookup("max_trajectory_wall_time_sec");
+		snapshot_config.max_trajectory_wall_time_sec = wall_budget;
+	}
+	catch(const SettingNotFoundException& nfex)
+	{
+		snapshot_config.max_trajectory_wall_time_sec = 300.0;  // default: 300 s (5 min)
+	}
+
 	if(run_mode != "Parameter point" && run_mode != "Parameter scan" && run_mode != "Custom")
 	{
 		std::cerr << "Error in Configuration::Import_Parameter_Scan_Parameter(): Run mode " << run_mode << " not recognized." << std::endl;

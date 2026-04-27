@@ -100,7 +100,7 @@ class Simulation_Data
 
 	void Configure(double initial_radius, unsigned int min_scattering, long int max_scattering, unsigned long int max_free_steps = 1e12);
 
-	void Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, SnapshotConfig snapshot_cfg = SnapshotConfig(), unsigned int fixed_seed = 0);
+	void Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, SnapshotConfig snapshot_cfg = SnapshotConfig(), unsigned int fixed_seed = 0, bool capture_mode = false);
 
 	// Output files
 	void Write_Output_Files(const std::string& output_dir, obscura::DM_Particle& DM);
@@ -114,6 +114,7 @@ class Simulation_Data
 	double Highest_Speed(unsigned int iso_ring = 0) const;
 
 	void Print_Summary(unsigned int mpi_rank = 0);
+	void Print_Capture_Mode_Summary(unsigned int mpi_rank = 0);
 };
 }	// namespace DaMaSCUS_SUN
 #endif

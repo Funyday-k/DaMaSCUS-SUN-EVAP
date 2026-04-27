@@ -128,7 +128,7 @@ void Trajectory_Result::Print_Summary(Solar_Model& solar_model, unsigned int mpi
 
 // 2. Simulator
 Trajectory_Simulator::Trajectory_Simulator(const Solar_Model& model, unsigned long int max_time_steps, long int max_scatterings, double max_distance)
-: solar_model(model), maximum_time_steps(max_time_steps), maximum_scatterings(max_scatterings), maximum_distance(max_distance), total_rk45_steps_current_traj(0), trajectory_in_progress(false), current_trajectory_physical_time_sec(0.0), current_mpi_rank(0), current_trajectory_id(0)
+: solar_model(model), terminate_on_capture(false), maximum_time_steps(max_time_steps), maximum_scatterings(max_scatterings), maximum_distance(max_distance), total_rk45_steps_current_traj(0), trajectory_in_progress(false), current_trajectory_physical_time_sec(0.0), current_mpi_rank(0), current_trajectory_id(0)
 {
 	std::random_device rd;
 	PRNG.seed(rd());
@@ -144,6 +144,11 @@ void Trajectory_Simulator::Publish_Snapshot_Progress() const
 void Trajectory_Simulator::Set_Snapshot_Progress_Callback(std::function<void(const Trajectory_Simulator&)> callback)
 {
 	snapshot_progress_callback = std::move(callback);
+}
+
+void Trajectory_Simulator::Enable_Capture_Mode(bool enabled)
+{
+	terminate_on_capture = enabled;
 }
 
 bool Trajectory_Simulator::Trajectory_In_Progress() const
@@ -184,6 +189,27 @@ void Trajectory_Simulator::Accumulate_Bincount_Step(double r_km, double v2_km2s2
 	if(bin_idx >= NUM_BINS) return;
 	current_bincount.dt_hist[bin_idx] += dt_sec;
 	current_bincount.v2dt_hist[bin_idx] += v2_km2s2 * dt_sec;
+}
+
+bool Trajectory_Simulator::Update_Capture_State(double radius, double speed, double time, obscura::DM_Particle& DM)
+{
+	double vesc = solar_model.Local_Escape_Speed(radius);
+	double E = 0.5 * DM.mass * (speed * speed - vesc * vesc);
+	double E_eV = In_Units(E, eV);
+
+	if(E_eV < 0.0)
+	{
+		double t_now_sec = In_Units(time, sec);
+		if(!current_bincount.is_captured)
+		{
+			current_bincount.is_captured = true;
+			current_bincount.t_first_negative = t_now_sec;
+		}
+		current_bincount.t_last_negative = t_now_sec;
+		return true;
+	}
+
+	return false;
 }
 
 bool Trajectory_Simulator::Propagate_Freely(Event& current_event, obscura::DM_Particle& DM)
@@ -247,38 +273,36 @@ bool Trajectory_Simulator::Propagate_Freely(Event& current_event, obscura::DM_Pa
 
 		// --- Online bincount accumulation (every RK45 step) ---
 		double t_now_sec = In_Units(particle_propagator.Current_Time(), sec);
-		double r_now_km  = In_Units(r_after, km);
-		double v_now_kms = In_Units(v_after, km / sec);
-		double v2_now    = v_now_kms * v_now_kms;
-
-		if(prev_time_sec >= 0.0)
+		if(!terminate_on_capture)
 		{
-			double dt_sec = t_now_sec - prev_time_sec;
-			// Accumulate previous step with forward difference dt
-			Accumulate_Bincount_Step(prev_r_km, prev_v2_km2s2, dt_sec);
-			prev_dt_sec = dt_sec;
-		}
+			double r_now_km  = In_Units(r_after, km);
+			double v_now_kms = In_Units(v_after, km / sec);
+			double v2_now    = v_now_kms * v_now_kms;
 
-		// Energy check for capture detection
-		double vesc = solar_model.Local_Escape_Speed(r_after);
-		double E = 0.5 * DM.mass * (v_after * v_after - vesc * vesc);
-		double E_eV = In_Units(E, eV);
-
-		if(E_eV <= 0.0)
-		{
-			if(!current_bincount.is_captured)
+			if(prev_time_sec >= 0.0)
 			{
-				current_bincount.is_captured = true;
-				current_bincount.t_first_negative = t_now_sec;
+				double dt_sec = t_now_sec - prev_time_sec;
+				// Accumulate previous step with forward difference dt
+				Accumulate_Bincount_Step(prev_r_km, prev_v2_km2s2, dt_sec);
+				prev_dt_sec = dt_sec;
 			}
-			current_bincount.t_last_negative = t_now_sec;
+
+			prev_time_sec = t_now_sec;
+			prev_r_km     = r_now_km;
+			prev_v2_km2s2 = v2_now;
 		}
 
-		prev_time_sec = t_now_sec;
-		prev_r_km     = r_now_km;
-		prev_v2_km2s2 = v2_now;
+		bool captured_now = Update_Capture_State(r_after, v_after, particle_propagator.Current_Time(), DM);
+
 		current_trajectory_physical_time_sec = t_now_sec;
 		Publish_Snapshot_Progress();
+
+		if(terminate_on_capture && captured_now)
+		{
+			total_rk45_steps_current_traj += time_steps;
+			current_event = particle_propagator.Event_In_3D();
+			return false;
+		}
 
 		// Check for scatterings and reflection
 		bool scattering = false;
@@ -457,6 +481,8 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
 		{
 			Scatter(current_event, DM);
 			number_of_scatterings++;
+			if(terminate_on_capture && Update_Capture_State(current_event.Radius(), current_event.Speed(), current_event.time, DM))
+				break;
 		}
 		else
 			break;
@@ -471,7 +497,7 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
 		double v_final = current_event.Speed();
 		double vesc_final = solar_model.Local_Escape_Speed(r_final);
 		double E_final = 0.5 * DM.mass * (v_final * v_final - vesc_final * vesc_final);
-		if(In_Units(E_final, eV) <= 0.0)
+		if(In_Units(E_final, eV) < 0.0)
 			current_bincount.truncated = true;
 	}
 

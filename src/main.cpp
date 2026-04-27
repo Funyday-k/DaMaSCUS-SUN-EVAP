@@ -45,13 +45,13 @@ int main(int argc, char* argv[])
 	////////////////////////////////////////////////////////////////////////
 
 	// Generate data for one parameter point specified in the configuration file.
-	if(cfg.run_mode == "Parameter point")
+	if(cfg.run_mode == "Parameter point" || cfg.run_mode == "Capture")
 	{
 		double u_min = 0.0;
 		Simulation_Data data_set(cfg.sample_size, cfg.max_trajectories, u_min, cfg.isoreflection_rings);
 		data_set.Configure(2.0 * rSun, 1, 1e11);
 		if(mpi_rank == 0)
-			std::cout << "Generate data..." << std::endl
+			std::cout << (cfg.capture_mode ? "Generate data in CAPTURE MODE..." : "Generate data...") << std::endl
 					  << "\tm_DM [MeV]:\t" << libphysica::Round(In_Units(cfg.DM->mass, MeV)) << "\t\t"
 					  << "sigma_p [cm2]:\t" << libphysica::Round(In_Units(cfg.DM->Get_Interaction_Parameter("Nuclei"), cm * cm)) << std::endl
 					  << "\tu_min [km/sec]:\t" << libphysica::Round(In_Units(u_min, km / sec)) << "\t\t"
@@ -59,15 +59,20 @@ int main(int argc, char* argv[])
 					  << std::endl;
 		SSM.Interpolate_Total_DM_Scattering_Rate(*cfg.DM, cfg.interpolation_points, cfg.interpolation_points);
 
-		data_set.Generate_Data(*cfg.DM, SSM, *cfg.DM_distr, cfg.snapshot_config);
-		data_set.Print_Summary(mpi_rank);
+		data_set.Generate_Data(*cfg.DM, SSM, *cfg.DM_distr, cfg.snapshot_config, 0, cfg.capture_mode);
+		if(cfg.capture_mode)
+			data_set.Print_Capture_Mode_Summary(mpi_rank);
+		else
+			data_set.Print_Summary(mpi_rank);
 
 		// Write output files (bincount + evaporation summary)
-		std::string output_path = g_top_level_dir + "results_" + std::to_string(log10(In_Units(cfg.DM->mass, GeV))) + "_" + std::to_string(log10(In_Units(cfg.DM->Sigma_Proton(), cm * cm))) + "/";
-		data_set.Write_Output_Files(output_path, *cfg.DM);
+		std::string output_prefix = cfg.capture_mode ? "results_capture_" : "results_";
+		std::string output_path = g_top_level_dir + output_prefix + std::to_string(log10(In_Units(cfg.DM->mass, GeV))) + "_" + std::to_string(log10(In_Units(cfg.DM->Sigma_Proton(), cm * cm))) + "/";
+		if(!cfg.capture_mode)
+			data_set.Write_Output_Files(output_path, *cfg.DM);
 
 		// Reflection spectrum (kept for compatibility)
-		if(cfg.isoreflection_rings == 1 && data_set.data[0].size() > 0)
+		if(!cfg.capture_mode && cfg.isoreflection_rings == 1 && data_set.data[0].size() > 0)
 		{
 			Reflection_Spectrum spectrum(data_set, SSM, *cfg.DM_distr, cfg.DM->mass, 0);
 			spectrum.Print_Summary(mpi_rank);

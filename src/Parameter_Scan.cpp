@@ -71,6 +71,17 @@ void Configuration::Import_Parameter_Scan_Parameter()
 		std::cerr << "No 'run_mode' setting in configuration file." << std::endl;
 		std::exit(EXIT_FAILURE);
 	}
+	capture_mode = (run_mode == "Capture");
+	try
+	{
+		bool cfg_capture_mode = config.lookup("capture_mode");
+		capture_mode = cfg_capture_mode;
+	}
+	catch(const SettingNotFoundException& nfex)
+	{
+	}
+	if(run_mode == "Capture")
+		capture_mode = true;
 	try
 	{
 		isoreflection_rings = config.lookup("isoreflection_rings");
@@ -195,7 +206,7 @@ void Configuration::Import_Parameter_Scan_Parameter()
 		snapshot_config.max_trajectory_wall_time_sec = 300.0;  // default: 300 s (5 min)
 	}
 
-	if(run_mode != "Parameter point" && run_mode != "Parameter scan" && run_mode != "Custom")
+	if(run_mode != "Parameter point" && run_mode != "Parameter scan" && run_mode != "Custom" && run_mode != "Capture")
 	{
 		std::cerr << "Error in Configuration::Import_Parameter_Scan_Parameter(): Run mode " << run_mode << " not recognized." << std::endl;
 		std::exit(EXIT_FAILURE);
@@ -326,6 +337,7 @@ void Configuration::Print_Summary(int mpi_rank)
 		std::cout << "DaMaSCUS-SUN options" << std::endl
 				  << std::endl
 				  << "\tRun mode:\t\t\t" << run_mode << std::endl
+				  << "\tCapture mode:\t\t\t" << (capture_mode ? "[x]" : "[ ]") << std::endl
 				  << "\tSample size:\t\t\t" << sample_size << std::endl
 				  << "\tSc. rate interpolation:\t\t" << ((interpolation_points > 0) ? "[x] (Grid: " + std::to_string(interpolation_points) + "×" + std::to_string(interpolation_points) + ")" : "[ ]") << std::endl;
 		if(run_mode == "Parameter point" && isoreflection_rings > 1)

@@ -74,28 +74,30 @@ $$\text{单粒子轨迹} = \sum_{i=0}^{N_\text{scat}} \left[ \text{自由传播}
 
 4. **引力传播**：太阳外部为纯Kepler（$1/r^2$）引力问题，内部需要考虑太阳质量分布 $M(r)$ 对引力场的修正。
 
-### 2.3 模拟的两种运行模式
+### 2.3 模拟的三种运行模式
 
 ```
                     ┌──────────────────────────────┐
                     │     DaMaSCUS-SUN 运行模式     │
                     └──────────┬───────────────────┘
                                │
-                ┌──────────────┴──────────────┐
-                │                             │
-     ┌──────────▼──────────┐      ┌───────────▼──────────┐
-     │   Parameter Point   │      │   Parameter Scan     │
-     │ (单参数点模拟)       │      │ (参数空间扫描)       │
-     └──────────┬──────────┘      └───────────┬──────────┘
-                │                              │
-     ┌──────────▼──────────┐      ┌───────────▼──────────┐
-     │ 生成反射谱           │      │ STA/Full 扫描算法    │
-     │ 计算微分DM通量       │      │ 计算p值网格          │
-     │ 输出探测率           │      │ 提取排斥极限曲线     │
-     └─────────────────────┘      └──────────────────────┘
+        ┌───────────────┬───────────────┬───────────────┐
+        │               │               │               │
+┌───────▼───────┐ ┌─────▼──────┐ ┌──────▼───────┐
+│ Parameter     │ │ Capture    │ │ Parameter    │
+│ Point         │ │ Mode       │ │ Scan         │
+│ 单参数点完整模拟│ │ 快速捕获率  │ │ 参数空间扫描  │
+└───────┬───────┘ └─────┬──────┘ └──────┬───────┘
+        │               │               │
+┌───────▼───────┐ ┌─────▼──────┐ ┌──────▼───────┐
+│ 生成bincount   │ │ E<0即停止   │ │ STA/Full扫描 │
+│ 蒸发时间统计   │ │ 只打印捕获率 │ │ 计算p值网格  │
+│ 可生成反射谱   │ │ 不写输出文件 │ │ 提取排斥曲线 │
+└───────────────┘ └────────────┘ └──────────────┘
 ```
 
 - **"Parameter Point" 模式**：对单一 $(m_\chi, \sigma)$ 参数点进行详细模拟，生成大量轨迹，输出反射速度谱和探测器信号率。
+- **Capture Mode 快速捕获率模式**：通过 `capture_mode = true` 或 `run_mode = "Capture"` 启用。轨迹一旦出现总能量 $E < 0$ 就立即终止并记为捕获；不写 `bincount`、蒸发、snapshot 或反射谱输出，只在终端打印捕获率和 95% Wilson 上下误差。
 - **"Parameter Scan" 模式**：在二维 $(m_\chi, \sigma)$ 参数空间中扫描，对每个点计算统计检验的p值，最终提取一定置信水平（如90% CL）下的排斥极限曲线。
 
 ---
@@ -110,8 +112,9 @@ $$\frac{dr}{dt} = v_r, \quad \frac{dv_r}{dt} = \frac{J^2}{r^3} - \frac{G_N M(r)}
 
 其中 $J = |\vec{r} \times \vec{v}|$ 为守恒角动量，$M(r)$ 为太阳在半径 $r$ 以内的包含质量（由AGSS09模型提供并内插）。
 
-**RK45 自适应步长控制**：
-- 采用 Fehlberg 系数的6阶段嵌入式方法，同时给出4阶和5阶近似解
+**RK45 自适应步长控制（当前代码：`Free_Particle_Propagator`）**：
+- 初始步长为 `0.1 s`。
+- 采用 Fehlberg 系数的6阶段嵌入式方法，同时给出4阶和5阶近似解。
 - 误差估计：$\Delta_i = |y_4^{(i)} - y_5^{(i)}|$，对三个分量分别设置容差：
 
 | 分量 | 容差 |
@@ -120,9 +123,12 @@ $$\frac{dr}{dt} = v_r, \quad \frac{dv_r}{dt} = \frac{J^2}{r^3} - \frac{G_N M(r)}
 | 径向速度 $v_r$ | $10^{-3}$ km/s |
 | 角度 $\phi$ | $10^{-7}$ rad |
 
-- 步长调整公式：$\delta t_\text{new} = 0.84 \times (\text{tol}/\text{err})^{1/4} \times \delta t_\text{old}$
-- **太阳内部**：步长受散射率约束，$\delta t \leq 0.1 / \Gamma_\text{total}(r, v)$
-- **太阳外部**：步长可自由增长（无散射事件）
+- 步长调整公式：$\delta t_\text{new} = 0.84 \times (\text{tol}/\text{err})^{1/4} \times \delta t_\text{old}$，并限制每次变化因子在 `[0.1, 4.0]`。
+- 若误差为 NaN/Inf，步长强制乘以 `0.1`，避免非有限误差导致步长发散。
+- 若内层尝试超过 `2000` 次，或新步长小于 `1.0e-8 s`，代码会强制接受一个最小步长，确保单个 RK45 步不会无限卡死。
+- **太阳内部**：步长还受散射率约束，$\delta t \leq 0.1 / \Gamma_\text{total}(r, v)$。
+- **太阳外部**：无散射事件，RK45 步长只由轨道误差控制；从 `1000 AU` 到 `2R_\odot` 的入射段，以及逃逸后到 `1 AU` 的传播，可用 `Hyperbolic_Kepler_Shift()` 做解析 Kepler 推进。
+- **单轨迹 wall-time 保护**：`max_trajectory_wall_time_sec` 默认 `300 s`，每 `256` 个 RK45 步检查一次；超过后中止该轨迹，避免 MPI rank 被病态轨迹长期卡住。设为 `0` 表示不限制。
 
 ### 3.2 弹性散射的蒙特卡洛采样
 
@@ -199,7 +205,7 @@ $$\xi = -\frac{\ln(u_0)}{\Gamma_\text{total}(r, v)}$$
 │  │  + Simulation_Utilities.cpp             │                      │
 │  │  - RK45自适应传播                        │                      │
 │  │  - 蒙特卡洛散射                          │                      │
-│  │  - 二进制轨迹记录                        │                      │
+│  │  - 在线bincount与捕获判定                 │                      │
 │  └──────────────────┬──────────────────────┘                      │
 │                ┌────┴────┐                                         │
 │           ┌────▼───┐ ┌──▼───┐                                     │
@@ -208,9 +214,9 @@ $$\xi = -\frac{\ln(u_0)}{\Gamma_\text{total}(r, v)}$$
 │                │        │                                          │
 │  ┌─────────────▼────────▼──────────────────┐                      │
 │  │         数据生成层 (Data_Generation)      │                      │
-│  │  - MPI环状通信, AllGather/AllReduce      │                      │
-│  │  - 轨迹统计与速度数据汇总                │                      │
-│  │  - 捕获粒子标记与重命名                  │                      │
+│  │  - MPI AllReduce/AllGather 汇总          │                      │
+│  │  - captured/not_captured统计             │                      │
+│  │  - Capture Mode快速捕获率                 │                      │
 │  └──────────────────┬──────────────────────┘                      │
 │                     │                                              │
 │  ┌──────────────────▼──────────────────────┐                      │
@@ -295,13 +301,23 @@ mpirun -n 32 ./DaMaSCUS-SUN config_Lingyu.cfg
 
 读取 `.cfg` 文件中的所有参数，包括：
 - 暗物质属性：质量 $m_\chi$，自旋，截面 $\sigma_p$（或 $\sigma_e$），相互作用类型（SI/SD/暗光子）
-- 运行参数：样本大小，输出目录，等反射环数
+- 运行参数：样本大小，最大轨迹数，输出目录，等反射环数
 - 暗光子专属参数：$\epsilon$（动能混合），$\alpha_D$（暗规范耦合），$m_{A'}$（介质子质量），形因子类型
-- 可选参数：`recording_step_override`（默认为0，即自动校准；设为正整数时固定每 N 步记录一次）
+- 可选数值模拟参数：`max_trajectories`（未设置时默认为 `sample_size * 1000`）、`snapshot_enabled`、`snapshot_interval`、`max_trajectory_wall_time_sec`
+- 快速捕获率参数：`capture_mode = true`（也可使用 `run_mode = "Capture"`）。该模式只用于估计捕获率，$E < 0$ 后立即停止当前轨迹，不写模拟输出文件。
+
+示例：
+
+```cfg
+run_mode = "Parameter point";
+capture_mode = true;
+sample_size = 1000;
+max_trajectories = 100000;
+```
 
 **全局配置变量**（`Parameter_Scan.cpp`）：
 - `g_top_level_dir`：从配置文件读取的输出目录
-- `g_recording_step_override`：记录步数覆盖（0=自动，>0=固定）
+- `g_max_trajectories`：从配置文件读取的最大轨迹数安全阀
 
 **太阳模型加载**（`Solar_Model.cpp`）：
 
@@ -328,9 +344,8 @@ while (未终止):
     1. 自由传播 Propagate_Freely()
        - RK45 积分 Kepler 方程组
        - 累积光学深度，触发散射或逃逸
-       - 基于步数记录轨迹数据（自校准记录间隔）
-       - 每个记录点计算能量 E = ½mχ(v² - v_esc²)
-       - 实时统计径向分布直方图 DMinBin[2000]
+       - 每个 RK45 步在线累积径向 bincount
+       - 每个 RK45 步计算 E = ½mχ(v² - v_esc²)
     2. if 散射被触发:
        Scatter()
        - 选择靶粒子 (Sample_Target)  
@@ -338,28 +353,21 @@ while (未终止):
        - 弹性碰撞 → 新暗物质速度 (New_DM_Velocity)
     3. 检查终止条件:
        - r > R_max 且 v > v_esc → 反射/自由逃逸
-       - E < 0 → 标记为捕获（记录负能量标志）
-       - 散射次数 > 最大值 → 强制终止
+       - 普通模式：E < 0 → 标记为捕获，但继续完整轨迹
+       - Capture Mode：E < 0 → 立即终止当前轨迹并计为捕获
+       - 散射次数达到 maximum_number_of_scatterings → 强制终止
+       - 自由传播步数达到 maximum_free_time_steps → 本段传播终止
+       - 速度超过 0.75c、非有限数值或单轨迹 wall-time 超限 → 中止该轨迹
 输出: Trajectory_Result {initial, final, N_scat}
 ```
 
-**轨迹数据记录**（二进制格式）：
+**在线统计与输出策略**：
 
-每条轨迹采用**基于步数的记录策略**（而非固定时间间隔），每隔 `recording_step_interval` 个 RK45 积分步记录一次快照到 `.dat` 文件。采用步数记录而非时间记录的原因是：RK45 自适应步长导致每步的 $\Delta t$ 变化很大，固定时间间隔采样会产生混叠（aliasing）伪影。
+当前 C++ 主模拟不再把每条轨迹写成 `.dat` 文件，而是在内存中在线累积径向箱计数。径向范围为 `[0, 2R_\odot)`，共 `2000` 个 bin，bin 宽约 `695.7 km`。每个 RK45 步用前一状态和当前步长累积：
 
-**记录间隔的确定**采用两级机制：
+$$\sum \Delta t,\qquad \sum v^2 \Delta t$$
 
-1. **运行时自校准**（默认模式）：初始阶段每10步记录一次；当检测到第2个近日点（$r$ 的局部极小值且 $r < 0.9 R_\odot$）时，计算轨道周期对应的步数 $N_\text{orbit}$，并设置 `recording_step_interval = max(1, N_orbit / 50)`，确保每个轨道周期记录约50个数据点。
-
-2. **手动覆盖**：配置文件中可通过 `recording_step_override` 参数指定固定的记录步数间隔（$> 0$ 时启用），跳过自校准阶段。
-
-输出格式为 8个 float32 值：
-
-$$[\text{time(s)}, x(\text{km}), y(\text{km}), z(\text{km}), v_x(\text{km/s}), v_y(\text{km/s}), v_z(\text{km/s}), E(\text{eV})]$$
-
-每条记录32字节。能量 $E$ 的计算公式为 $E = \frac{1}{2} m_\chi (v^2 - v_\text{esc}^2(r))$，负能量表示粒子被引力束缚（即捕获状态）。总存储量可达数百GB。
-
-**轨迹文件保存逻辑**：模拟结束后，仅保留包含负能量时段的轨迹文件（即被捕获的粒子），未捕获粒子的轨迹文件被自动删除。当前版本最多保存100,000条轨迹（旧版为50条）。
+普通模式按 captured / not_captured 分别累积 `bincount` 与每轨迹平方和，用于输出误差估计。Capture Mode 为了快速扫描捕获率，会跳过 `bincount`、蒸发记录、snapshot 和反射谱数据累积，只保留轨迹总数、捕获数和捕获率误差。
 
 ### 5.3 Phase 3: 粒子命运分类
 
@@ -371,17 +379,16 @@ $$[\text{time(s)}, x(\text{km}), y(\text{km}), z(\text{km}), v_x(\text{km/s}), v
 | **反射（Reflected）** | $N_\text{scat} \geq 1$，$v > v_\text{esc}$，$r > R_\odot$ | 散射后仍保持正能量并逃逸 |
 | **捕获（Captured）** | $E = \frac{1}{2}m_\chi(v^2 - v_\text{esc}^2) < 0$ | 散射后总能量为负，被引力束缚 |
 
-**样本计数逻辑**：只有通过质量门控（quality gate）的数据点才递增样本计数——即非捕获粒子且满足最低散射次数（$N_\text{scat} \geq 1$）和最低速度阈值（$v > 0.75 \times u_\text{min}$，用于 KDE 边界校正）的粒子。被捕获的粒子和自由粒子（未散射）不贡献样本计数。
+**样本计数逻辑**：`sample_size` 在当前实现中表示目标 captured 数量，而不是固定总入射轨迹数。每个 MPI rank 的目标捕获数为 `ceil(sample_size / N_ranks)`；总轨迹数由实际达到目标捕获数前经历的所有 free / reflected / captured 轨迹共同决定。`max_trajectories` 是安全阀，达到后提前停止并给出 `EARLY STOP` 标记。
 
 ### 5.4 Phase 4: MPI数据汇总
 
-**Data_Generation.cpp** 使用MPI环状通信协议协调各进程：
+**Data_Generation.cpp** 的 MPI 汇总方式：
 
-1. **环状传递**：进程 $i$ 将数据点计数发送给进程 $(i+1) \bmod N$，形成循环通信（`MPI_Isend` 非阻塞发送）
-2. **全局聚合**：`MPI_Allreduce` 求和所有进程的统计量（轨迹数、捕获数等）
-3. **数据收集**：`MPI_Allgatherv` 汇总所有进程的速度样本到全局数据集，使用自定义 `MPI_Datatype`（2×`MPI_DOUBLE`）
-4. **进度同步**：每10个进程中的第一个（`rank % 10 == 0`）打印进度条，通过 `MPI_Iprobe` 非阻塞检查全局完成状态
-5. **捕获统计**：模拟结束时输出捕获轨迹数和已删除（未捕获）轨迹数
+1. **独立采样**：各 rank 独立生成轨迹，直到达到本 rank 的目标捕获数或最大轨迹数。
+2. **全局聚合**：`MPI_Allreduce` 汇总轨迹数、捕获数、bincount、计算时间、RK45步数和 early-stop 标记。
+3. **蒸发记录收集**：普通模式用 `MPI_Allgather` / `MPI_Allgatherv` 汇总各 rank 的 `EvaporationRecord`。
+4. **Snapshot 合并**：启用 snapshot 时，各 rank 写 checkpoint，任意 rank 可尝试合并已就绪的 snapshot 报告。
 
 ### 5.5 Phase 5: 反射谱构建
 
@@ -444,55 +451,24 @@ $$s(r) = \eta_\text{ang}(r) \times \eta_\text{mult}(r) \times e^{-\tau(r)}$$
 
 $$\int \sum_i n_i \frac{m_\chi m_i}{(m_\chi + m_i)^2} \langle v_\text{rel} \rangle (T_\odot - T_\chi) e^{-m_\chi \phi / T_\chi} r^2 dr = 0$$
 
-### 6.2 轨迹蒸发分析 (`evaporation.py`)
+### 6.2 蒸发时间与径向统计（当前 C++ 在线输出）
 
-分析模拟产生的二进制轨迹数据，提取被捕获暗物质粒子的**束缚时间间隔**：
+普通 `Parameter point` 模式直接在 `Data_Generation.cpp` 中输出三类文件：
 
-1. 自动检测二进制轨迹文件的精度（float32 或 float64）
-2. 提取能量列 $E$，找出能量首次转负到最后为负的时间跨度
-3. 该时间跨度即暗物质被引力束缚的持续时间 $\Delta t_\text{bound}$
-4. 多进程并行处理（默认8进程），使用 `multiprocessing.Pool` 的 `imap_unordered()` 流式输出结果，避免内存累积
-5. 输出统计日志到 `evaporation/evaporation_{params}.log`
+- `bincount.txt`：captured 与 not_captured 的径向占据时间 $\sum \Delta t$、速度二阶矩 $\sum v^2\Delta t$，以及逐 bin 误差估计。
+- `evaporation_summary.txt`：每条 captured 轨迹的 `t_evap = t_last_negative - t_first_negative` 和 `truncated` 标记。
+- `computation_time_summary.txt`：captured / not_captured 轨迹的 wall-clock 时间与 RK45 步数统计。
 
-**物理意义**：束缚时间 $\Delta t_\text{bound}$ 反映了粒子在太阳引力势阱中停留的时间。将其与理论蒸发时标 $\tau_\text{evap} = 1/E_\odot$ 比较，可验证模拟结果是否与理论预期一致。
+`capture_rate`、`capture_rate_err` 和 `capture_rate_CI_95_lower/upper` 会写入这些文件头部；Capture Mode 不写这些文件，只在终端打印同类捕获率统计。
 
-### 6.3 径向箱计数与速度分布 (`bincount2.py`)
+### 6.3 Snapshot 输出
 
-将大规模轨迹数据（可达数十万条轨迹文件）统计为径向分布。**仅处理被捕获的轨迹**（能量 $E \leq 0$），跳过未束缚的轨道。
+若设置 `snapshot_enabled = true`，代码按 wall-clock 间隔输出累计 snapshot。相关参数为：
 
-**径向网格**：$r \in [0, 2R_\odot]$，分为2000个等距区间（`np.linspace(0, 2*rSun, 2001)`），$\Delta r \approx 695.7 \text{ km}$。
+- `snapshot_interval`：snapshot 间隔，默认 `60 s`。
+- `max_trajectory_wall_time_sec`：单条轨迹 wall-clock 上限，默认 `300 s`；用于避免某个 MPI rank 卡在单条轨迹上，导致 snapshot 一直处于 waiting 状态。
 
-**计算量**：
-- **直方图**：$h(r_j) = \sum_\text{traj} \sum_\text{steps} \Delta t_k \cdot \mathbb{1}[r_k \in \text{bin}_j]$（时间加权的径向占据频率，采用梯形法权重）
-- **速度二阶矩**：$\langle v^2 \rangle(r_j) = \frac{\sum \Delta t_k \cdot v_k^2 \cdot \mathbb{1}[r_k \in \text{bin}_j]}{\sum \Delta t_k \cdot \mathbb{1}[r_k \in \text{bin}_j]}$
-
-**并行化**：文件列表均分为批次（每进程约4批，以提高进度报告频率），每批由独立进程处理（8进程，从16进程降低以减少 Lustre MDS 元数据服务器竞争），120GB内存预算。使用 `multiprocessing.Pool` 的 `imap_unordered()` 流式处理，配合 `Value('i')` 共享计数器实时报告处理进度。使用 `np.searchsorted` 替代 `np.digitize` 进行 bin 索引计算（5-10×加速），`np.bincount` 进行 vectorized 累积。
-
-**输出文件**：
-- `total_bincount_{params}.txt`：径向直方图（bin索引、计数）
-- `capture_ratio_{params}.txt`：元数据（捕获/总数比例）
-- `total_v2_{params}.txt`：速度统计（bin索引、v²总和、计数、平均v²）
-
-**物理意义**：
-- 径向直方图反映被捕获暗物质在太阳中的空间密度分布 $n_\chi(r)$，可与理设LTE分布比较
-- $\langle v^2 \rangle(r)$ 反映暗物质的动力学温度，可与 $T_\chi$ 对比
-
-### 6.4 记录间隔查找表（硬编码于 `Simulation_Trajectory.cpp`）
-
-基于理论蒸发率生成的轨迹记录间隔查找表，直接硬编码为 `Get_Recording_Interval()` 函数中的96条静态表项：
-
-- **质量范围**：0.1, 0.5, 1.0, 2.0, 3.0, 4.0 GeV（log₁₀: -1.0 到 0.602060）
-- **截面范围**：$10^{-40}$ 到 $10^{-25}$ cm²（16个点）
-- **间隔范围**：[1, 1800] 秒，硬约束
-- **查找方法**：在 log₁₀(m, σ) 空间中的欧氏距离最近邻内插
-
-该查找表最初由 `generate_recording_table.py` 脚本生成（已不再包含在工作区中），公式为：
-
-$$\Delta t_\text{record} = \text{clamp}\left(\frac{\tau_\text{evap}}{N_\text{target}}, \, 1\text{s}, \, 1800\text{s}\right)$$
-
-其中 $\tau_\text{evap} = 1/E_\odot$ 为蒸发时标，$N_\text{target} = 10{,}000$ 为每条轨迹的目标数据点数。
-
-> **注意**：当前版本已改用基于步数的记录策略（见 5.2 节），该查找表仅作为参考。实际记录间隔由运行时自校准机制根据轨道周期动态确定。
+Snapshot 会合并各 rank 的当前进度，包括已完成轨迹的 captured / not_captured bincount，以及正在运行轨迹的临时 bincount。Capture Mode 会强制关闭 snapshot，因为该模式只需要终端捕获率。
 
 ---
 
@@ -506,21 +482,13 @@ $$\Delta t_\text{record} = \text{clamp}\left(\frac{\tau_\text{evap}}{N_\text{tar
 
 **物理影响**：内插引入的数值误差通常在百分之几以内。由于散射率变化平滑（位置和速度上均缓慢变化），双线性/样条内插精度足够。然而，在太阳核心区域（$r < 0.1 R_\odot$），温度和密度梯度陡峭，需要较密的径向网格（默认1000点）以保证精度。
 
-### 7.2 基于步数的自适应记录与运行时自校准
+### 7.2 在线统计替代逐轨迹文件
 
-**优化内容**：将原始的固定时间间隔记录改为**基于 RK45 积分步数的记录**，并通过运行时检测轨道周期自动校准记录频率。
+**优化内容**：将原始逐轨迹文件记录改为 C++ 内部在线统计。每个 RK45 步只更新当前轨迹的 `TrajectoryBincount`，轨迹结束后再按 captured / not_captured 汇总到全局数组。
 
-**校准算法**：
-1. 初始阶段：每10个积分步记录一次
-2. 检测第一次近日点通过（$r$ 的局部极小值且 $r < 0.9R_\odot$），记录步数 $N_1$
-3. 检测第二次近日点时，计算轨道周期步数 $N_\text{orbit} = N_2 - N_1$
-4. 设置 `recording_step_interval = max(1, N_orbit / 50)`，确保每个轨道周期约50个数据点
+**效率提升**：避免了大量小文件 I/O 和后处理扫描，MPI rank 之间只需要在模拟结束或 snapshot 边界合并聚合量。
 
-**效率提升**：相比固定时间间隔记录，基于步数的方法避免了 RK45 自适应步长导致的时间采样混叠（aliasing），且自校准机制无需预先知道轨道周期，适应不同参数点下截然不同的轨道动力学。
-
-**物理影响**：
-- 每个轨道周期~50个采样点满足 Nyquist 采样条件，能够捕获径向振荡的完整细节
-- 配置文件可通过 `recording_step_override` 参数手动覆盖，用于调试或特殊需求
+**物理影响**：径向统计仍按真实 RK45 步长加权，保留 $\sum \Delta t$ 与 $\sum v^2\Delta t$，可直接用于估计被捕获暗物质的径向分布与速度二阶矩。
 
 ### 7.3 太阳内外的步长策略分区
 
@@ -539,20 +507,19 @@ $$\Delta t_\text{record} = \text{clamp}\left(\frac{\tau_\text{evap}}{N_\text{tar
 - 在捕获粒子少时节省内存
 - 不影响物理结果，纯粹的工程改进
 
-### 7.5 轨迹保存数量与捕获过滤的调整
+### 7.5 在线 bincount 与 Capture Mode 快速统计
 
-**优化内容**：从原始的保存50条轨迹（`Data_Generation copy.cpp`）增加到100,000条（当前版本 `Data_Generation.cpp`）。同时新增**捕获过滤机制**：轨迹文件在写入磁盘后，根据能量符号判断是否被捕获：
+**优化内容**：当前主模拟不再依赖逐轨迹 `.dat` 文件保存/删除流程，而是在 C++ 内部在线累积 captured 与 not_captured 的径向 `bincount`、误差平方和、蒸发时间记录和计算时间统计。
 
-- 轨迹中出现负能量（`trajectory_has_negative_energy = true`）→ 保留文件，计入 `saved_trajectories_captured`
-- 未出现负能量 → 删除文件，计入 `saved_trajectories_deleted`
+当配置 `capture_mode = true` 或 `run_mode = "Capture"` 时，模拟只关心捕获率：任意轨迹第一次满足 $E < 0$ 就立即停止并计为 captured，同时跳过 `bincount`、蒸发记录、snapshot 和反射谱输出。
 
-**物理影响**：更多保存的捕获轨迹允许后续蒸发分析和径向分布统计提供更大、更有代表性的样本集。通过仅保留捕获轨迹的过滤策略，避免了对大量非捕获（反射/自由）轨迹文件的无效存储。
+**效率影响**：普通模式保留完整统计用于后处理；Capture Mode 避免了被捕获粒子后续长时间束缚轨道模拟，适合快速扫描多个参数点的捕获率。
 
-### 7.6 后处理并行化
+### 7.6 历史后处理脚本
 
-**优化内容**：`bincount2.py` 使用8进程并行（从16进程降低以减少 Lustre MDS 元数据服务器竞争），每批次独立处理约 $N / (8 \times 4)$ 个文件，120GB内存预算。
+`bincount2.py` 是早期逐轨迹文件工作流的后处理脚本，使用多进程并行读取轨迹文件并生成径向统计。当前主 C++ 模拟已经在线生成 `bincount.txt`，通常不再需要该脚本参与标准流程。
 
-**效率提升**：处理57万+轨迹文件的时间从串行的数十小时缩短至数小时。使用 `np.searchsorted` 替代 `np.digitize` 进行 bin 索引计算（5-10×加速），`np.bincount` 进行 vectorized 累积。采用 `imap_unordered` 流式处理与共享计数器实时报告进度。
+保留该脚本主要用于读取历史数据或交叉检查旧格式输出。
 
 ### 7.7 Kepler 解析推进替代数值积分
 
@@ -560,14 +527,11 @@ $$\Delta t_\text{record} = \text{clamp}\left(\frac{\tau_\text{evap}}{N_\text{tar
 
 **物理影响**：完全精确（Kepler问题有精确解析解），同时省去了长距离（从1000 AU到$2R_\odot$，或从$2R_\odot$到1 AU）的数值积分成本。这是合理的，因为太阳外的引力场为纯 $1/r^2$ 形式。
 
-### 7.8 MPI环状通信的负载均衡
+### 7.8 MPI 合并与负载分配
 
-**优化内容**：`Data_Generation.cpp` 采用MPI非阻塞环状通信进行数据点计数的同步。
+每个 MPI rank 独立生成轨迹，目标捕获数为 `ceil(sample_size / N_ranks)`，最大轨迹数为 `ceil(max_trajectories / N_ranks)`。模拟完成后通过 `MPI_Allreduce` 合并轨迹数、捕获数、bincount、计算时间和 RK45 步数；蒸发记录通过 `MPI_Allgather` / `MPI_Allgatherv` 汇总。
 
-**效率影响**：
-- 非阻塞发送（`MPI_Isend`）允许进程在等待通信完成时继续生成轨迹
-- 环状拓扑最小化通信跳数
-- 全局完成条件通过标签传播检测，无需频繁的全局同步（$O(N_\text{processes})$ 而非 $O(N_\text{processes}^2)$）
+Snapshot 模式额外使用每 rank 的二进制 checkpoint 文件来合并中间进度，避免长时间运行时只能等最终 `MPI_Allreduce`。
 
 ---
 
@@ -662,10 +626,10 @@ DaMaSCUS-SUN 实现了暗物质与太阳相互作用的完整物理图景：
 | **RK45自适应积分** | Fehlberg嵌入式方法 | 精度可控，步长自适应 |
 | **AGSS09太阳模型** | 29种同位素密度+温度剖面 | 现代最佳太阳组成数据 |
 | **暗光子模型** | 4种形因子 | 覆盖从接触到长程的完整参数空间 |
-| **MPI并行化** | 环状通信 + AllGather | 线性可扩展（32+进程） |
+| **MPI并行化** | 各rank独立采样 + AllReduce/AllGather 汇总 | 线性可扩展（32+进程） |
 | **2D散射率缓存** | $\Gamma(r,v)$ 内插表 | 数量级加速内循环 |
 | **STA边界跟踪** | 排斥区域周长遍历 | 避免完整 $N^2$ 网格计算 |
-| **自适应步数记录** | 运行时轨道周期自校准 | 避免RK45时间混叠，平衡存储量与分析精度 |
+| **在线径向bincount** | 每个RK45步累积 $\Delta t$ 与 $v^2\Delta t$ | 避免逐轨迹大文件输出，直接产出捕获/未捕获统计 |
 | **理论-模拟交叉验证** | `evaporation_theory.py` ↔ 轨迹数据 | 确保数值结果的物理一致性 |
 
 ### 9.3 数据管线完整流程

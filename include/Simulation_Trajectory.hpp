@@ -87,8 +87,10 @@ class Trajectory_Simulator
 	double prev_r_km;           // previous step radius in km
 	double prev_v2_km2s2;       // previous step v² in (km/s)²
 	double prev_dt_sec;         // previous step dt in seconds (for last-step accumulation)
+	bool terminate_on_capture;
 
 	void Accumulate_Bincount_Step(double r_km, double v2_km2s2, double dt_sec);
+	bool Update_Capture_State(double radius, double speed, double time, obscura::DM_Particle& DM);
 
 	// RK45 step counter for current trajectory
 	unsigned long int total_rk45_steps_current_traj;
@@ -124,6 +126,7 @@ class Trajectory_Simulator
 
 	void Fix_PRNG_Seed(int fixed_seed);
 	void Set_Snapshot_Progress_Callback(std::function<void(const Trajectory_Simulator&)> callback);
+	void Enable_Capture_Mode(bool enabled);
 
 	void Scatter(Event& current_event, obscura::DM_Particle& DM);
 	Trajectory_Result Simulate(const Event& initial_condition, obscura::DM_Particle& DM, unsigned int mpi_rank);

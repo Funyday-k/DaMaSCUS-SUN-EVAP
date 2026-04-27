@@ -836,8 +836,11 @@ void Simulation_Data::Configure(double initial_radius, unsigned int min_scatteri
 	maximum_free_time_steps       = max_free_steps;
 }
 
-void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, SnapshotConfig snapshot_cfg, unsigned int fixed_seed)
+void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, SnapshotConfig snapshot_cfg, unsigned int fixed_seed, bool capture_mode)
 {
+	if(capture_mode)
+		snapshot_cfg.enabled = false;
+
 	auto time_start = std::chrono::system_clock::now();
 	unsigned long int local_captured = 0;
 	unsigned long int local_total = 0;
@@ -845,6 +848,7 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 	// Configure the simulator
 	Trajectory_Simulator simulator(solar_model, maximum_free_time_steps, maximum_number_of_scatterings, initial_and_final_radius);
 	simulator.max_trajectory_wall_time_sec = snapshot_cfg.max_trajectory_wall_time_sec;
+	simulator.Enable_Capture_Mode(capture_mode);
 	if(fixed_seed != 0)
 		simulator.Fix_PRNG_Seed(fixed_seed);
 
@@ -994,21 +998,24 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 			number_of_captured_particles++;
 			local_captured++;
 
-			// Accumulate captured bincount
-			for(int b = 0; b < NUM_BINS; b++)
+			if(!capture_mode)
 			{
-				captured_dt_hist[b]   += trajectory.bincount.dt_hist[b];
-				captured_v2dt_hist[b] += trajectory.bincount.v2dt_hist[b];
-				captured_dt_sq_hist[b]   += trajectory.bincount.dt_hist[b] * trajectory.bincount.dt_hist[b];
-				captured_v2dt_sq_hist[b] += trajectory.bincount.v2dt_hist[b] * trajectory.bincount.v2dt_hist[b];
-			}
+				// Accumulate captured bincount
+				for(int b = 0; b < NUM_BINS; b++)
+				{
+					captured_dt_hist[b]   += trajectory.bincount.dt_hist[b];
+					captured_v2dt_hist[b] += trajectory.bincount.v2dt_hist[b];
+					captured_dt_sq_hist[b]   += trajectory.bincount.dt_hist[b] * trajectory.bincount.dt_hist[b];
+					captured_v2dt_sq_hist[b] += trajectory.bincount.v2dt_hist[b] * trajectory.bincount.v2dt_hist[b];
+				}
 
-			// Record evaporation time
-			EvaporationRecord rec;
-			rec.trajectory_id = number_of_trajectories;
-			rec.t_evap = trajectory.bincount.t_last_negative - trajectory.bincount.t_first_negative;
-			rec.truncated = trajectory.bincount.truncated;
-			evaporation_records.push_back(rec);
+				// Record evaporation time
+				EvaporationRecord rec;
+				rec.trajectory_id = number_of_trajectories;
+				rec.t_evap = trajectory.bincount.t_last_negative - trajectory.bincount.t_first_negative;
+				rec.truncated = trajectory.bincount.truncated;
+				evaporation_records.push_back(rec);
+			}
 
 			// Computation time & step count statistics (captured)
 			total_wall_time_captured += traj_wall_sec;
@@ -1022,13 +1029,16 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 		}
 		else
 		{
-			// Accumulate non-captured bincount
-			for(int b = 0; b < NUM_BINS; b++)
+			if(!capture_mode)
 			{
-				not_captured_dt_hist[b]   += trajectory.bincount.dt_hist[b];
-				not_captured_v2dt_hist[b] += trajectory.bincount.v2dt_hist[b];
-				not_captured_dt_sq_hist[b]   += trajectory.bincount.dt_hist[b] * trajectory.bincount.dt_hist[b];
-				not_captured_v2dt_sq_hist[b] += trajectory.bincount.v2dt_hist[b] * trajectory.bincount.v2dt_hist[b];
+				// Accumulate non-captured bincount
+				for(int b = 0; b < NUM_BINS; b++)
+				{
+					not_captured_dt_hist[b]   += trajectory.bincount.dt_hist[b];
+					not_captured_v2dt_hist[b] += trajectory.bincount.v2dt_hist[b];
+					not_captured_dt_sq_hist[b]   += trajectory.bincount.dt_hist[b] * trajectory.bincount.dt_hist[b];
+					not_captured_v2dt_sq_hist[b] += trajectory.bincount.v2dt_hist[b] * trajectory.bincount.v2dt_hist[b];
+				}
 			}
 
 			// Computation time & step count statistics (not captured)
@@ -1041,18 +1051,21 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 			if(sb >= 0 && sb < STEP_COUNT_BINS) step_count_hist_not_captured[sb]++;
 			else if(sb >= STEP_COUNT_BINS) step_count_overflow_not_captured++;
 
-			if(trajectory.Particle_Free())
-				number_of_free_particles++;
-			else if(trajectory.Particle_Reflected())
+			if(!capture_mode)
 			{
-				number_of_reflected_particles++;
-				// Keep reflection data for compatibility (if needed)
-				Hyperbolic_Kepler_Shift(trajectory.final_event, 1.0 * AU);
-				double v_final = trajectory.final_event.Speed();
-				if(trajectory.number_of_scatterings >= minimum_number_of_scatterings && v_final > KDE_boundary_correction_factor * minimum_speed_threshold)
+				if(trajectory.Particle_Free())
+					number_of_free_particles++;
+				else if(trajectory.Particle_Reflected())
 				{
-					unsigned int isoreflection_ring = (isoreflection_rings == 1) ? 0 : trajectory.final_event.Isoreflection_Ring(obscura::Sun_Velocity(), isoreflection_rings);
-					data[isoreflection_ring].push_back(libphysica::DataPoint(v_final));
+					number_of_reflected_particles++;
+					// Keep reflection data for compatibility (if needed)
+					Hyperbolic_Kepler_Shift(trajectory.final_event, 1.0 * AU);
+					double v_final = trajectory.final_event.Speed();
+					if(trajectory.number_of_scatterings >= minimum_number_of_scatterings && v_final > KDE_boundary_correction_factor * minimum_speed_threshold)
+					{
+						unsigned int isoreflection_ring = (isoreflection_rings == 1) ? 0 : trajectory.final_event.Isoreflection_Ring(obscura::Sun_Velocity(), isoreflection_rings);
+						data[isoreflection_ring].push_back(libphysica::DataPoint(v_final));
+					}
 				}
 			}
 		}
@@ -1348,6 +1361,46 @@ double Simulation_Data::Lowest_Speed(unsigned int iso_ring) const
 double Simulation_Data::Highest_Speed(unsigned int iso_ring) const
 {
 	return (*std::max_element(data[iso_ring].begin(), data[iso_ring].end())).value;
+}
+
+void Simulation_Data::Print_Capture_Mode_Summary(unsigned int mpi_rank)
+{
+	if(mpi_rank == 0)
+	{
+		double N = static_cast<double>(number_of_trajectories);
+		double p = (N > 0.0) ? static_cast<double>(number_of_captured_particles) / N : 0.0;
+		double z = 1.96;
+		double ci_lower = p;
+		double ci_upper = p;
+		if(N > 0.0)
+		{
+			double denom = 1.0 + z * z / N;
+			double center = p + z * z / (2.0 * N);
+			double spread = z * sqrt(p * (1.0 - p) / N + z * z / (4.0 * N * N));
+			ci_lower = (center - spread) / denom;
+			ci_upper = (center + spread) / denom;
+			if(ci_lower < 0.0) ci_lower = 0.0;
+			if(ci_upper > 1.0) ci_upper = 1.0;
+		}
+
+		std::cout << SEPARATOR
+		          << "CAPTURE MODE summary" << std::endl
+		          << std::endl
+		          << "Termination condition:\t\tE < 0" << std::endl
+		          << "File output:\t\t\tdisabled" << std::endl
+		          << "Simulated trajectories:\t\t" << number_of_trajectories << std::endl
+		          << "Captured count:\t\t\t" << number_of_captured_particles << std::endl
+		          << "Capture rate:\t\t\t" << std::fixed << std::setprecision(8) << p << std::endl
+		          << "Capture rate -error (95%):\t" << std::fixed << std::setprecision(8) << (p - ci_lower) << std::endl
+		          << "Capture rate +error (95%):\t" << std::fixed << std::setprecision(8) << (ci_upper - p) << std::endl
+		          << "Capture rate 95% CI:\t\t[" << std::fixed << std::setprecision(8) << ci_lower << ", " << ci_upper << "]" << std::endl;
+
+		if(early_stopped)
+			std::cout << "*** EARLY STOP: max_trajectories reached ***" << std::endl;
+
+		std::cout << "Simulation time:\t\t" << libphysica::Time_Display(computing_time) << std::endl
+		          << SEPARATOR << std::endl;
+	}
 }
 
 void Simulation_Data::Print_Summary(unsigned int mpi_rank)

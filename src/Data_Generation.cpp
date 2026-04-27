@@ -216,6 +216,14 @@ void Write_Report_Header(std::ofstream& file, double mass_gev, double sigma_cm2,
 		file << "# EARLY_STOP: max_trajectories reached\n";
 }
 
+void Write_Evaporation_Record_List(std::ofstream& file, const std::vector<EvaporationRecord>& records)
+{
+	file << "# evaporation_record_count = " << records.size() << "\n";
+	file << "# trajectory_id  t_evap[s]  truncated(0/1)\n";
+	for(const auto& rec : records)
+		file << rec.trajectory_id << "\t" << std::scientific << std::setprecision(10) << rec.t_evap << "\t" << (rec.truncated ? 1 : 0) << "\n";
+}
+
 std::string Format_Physical_Time_Scientific(double physical_time_sec)
 {
 	std::ostringstream stream;
@@ -711,6 +719,10 @@ bool Write_Snapshot_Report_File(const std::string& snapshot_root, int snapshot_i
 		for(const Rank_Snapshot_State& state : report.rank_states)
 			file << "#   rank " << state.rank << ": " << Format_Rank_Status(state) << "\n";
 		file << "#\n";
+		file << "# [Evaporation time list]\n";
+		Write_Evaporation_Record_List(file, report.evaporation_records);
+		file << "#\n";
+		file << "# [Bincount histogram]\n";
 		file << "# bin_index  cap_dt[s]  cap_v2dt[km2/s]  cap_err_dt[s]  cap_err_v2dt[km2/s]  not_cap_dt[s]  not_cap_v2dt[km2/s]  not_cap_err_dt[s]  not_cap_err_v2dt[km2/s]\n";
 		for(int bin = 0; bin < NUM_BINS; bin++)
 		{
@@ -1244,9 +1256,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 	{
 		std::ofstream f(output_dir + "/evaporation_summary.txt");
 		write_header(f);
-		f << "# trajectory_id  t_evap[s]  truncated(0/1)\n";
-		for(const auto& rec : evaporation_records)
-			f << rec.trajectory_id << "\t" << std::scientific << std::setprecision(10) << rec.t_evap << "\t" << (rec.truncated ? 1 : 0) << "\n";
+		Write_Evaporation_Record_List(f, evaporation_records);
 		f.close();
 	}
 

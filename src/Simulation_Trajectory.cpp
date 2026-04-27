@@ -27,6 +27,46 @@ constexpr double RK45_MAX_STEP_FACTOR = 4.0;
 // 保证外层循环一定能在有限时间内拿回控制权，从而触发 snapshot 回调。
 constexpr int RK45_MAX_INNER_RETRIES = 2000;
 
+double RK45_Absolute_Max_Time_Step()
+{
+	return 1.0e6 * sec;  // 约 11.6 天；防止太阳外弱加速度区域步长增长到 inf。
+}
+
+double RK45_Sanitized_Time_Step(double step)
+{
+	if(!std::isfinite(step) || step <= 0.0)
+		return 0.1 * sec;
+	return std::min(step, RK45_Absolute_Max_Time_Step());
+}
+
+double Free_Propagation_Time_Step_Cap(double radius, double speed, double maximum_distance)
+{
+	double cap = RK45_Absolute_Max_Time_Step();
+	const double safe_speed = std::max(std::fabs(speed), 1.0e-12 * km / sec);
+
+	// 避免单步跨越过大的径向距离，否则可能直接跳过 2R_sun 边界并把 r 推到非物理值。
+	const double crossing_scale = std::max(0.25 * maximum_distance, 10.0 * km);
+	cap = std::min(cap, crossing_scale / safe_speed);
+
+	// 太阳外近似 Kepler 运动，步长不应大于局域动力学时间的一个固定比例。
+	const double safe_radius = std::max(radius, 1.0 * km);
+	const double dynamical_time = sqrt(safe_radius * safe_radius * safe_radius / (G_Newton * mSun));
+	if(std::isfinite(dynamical_time) && dynamical_time > 0.0)
+		cap = std::min(cap, 0.1 * dynamical_time);
+
+	return std::max(cap, 1.0e-8 * sec);
+}
+
+bool Outward_Escaping_At_Boundary(const Event& event, Solar_Model& solar_model, double boundary_radius)
+{
+	const double radius = event.Radius();
+	if(radius < boundary_radius)
+		return false;
+
+	const double radial_velocity = (radius > 0.0) ? event.position.Dot(event.velocity) / radius : 0.0;
+	return radial_velocity > 0.0 && event.Speed() > solar_model.Local_Escape_Speed(radius);
+}
+
 bool RK45_Errors_Within_Tolerance(const double errors[3], const double tolerances[3])
 {
 	for(int i = 0; i < 3; i++)
@@ -62,7 +102,7 @@ double RK45_Next_Step_Size(double current_step, const double errors[3], const do
 	}
 
 	factor = std::max(RK45_MIN_STEP_FACTOR, std::min(factor, RK45_MAX_STEP_FACTOR));
-	return factor * current_step;
+	return RK45_Sanitized_Time_Step(factor * current_step);
 }
 }
 
@@ -214,6 +254,9 @@ bool Trajectory_Simulator::Update_Capture_State(double radius, double speed, dou
 
 bool Trajectory_Simulator::Propagate_Freely(Event& current_event, obscura::DM_Particle& DM)
 {
+	if(Outward_Escaping_At_Boundary(current_event, solar_model, maximum_distance))
+		return true;
+
 	Free_Particle_Propagator particle_propagator(current_event);
 
 	double minus_log_xi = -log(libphysica::Sample_Uniform(PRNG));
@@ -224,6 +267,15 @@ bool Trajectory_Simulator::Propagate_Freely(Event& current_event, obscura::DM_Pa
 	{
 		time_steps++;
 		double r_before = particle_propagator.Current_Radius();
+		double v_before = particle_propagator.Current_Speed();
+		if(r_before >= rSun)
+		{
+			const double step_cap = Free_Propagation_Time_Step_Cap(r_before, v_before, maximum_distance);
+			particle_propagator.time_step = std::min(RK45_Sanitized_Time_Step(particle_propagator.time_step), step_cap);
+		}
+		else
+			particle_propagator.time_step = RK45_Sanitized_Time_Step(particle_propagator.time_step);
+
 		double t_before = particle_propagator.Current_Time();
 		particle_propagator.Runge_Kutta_45_Step(solar_model);
 		double actual_dt = particle_propagator.Current_Time() - t_before;
@@ -324,7 +376,7 @@ bool Trajectory_Simulator::Propagate_Freely(Event& current_event, obscura::DM_Pa
 		}
 		else
 		{
-			if(r_before < maximum_distance && r_after > maximum_distance && v_after > solar_model.Local_Escape_Speed(r_after))
+			if(r_after >= maximum_distance && r_after >= r_before && v_after > solar_model.Local_Escape_Speed(r_after))
 				reflection = true;
 		}
 
@@ -546,6 +598,7 @@ double Free_Particle_Propagator::dphi_dt(double r)
 
 void Free_Particle_Propagator::Runge_Kutta_45_Step(Solar_Model& solar_model)
 {
+	time_step = RK45_Sanitized_Time_Step(time_step);
 	bool accepted = false;
 	int inner_iter = 0;
 	while(!accepted)
@@ -660,6 +713,7 @@ void Free_Particle_Propagator::Runge_Kutta_45_Step(Solar_Model& solar_model)
 // Overload with constant mass (for Kepler orbits outside the sun / testing)
 void Free_Particle_Propagator::Runge_Kutta_45_Step(double constant_mass)
 {
+	time_step = RK45_Sanitized_Time_Step(time_step);
 	bool accepted = false;
 	int inner_iter = 0;
 	while(!accepted)

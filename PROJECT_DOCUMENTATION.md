@@ -126,6 +126,8 @@ $$\frac{dr}{dt} = v_r, \quad \frac{dv_r}{dt} = \frac{J^2}{r^3} - \frac{G_N M(r)}
 - 步长调整公式：$\delta t_\text{new} = 0.84 \times (\text{tol}/\text{err})^{1/4} \times \delta t_\text{old}$，并限制每次变化因子在 `[0.1, 4.0]`。
 - 若误差为 NaN/Inf，步长强制乘以 `0.1`，避免非有限误差导致步长发散。
 - 若内层尝试超过 `2000` 次，或新步长小于 `1.0e-8 s`，代码会强制接受一个最小步长，确保单个 RK45 步不会无限卡死。
+- RK45 步长有绝对上限 `1.0e6 s`，防止太阳外弱引力区步长增长到 `inf`。
+- 在太阳外传播时，步长还会受单步跨越距离和局域 Kepler 动力学时间限制，避免一步跳过 `2R_\odot` 边界并产生非物理巨大半径。
 - **太阳内部**：步长还受散射率约束，$\delta t \leq 0.1 / \Gamma_\text{total}(r, v)$。
 - **太阳外部**：无散射事件，RK45 步长只由轨道误差控制；从 `1000 AU` 到 `2R_\odot` 的入射段，以及逃逸后到 `1 AU` 的传播，可用 `Hyperbolic_Kepler_Shift()` 做解析 Kepler 推进。
 - **单轨迹 wall-time 保护**：`max_trajectory_wall_time_sec` 默认 `300 s`，每 `256` 个 RK45 步检查一次；超过后中止该轨迹，避免 MPI rank 被病态轨迹长期卡住。设为 `0` 表示不限制。

@@ -132,6 +132,7 @@ class Trajectory_Simulator
 	unsigned long int Current_Trajectory_ID() const;
 	double Current_Trajectory_Wall_Time_Seconds() const;
 	double Current_Trajectory_Physical_Time_Seconds() const;
+	const TrajectoryBincount& Current_Trajectory_Bincount() const;
 };
 
 // 3. Equation of motion solution with Runge-Kutta-Fehlberg

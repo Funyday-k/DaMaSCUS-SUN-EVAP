@@ -169,6 +169,11 @@ double Trajectory_Simulator::Current_Trajectory_Physical_Time_Seconds() const
 	return current_trajectory_physical_time_sec;
 }
 
+const TrajectoryBincount& Trajectory_Simulator::Current_Trajectory_Bincount() const
+{
+	return current_bincount;
+}
+
 // Accumulate one step into the current bincount
 void Trajectory_Simulator::Accumulate_Bincount_Step(double r_km, double v2_km2s2, double dt_sec)
 {

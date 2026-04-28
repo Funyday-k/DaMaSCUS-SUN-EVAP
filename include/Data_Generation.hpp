@@ -17,9 +17,10 @@ namespace DaMaSCUS_SUN
 // Evaporation time record for a single captured trajectory
 struct EvaporationRecord
 {
-	unsigned long int trajectory_id;
-	double t_evap;    // seconds
-	bool truncated;   // true if last step had E <= 0
+	int rank = -1;
+	unsigned long int trajectory_id = 0;
+	double t_evap = 0.0;    // seconds
+	bool truncated = false; // true if last step had E <= 0
 };
 
 class Simulation_Data

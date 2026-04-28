@@ -219,9 +219,9 @@ void Write_Report_Header(std::ofstream& file, double mass_gev, double sigma_cm2,
 void Write_Evaporation_Record_List(std::ofstream& file, const std::vector<EvaporationRecord>& records)
 {
 	file << "# evaporation_record_count = " << records.size() << "\n";
-	file << "# trajectory_id  t_evap[s]  truncated(0/1)\n";
+	file << "# rank  trajectory_id  t_evap[s]  truncated(0/1)\n";
 	for(const auto& rec : records)
-		file << rec.trajectory_id << "\t" << std::scientific << std::setprecision(10) << rec.t_evap << "\t" << (rec.truncated ? 1 : 0) << "\n";
+		file << rec.rank << "\t" << rec.trajectory_id << "\t" << std::scientific << std::setprecision(10) << rec.t_evap << "\t" << (rec.truncated ? 1 : 0) << "\n";
 }
 
 std::string Format_Physical_Time_Scientific(double physical_time_sec)
@@ -319,6 +319,11 @@ std::string Snapshot_Text_File_Path(const std::string& snapshot_root, int snapsh
 	return snapshot_root + "snapshot_" + std::to_string(Snapshot_Time_Label_Seconds(snapshot_index, interval_seconds)) + "s.txt";
 }
 
+std::string Snapshot_Evaporation_File_Path(const std::string& snapshot_root, int snapshot_index, double interval_seconds)
+{
+	return snapshot_root + "snapshot_" + std::to_string(Snapshot_Time_Label_Seconds(snapshot_index, interval_seconds)) + "s_evaporation.txt";
+}
+
 void Write_Snapshot_Diagnostics(std::ofstream& file, int snapshot_index, double interval_seconds, int caller_rank, const Snapshot_Load_Diagnostics& diagnostics, bool merged)
 {
 	file << "# snapshot_status = " << (merged ? "merged" : "waiting") << "\n";
@@ -327,7 +332,7 @@ void Write_Snapshot_Diagnostics(std::ofstream& file, int snapshot_index, double 
 	file << "# attempted_by_rank = " << caller_rank << "\n";
 	file << "# ready_ranks = " << diagnostics.ready_ranks << " / " << diagnostics.per_rank_status.size() << "\n";
 	file << "#\n";
-	file << "# rank_index  source_or_wait_reason\n";
+	file << "# rank_index  source_or_wait_reason_and_status\n";
 	for(size_t rank = 0; rank < diagnostics.per_rank_status.size(); rank++)
 		file << rank << "\t" << diagnostics.per_rank_status[rank] << "\n";
 }
@@ -445,8 +450,10 @@ bool Write_Rank_Snapshot_State(const std::string& path, const Rank_Snapshot_Stat
 	Write_Binary_Value(file, evaporation_count);
 	for(const auto& rec : state.evaporation_records)
 	{
+		int32_t rank = static_cast<int32_t>(rec.rank);
 		uint64_t trajectory_id = static_cast<uint64_t>(rec.trajectory_id);
 		uint8_t truncated = rec.truncated ? 1 : 0;
+		Write_Binary_Value(file, rank);
 		Write_Binary_Value(file, trajectory_id);
 		Write_Binary_Value(file, rec.t_evap);
 		Write_Binary_Value(file, truncated);
@@ -515,13 +522,16 @@ bool Read_Rank_Snapshot_State(const std::string& path, uint64_t expected_run_id,
 	state.evaporation_records.reserve(static_cast<size_t>(evaporation_count));
 	for(uint64_t i = 0; i < evaporation_count; i++)
 	{
+		int32_t rank = -1;
 		uint64_t trajectory_id = 0;
 		double t_evap = 0.0;
 		uint8_t truncated = 0;
+		Read_Binary_Value(file, rank);
 		Read_Binary_Value(file, trajectory_id);
 		Read_Binary_Value(file, t_evap);
 		Read_Binary_Value(file, truncated);
 		EvaporationRecord rec;
+		rec.rank = static_cast<int>(rank);
 		rec.trajectory_id = static_cast<unsigned long int>(trajectory_id);
 		rec.t_evap = t_evap;
 		rec.truncated = (truncated != 0);
@@ -636,7 +646,7 @@ bool Load_Snapshot_Report_State(const std::string& rank_snapshot_dir, int snapsh
 			if(diagnostics != NULL)
 			{
 				diagnostics->ready_ranks++;
-				diagnostics->per_rank_status[rank] = "checkpoint";
+				diagnostics->per_rank_status[rank] = "checkpoint, " + Format_Rank_Status(state);
 			}
 			continue;
 		}
@@ -651,7 +661,7 @@ bool Load_Snapshot_Report_State(const std::string& rank_snapshot_dir, int snapsh
 			{
 				diagnostics->ready_ranks++;
 				std::ostringstream status;
-				status << "final(done_at=" << std::fixed << std::setprecision(3) << state.rank_elapsed_wall_sec << "s)";
+				status << "final(done_at=" << std::fixed << std::setprecision(3) << state.rank_elapsed_wall_sec << "s), " << Format_Rank_Status(state);
 				diagnostics->per_rank_status[rank] = status.str();
 			}
 			continue;
@@ -685,8 +695,22 @@ bool Load_Snapshot_Report_State(const std::string& rank_snapshot_dir, int snapsh
 	return all_ranks_ready;
 }
 
+bool Write_Snapshot_Evaporation_File(const std::string& snapshot_root, int snapshot_index, double interval_seconds, const Snapshot_Report_State& report, int caller_rank)
+{
+	return Write_Text_File_Atomically(Snapshot_Evaporation_File_Path(snapshot_root, snapshot_index, interval_seconds), snapshot_index * 1000 + caller_rank, [&](std::ofstream& file)
+	{
+		file << "# Snapshot evaporation time list\n";
+		file << "# snapshot_target_wall_time_s = " << report.snapshot_time_label << "\n";
+		file << "# snapshot_interval_s = " << std::fixed << std::setprecision(3) << report.snapshot_interval_seconds << "\n";
+		Write_Evaporation_Record_List(file, report.evaporation_records);
+	});
+}
+
 bool Write_Snapshot_Report_File(const std::string& snapshot_root, int snapshot_index, double interval_seconds, double mass_gev, double sigma_cm2, const Snapshot_Report_State& report, int caller_rank, const Snapshot_Load_Diagnostics& diagnostics)
 {
+	if(!Write_Snapshot_Evaporation_File(snapshot_root, snapshot_index, interval_seconds, report, caller_rank))
+		return false;
+
 	if(!Write_Text_File_Atomically(Snapshot_Text_File_Path(snapshot_root, snapshot_index, interval_seconds), snapshot_index, [&](std::ofstream& file)
 	{
 		Write_Snapshot_Diagnostics(file, snapshot_index, interval_seconds, caller_rank, diagnostics, true);
@@ -713,14 +737,7 @@ bool Write_Snapshot_Report_File(const std::string& snapshot_root, int snapshot_i
 		file << "# mean_rk45_steps_not_captured = " << std::scientific << std::setprecision(6) << mean_steps_nc << "\n";
 		file << "# snapshot_bincount_captured_samples = " << report.snapshot_bincount_captured_samples << "\n";
 		file << "# snapshot_bincount_not_captured_samples = " << report.snapshot_bincount_not_captured_samples << "\n";
-		file << "# ranks_ready = " << report.rank_states.size() << " / " << report.rank_states.size() << "\n";
-		file << "#\n";
-		file << "# Rank status:\n";
-		for(const Rank_Snapshot_State& state : report.rank_states)
-			file << "#   rank " << state.rank << ": " << Format_Rank_Status(state) << "\n";
-		file << "#\n";
-		file << "# [Evaporation time list]\n";
-		Write_Evaporation_Record_List(file, report.evaporation_records);
+		file << "# ranks_ready = " << diagnostics.ready_ranks << " / " << diagnostics.per_rank_status.size() << "\n";
 		file << "#\n";
 		file << "# [Bincount histogram]\n";
 		file << "# bin_index  cap_dt[s]  cap_v2dt[km2/s]  cap_err_dt[s]  cap_err_v2dt[km2/s]  not_cap_dt[s]  not_cap_v2dt[km2/s]  not_cap_err_dt[s]  not_cap_err_v2dt[km2/s]\n";
@@ -1023,6 +1040,7 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 
 				// Record evaporation time
 				EvaporationRecord rec;
+				rec.rank = mpi_rank;
 				rec.trajectory_id = number_of_trajectories;
 				rec.t_evap = trajectory.bincount.t_last_negative - trajectory.bincount.t_first_negative;
 				rec.truncated = trajectory.bincount.truncated;
@@ -1161,25 +1179,26 @@ void Simulation_Data::Perform_MPI_Reductions()
 
 	int total_evap = std::accumulate(evap_counts.begin(), evap_counts.end(), 0);
 
-	// Pack local evaporation data: (trajectory_id, t_evap, truncated)
+	// Pack local evaporation data: (rank, trajectory_id, t_evap, truncated)
 	// Use doubles for MPI transfer
-	std::vector<double> local_evap_data(local_evap_count * 3);
+	std::vector<double> local_evap_data(local_evap_count * 4);
 	for(int i = 0; i < local_evap_count; i++)
 	{
-		local_evap_data[3*i]     = static_cast<double>(evaporation_records[i].trajectory_id);
-		local_evap_data[3*i + 1] = evaporation_records[i].t_evap;
-		local_evap_data[3*i + 2] = evaporation_records[i].truncated ? 1.0 : 0.0;
+		local_evap_data[4*i]     = static_cast<double>(evaporation_records[i].rank);
+		local_evap_data[4*i + 1] = static_cast<double>(evaporation_records[i].trajectory_id);
+		local_evap_data[4*i + 2] = evaporation_records[i].t_evap;
+		local_evap_data[4*i + 3] = evaporation_records[i].truncated ? 1.0 : 0.0;
 	}
 
 	std::vector<int> recv_counts(mpi_processes), displacements(mpi_processes);
 	for(int j = 0; j < mpi_processes; j++)
 	{
-		recv_counts[j] = evap_counts[j] * 3;
+		recv_counts[j] = evap_counts[j] * 4;
 		displacements[j] = (j == 0) ? 0 : displacements[j-1] + recv_counts[j-1];
 	}
 
-	std::vector<double> global_evap_data(total_evap * 3);
-	MPI_Allgatherv(local_evap_data.data(), local_evap_count * 3, MPI_DOUBLE,
+	std::vector<double> global_evap_data(total_evap * 4);
+	MPI_Allgatherv(local_evap_data.data(), local_evap_count * 4, MPI_DOUBLE,
 	               global_evap_data.data(), recv_counts.data(), displacements.data(), MPI_DOUBLE, MPI_COMM_WORLD);
 
 	// Unpack into evaporation_records
@@ -1187,9 +1206,10 @@ void Simulation_Data::Perform_MPI_Reductions()
 	evaporation_records.resize(total_evap);
 	for(int i = 0; i < total_evap; i++)
 	{
-		evaporation_records[i].trajectory_id = static_cast<unsigned long int>(global_evap_data[3*i]);
-		evaporation_records[i].t_evap        = global_evap_data[3*i + 1];
-		evaporation_records[i].truncated     = (global_evap_data[3*i + 2] > 0.5);
+		evaporation_records[i].rank          = static_cast<int>(global_evap_data[4*i]);
+		evaporation_records[i].trajectory_id = static_cast<unsigned long int>(global_evap_data[4*i + 1]);
+		evaporation_records[i].t_evap        = global_evap_data[4*i + 2];
+		evaporation_records[i].truncated     = (global_evap_data[4*i + 3] > 0.5);
 	}
 
 	MPI_Allreduce(MPI_IN_PLACE, &computing_time, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);

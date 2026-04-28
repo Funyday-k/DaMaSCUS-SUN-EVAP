@@ -26,6 +26,8 @@ tests/test_Solar_Model
 /Trajectoies/
 /evaporation/
 /bincount/
+bin/Capture/
+/Mission/
 
 # Trajectory and output files
 *.dat

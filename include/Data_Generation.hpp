@@ -14,7 +14,7 @@
 namespace DaMaSCUS_SUN
 {
 
-// Evaporation time record for a single captured trajectory
+// Evaporation time record for a captured trajectory with positive bound duration
 struct EvaporationRecord
 {
 	int rank = -1;

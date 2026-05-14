@@ -35,6 +35,32 @@ constexpr double SNAPSHOT_WALL_TIME_LOG_MIN = -4.0;
 constexpr int SNAPSHOT_STEP_COUNT_BINS = 140;
 constexpr double SNAPSHOT_STEP_COUNT_LOG_MIN = 0.0;
 
+bool Has_Positive_Evaporation_Time(double t_evap)
+{
+	return std::isfinite(t_evap) && t_evap > 0.0;
+}
+
+bool Has_Positive_Evaporation_Time(const EvaporationRecord& rec)
+{
+	return Has_Positive_Evaporation_Time(rec.t_evap);
+}
+
+bool Build_Evaporation_Record(const TrajectoryBincount& bincount, int mpi_rank, unsigned long int trajectory_id, EvaporationRecord& rec)
+{
+	if(!bincount.is_captured || !std::isfinite(bincount.t_first_negative) || !std::isfinite(bincount.t_last_negative))
+		return false;
+
+	double t_evap = bincount.t_last_negative - bincount.t_first_negative;
+	if(!Has_Positive_Evaporation_Time(t_evap))
+		return false;
+
+	rec.rank = mpi_rank;
+	rec.trajectory_id = trajectory_id;
+	rec.t_evap = t_evap;
+	rec.truncated = bincount.truncated;
+	return true;
+}
+
 struct Rank_Snapshot_State
 {
 	uint64_t run_id = 0;
@@ -218,10 +244,32 @@ void Write_Report_Header(std::ofstream& file, double mass_gev, double sigma_cm2,
 
 void Write_Evaporation_Record_List(std::ofstream& file, const std::vector<EvaporationRecord>& records)
 {
-	file << "# evaporation_record_count = " << records.size() << "\n";
+	size_t record_count = 0;
+	size_t statistic_count = 0;
+	size_t truncated_count = 0;
+	for(const auto& rec : records)
+	{
+		if(!Has_Positive_Evaporation_Time(rec))
+			continue;
+		record_count++;
+		if(rec.truncated)
+			truncated_count++;
+		else
+			statistic_count++;
+	}
+
+	file << "# evaporation_record_count = " << record_count << "\n";
+	file << "# evaporation_stat_count = " << statistic_count << "\n";
+	file << "# evaporation_truncated_count = " << truncated_count << "\n";
+	if(record_count != records.size())
+		file << "# skipped_non_evaporation_count = " << (records.size() - record_count) << "\n";
 	file << "# rank  trajectory_id  t_evap[s]  truncated(0/1)\n";
 	for(const auto& rec : records)
+	{
+		if(!Has_Positive_Evaporation_Time(rec))
+			continue;
 		file << rec.rank << "\t" << rec.trajectory_id << "\t" << std::scientific << std::setprecision(10) << rec.t_evap << "\t" << (rec.truncated ? 1 : 0) << "\n";
+	}
 }
 
 std::string Format_Physical_Time_Scientific(double physical_time_sec)
@@ -1038,13 +1086,10 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 					captured_v2dt_sq_hist[b] += trajectory.bincount.v2dt_hist[b] * trajectory.bincount.v2dt_hist[b];
 				}
 
-				// Record evaporation time
+				// Record only trajectories with a positive measured evaporation duration.
 				EvaporationRecord rec;
-				rec.rank = mpi_rank;
-				rec.trajectory_id = number_of_trajectories;
-				rec.t_evap = trajectory.bincount.t_last_negative - trajectory.bincount.t_first_negative;
-				rec.truncated = trajectory.bincount.truncated;
-				evaporation_records.push_back(rec);
+				if(Build_Evaporation_Record(trajectory.bincount, mpi_rank, number_of_trajectories, rec))
+					evaporation_records.push_back(rec);
 			}
 
 			// Computation time & step count statistics (captured)
@@ -1475,7 +1520,7 @@ void Simulation_Data::Print_Summary(unsigned int mpi_rank)
 		std::vector<double> non_truncated_evap;
 		for(const auto& rec : evaporation_records)
 		{
-			if(!rec.truncated)
+			if(!rec.truncated && Has_Positive_Evaporation_Time(rec))
 				non_truncated_evap.push_back(rec.t_evap);
 		}
 		if(!non_truncated_evap.empty())
@@ -1487,11 +1532,11 @@ void Simulation_Data::Print_Summary(unsigned int mpi_rank)
 				median = 0.5 * (non_truncated_evap[n/2 - 1] + non_truncated_evap[n/2]);
 			else
 				median = non_truncated_evap[n/2];
-			std::cout << "Evaporation time median [s]:\t" << std::scientific << std::setprecision(4) << median << " (" << non_truncated_evap.size() << " non-truncated)" << std::endl;
+			std::cout << "Evaporation time median [s]:\t" << std::scientific << std::setprecision(4) << median << " (" << non_truncated_evap.size() << " positive non-truncated)" << std::endl;
 		}
 		else
 		{
-			std::cout << "Evaporation time median:\tN/A (all truncated or no captures)" << std::endl;
+			std::cout << "Evaporation time median:\tN/A (no positive non-truncated evaporation times)" << std::endl;
 		}
 
 		std::cout << std::endl

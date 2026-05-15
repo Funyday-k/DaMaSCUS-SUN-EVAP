@@ -31,8 +31,8 @@ class Simulation_Data
 	unsigned long int max_trajectories_per_rank;
 	double initial_and_final_radius = 2.0 * libphysica::natural_units::rSun;
 	unsigned int minimum_number_of_scatterings = 1;
-	long int maximum_number_of_scatterings = 1e11;
-	unsigned long int maximum_free_time_steps = 1e12;
+	unsigned long int maximum_number_of_scatterings = DEFAULT_MAXIMUM_SCATTERINGS;
+	unsigned long int maximum_free_time_steps = DEFAULT_MAXIMUM_FREE_TIME_STEPS;
 
 	// Results
 	unsigned long int number_of_trajectories;
@@ -99,7 +99,7 @@ class Simulation_Data
 
 	Simulation_Data(unsigned int sample_size, unsigned int max_trajectories, double u_min = 0.0, unsigned int iso_rings = 1);
 
-	void Configure(double initial_radius, unsigned int min_scattering, long int max_scattering, unsigned long int max_free_steps = 1e12);
+	void Configure(double initial_radius, unsigned int min_scattering, unsigned long int max_scattering, unsigned long int max_free_steps = DEFAULT_MAXIMUM_FREE_TIME_STEPS);
 
 	void Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, SnapshotConfig snapshot_cfg = SnapshotConfig(), unsigned int fixed_seed = 0, bool capture_mode = false);
 

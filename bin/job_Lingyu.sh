@@ -9,4 +9,4 @@
 #module load cmake/3.21.2 boost/1.77.0
 
 export LD_LIBRARY_PATH=/project/kennyng/backup_DM/lib:$LD_LIBRARY_PATH
-mpirun -n 32 ./DaMaSCUS-SUN config_Lingyu.cfg
+mpirun -n 32 ./DaMaSCUS-SUN "${1:-config_Lingyu.cfg}"

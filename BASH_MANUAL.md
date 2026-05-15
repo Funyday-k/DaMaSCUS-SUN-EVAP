@@ -205,7 +205,7 @@ jout 1842563
 watch -n 5 tail -20 bin/job-1842563
 
 # 提交新任务
-cd bin && sbatch job_Lingyu.sh
+cd bin && bash submit_Lingyu.sh
 
 # 取消所有任务（危险！谨慎使用）
 squeue -u $USER -h | awk '{print $1}' | xargs scancel

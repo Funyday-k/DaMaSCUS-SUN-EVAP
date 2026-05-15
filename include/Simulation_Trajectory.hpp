@@ -26,6 +26,8 @@ constexpr int NUM_BINS = 2000;
 constexpr double R_SUN_KM = 6.957e5;  // km
 constexpr double BIN_MAX_KM = 2.0 * R_SUN_KM;  // 2 R_sun in km
 constexpr double BIN_WIDTH_KM = BIN_MAX_KM / NUM_BINS;  // ~695.7 km
+constexpr unsigned long int DEFAULT_MAXIMUM_FREE_TIME_STEPS = 1000000000000UL;
+constexpr unsigned long int DEFAULT_MAXIMUM_SCATTERINGS = 100000000000000UL;
 
 // Per-trajectory bincount result
 struct TrajectoryBincount
@@ -122,7 +124,7 @@ class Trajectory_Simulator
 	unsigned int current_mpi_rank;
 	unsigned long int current_trajectory_id;
 
-	Trajectory_Simulator(const Solar_Model& model, unsigned long int max_time_steps = 1e12, long int max_scatterings = 1e11, double max_distance = 2.0 * libphysica::natural_units::rSun);
+	Trajectory_Simulator(const Solar_Model& model, unsigned long int max_time_steps = DEFAULT_MAXIMUM_FREE_TIME_STEPS, unsigned long int max_scatterings = DEFAULT_MAXIMUM_SCATTERINGS, double max_distance = 2.0 * libphysica::natural_units::rSun);
 
 	void Fix_PRNG_Seed(int fixed_seed);
 	void Set_Snapshot_Progress_Callback(std::function<void(const Trajectory_Simulator&)> callback);

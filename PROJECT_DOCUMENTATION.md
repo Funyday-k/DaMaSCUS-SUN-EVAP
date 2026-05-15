@@ -363,6 +363,14 @@ while (未终止):
 输出: Trajectory_Result {initial, final, N_scat}
 ```
 
+当前默认数值上限：
+
+- `maximum_number_of_scatterings = 100000000000000`，即单条轨迹最多 `1e14` 次散射/碰撞。
+- `maximum_free_time_steps = 1000000000000`，即每段自由传播最多 `1e12` 个 RK45 步。
+- `R_max = 2 R_sun`，即传播逃逸边界和 bincount 半径截断均为 `2R_sun`。
+- `max_trajectory_wall_time_sec = 300 s`，配置文件可设为 `0` 表示不限制。
+- 没有独立的物理模拟时间上限；物理时间由散射次数、自由传播步数、RK45 步长上限、逃逸边界和 wall-clock 保护共同间接限制。
+
 **在线统计与输出策略**：
 
 当前 C++ 主模拟不再把每条轨迹写成 `.dat` 文件，而是在内存中在线累积径向箱计数。径向范围为 `[0, 2R_\odot)`，共 `2000` 个 bin，bin 宽约 `695.7 km`。每个 RK45 步用前一状态和当前步长累积：

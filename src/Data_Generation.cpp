@@ -905,7 +905,7 @@ Simulation_Data::Simulation_Data(unsigned int sample_size, unsigned int max_traj
     step_count_overflow_not_captured = 0;
 }
 
-void Simulation_Data::Configure(double initial_radius, unsigned int min_scattering, long int max_scattering, unsigned long int max_free_steps)
+void Simulation_Data::Configure(double initial_radius, unsigned int min_scattering, unsigned long int max_scattering, unsigned long int max_free_steps)
 {
 	initial_and_final_radius      = initial_radius;
 	minimum_number_of_scatterings = min_scattering;

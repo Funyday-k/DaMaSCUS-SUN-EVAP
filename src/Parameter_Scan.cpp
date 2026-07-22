@@ -167,6 +167,19 @@ void Configuration::Import_Parameter_Scan_Parameter()
 	{
 		interpolation_points = 0;
 	}
+	escape_radius_rsun = 2.0;
+	try
+	{
+		escape_radius_rsun = config.lookup("R_escape_Rsun");
+		if(!std::isfinite(escape_radius_rsun) || escape_radius_rsun <= 1.0)
+		{
+			std::cerr << "Error in Configuration::Import_Parameter_Scan_Parameter(): 'R_escape_Rsun' must be finite and greater than 1." << std::endl;
+			std::exit(EXIT_FAILURE);
+		}
+	}
+	catch(const SettingNotFoundException& nfex)
+	{
+	}
 	try
 	{
 		cross_section_min = config.lookup("cross_section_min");
@@ -583,6 +596,7 @@ void Configuration::Print_Summary(int mpi_rank)
 				  << "\tSample size:\t\t\t" << sample_size << std::endl
 				  << "\tFixed PRNG seed:\t\t" << (fixed_seed == 0 ? "random" : std::to_string(fixed_seed)) << std::endl
 				  << "\tMax scatterings/traj:\t\t" << maximum_number_of_scatterings << std::endl
+				  << "\tEscape radius [Rsun]:\t\t" << escape_radius_rsun << std::endl
 				  << "\tSc. rate interpolation:\t\t" << ((interpolation_points > 0) ? "[x] (Grid: " + std::to_string(interpolation_points) + "×" + std::to_string(interpolation_points) + ")" : "[ ]") << std::endl;
 		if(run_mode == "Parameter point" && isoreflection_rings > 1)
 			std::cout << "\tIsoreflection rings:\t\t" << isoreflection_rings << std::endl;

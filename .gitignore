@@ -48,6 +48,10 @@ CMakeLists.txt.user
 /evaporation/
 /evaporation_diagnostic_*/
 /evaporation_secondary_peak_*/
+/evaporation_c_controls/
+/evaporation_c_controls_mpi30/
+/evaporation_c_replay_all/
+/analysis/c_control_all_runs/
 /bincount/
 /Mission/
 /PDF/

@@ -1,0 +1,68 @@
+{
+  "generated_at_utc": "2026-07-22T08:43:27.855609+00:00",
+  "inputs": [
+    {
+      "file": "/Users/funyday/Documents/DaMaSCUS-SUN-EVAP/evaporation_c_controls/c_grid_0000_seed_20260722_r4/results_-2.000000_-36.000000/evaporation_times.txt",
+      "sha256": "d461ec1b0d4b8f0874b5383ed8733418d877030dbc1a71ad4336a919fa68b5e9"
+    },
+    {
+      "file": "/Users/funyday/Documents/DaMaSCUS-SUN-EVAP/evaporation_c_controls/c_grid_0000_seed_20260723_r4/results_-2.000000_-36.000000/evaporation_times.txt",
+      "sha256": "cc67cecba396de1887ccce61ed64684cb26730ae3f4c9eb9ed3dc6108a05e150"
+    },
+    {
+      "file": "/Users/funyday/Documents/DaMaSCUS-SUN-EVAP/evaporation_c_controls/c_grid_0000_seed_20260724_r4/results_-2.000000_-36.000000/evaporation_times.txt",
+      "sha256": "470560d01a10e3196c2d83e876f0ec3272b019d1bd7da361ac0a4c9560457d7b"
+    },
+    {
+      "file": "/Users/funyday/Documents/DaMaSCUS-SUN-EVAP/evaporation_c_controls/c_grid_0020_seed_20260722_r4/results_-2.000000_-36.000000/evaporation_times.txt",
+      "sha256": "f34997929b49d0bf3d837f5aaef7c9bcc1b082d1602f2f625a00be65f3287b45"
+    },
+    {
+      "file": "/Users/funyday/Documents/DaMaSCUS-SUN-EVAP/evaporation_c_controls/c_grid_0020_seed_20260723_r4/results_-2.000000_-36.000000/evaporation_times.txt",
+      "sha256": "8dd469edab6a96b82be79a59939156e1815a74396be91fa2abee1c91201f1c96"
+    },
+    {
+      "file": "/Users/funyday/Documents/DaMaSCUS-SUN-EVAP/evaporation_c_controls/c_grid_0020_seed_20260724_r4/results_-2.000000_-36.000000/evaporation_times.txt",
+      "sha256": "c72a4190648555b234085aa5c0f0b6aae072c09dab8d118d6c730368c3b72201"
+    },
+    {
+      "file": "/Users/funyday/Documents/DaMaSCUS-SUN-EVAP/evaporation_c_controls/c_grid_1000_seed_20260722_r4/results_-2.000000_-36.000000/evaporation_times.txt",
+      "sha256": "54170a69b01c61b283c930f0b2922fda18f826a7a4c8def6b8cc7d1d2e9d52e9"
+    },
+    {
+      "file": "/Users/funyday/Documents/DaMaSCUS-SUN-EVAP/evaporation_c_controls/c_grid_1000_seed_20260723_r4/results_-2.000000_-36.000000/evaporation_times.txt",
+      "sha256": "4d0f8c9ce53f465b2b891dfd0802ada7cf9a65f5f9243b61c4887500d0f72b68"
+    },
+    {
+      "file": "/Users/funyday/Documents/DaMaSCUS-SUN-EVAP/evaporation_c_controls/c_grid_1000_seed_20260724_r4/results_-2.000000_-36.000000/evaporation_times.txt",
+      "sha256": "769fcb1040f76b70c46984d6c4a5bf0ba4232f3ff37ed65351fb7596b21a9b3d"
+    },
+    {
+      "file": "/Users/funyday/Documents/DaMaSCUS-SUN-EVAP/evaporation_c_controls/c_grid_2000_seed_20260722_r4/results_-2.000000_-36.000000/evaporation_times.txt",
+      "sha256": "7cee4b50712bfce5a7ff8476f93ca4d7e1f4ec08b039ace0451e0eec91ac8df9"
+    },
+    {
+      "file": "/Users/funyday/Documents/DaMaSCUS-SUN-EVAP/evaporation_c_controls/c_grid_2000_seed_20260723_r4/results_-2.000000_-36.000000/evaporation_times.txt",
+      "sha256": "a67786be263d9f2779d6e48d9b0c3e7cd45610e6343f155435feef5694413f01"
+    },
+    {
+      "file": "/Users/funyday/Documents/DaMaSCUS-SUN-EVAP/evaporation_c_controls/c_grid_2000_seed_20260724_r4/results_-2.000000_-36.000000/evaporation_times.txt",
+      "sha256": "31b797660ad93a7ebfd77b02843a1411a5b28ec3d52205edb472f32edc3e3a05"
+    },
+    {
+      "file": "/Users/funyday/Documents/DaMaSCUS-SUN-EVAP/evaporation_c_controls_mpi30/c_grid_1000_seed_20260722_r30/results_-2.000000_-36.000000/evaporation_times.txt",
+      "sha256": "87a520ee220f582be4cb562680ffcc31abe09e8790e06289e4a234de88eb539a"
+    }
+  ],
+  "outputs": [
+    "run_metrics.csv",
+    "quantile_shifts.csv",
+    "grid_summary.csv",
+    "grid_quantile_summary.csv",
+    "pairwise_controls.csv",
+    "c_control_summary.png"
+  ],
+  "reference": "/Users/funyday/Documents/DaMaSCUS-SUN/data/Trajectoies/results_-2.000000_-36.000000/evaporation_times.txt",
+  "reference_sha256": "67428571bbdfb7ce868fb9caace96369b0dc9f424fa623a7418250e39c94c8a6",
+  "schema_version": "c-control-analysis-v1"
+}

@@ -161,6 +161,7 @@ Configuration files use libconfig syntax. The most important controls are:
 | `fixed_seed` | Optional non-negative PRNG seed. `0` or an omitted setting uses nondeterministic seeding; a nonzero value is expanded independently by MPI rank. |
 | `max_trajectories` | Optional hard cap on generated trajectories. `0` or unset means no trajectory-count cap. |
 | `interpolation_points` | Scattering-rate interpolation grid size. `0` disables interpolation; production runs should compare representative values before fixing this. |
+| `R_escape_Rsun` | Optional trajectory escape boundary in solar radii. Defaults to `2.0` and must be greater than `1.0`. |
 | `output_dir` | Root directory for generated result folders; a trailing `/` is optional. A relative path is resolved from the process working directory, so production batch jobs should normally use an absolute path. |
 | `DM_mass` | Dark matter mass in GeV. |
 | `DM_cross_section_nucleon` | DM-nucleon cross section in cm^2. |

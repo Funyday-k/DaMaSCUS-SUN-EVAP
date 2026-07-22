@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import re
@@ -30,6 +31,14 @@ from analyze_evaporation_reproduction import (
 
 
 RUN_PATTERN = re.compile(r"^b_rmax_([0-9p]+)_grid_(\d+)_seed_(\d+)_r(\d+)$")
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def read_tsv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
@@ -248,6 +257,18 @@ def main() -> int:
     manifest = {
         "schema_version": "b-rmax-control-analysis-v1",
         "control_root": str(args.control_root.resolve()),
+        "inputs": [
+            {
+                "R_escape_Rsun": run["radius"],
+                "summary": str(run["result_dir"] / "trajectory_summary.tsv"),
+                "summary_sha256": sha256(run["result_dir"] / "trajectory_summary.tsv"),
+                "events": str(run["result_dir"] / "trajectory_events.tsv"),
+                "events_sha256": sha256(run["result_dir"] / "trajectory_events.tsv"),
+                "metadata": str(run["result_dir"] / "run_metadata.json"),
+                "metadata_sha256": sha256(run["result_dir"] / "run_metadata.json"),
+            }
+            for run in runs
+        ],
         "outputs": ["rmax_metrics.csv", "rmax_quantiles.csv", "strata_summary.csv", "stratified_replays.tsv", "stratified_events.tsv", "b_rmax_controls.png"],
         "strata": strata_summary,
     }

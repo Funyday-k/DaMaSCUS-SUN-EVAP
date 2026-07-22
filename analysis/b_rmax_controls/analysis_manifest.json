@@ -1,0 +1,85 @@
+{
+  "control_root": "/Users/funyday/Documents/DaMaSCUS-SUN-EVAP/evaporation_b_rmax_controls",
+  "inputs": [
+    {
+      "R_escape_Rsun": 2.0,
+      "events": "/Users/funyday/Documents/DaMaSCUS-SUN-EVAP/evaporation_b_rmax_controls/b_rmax_2p0_grid_1000_seed_20260722_r4/results_-2.000000_-34.000000/trajectory_events.tsv",
+      "events_sha256": "9d680d19c95226ae4eadea3dc6736c643751deae84838a8c99ab28c5a6a4bc18",
+      "metadata": "/Users/funyday/Documents/DaMaSCUS-SUN-EVAP/evaporation_b_rmax_controls/b_rmax_2p0_grid_1000_seed_20260722_r4/results_-2.000000_-34.000000/run_metadata.json",
+      "metadata_sha256": "3491b0d4d8bd8c44b96dbebd765aad71cfb3f651ced100b69ef016fc92f39575",
+      "summary": "/Users/funyday/Documents/DaMaSCUS-SUN-EVAP/evaporation_b_rmax_controls/b_rmax_2p0_grid_1000_seed_20260722_r4/results_-2.000000_-34.000000/trajectory_summary.tsv",
+      "summary_sha256": "8905812c5ea2b077cc88838336e9febd7f8680cade4d05a73540f453a1e6a7da"
+    },
+    {
+      "R_escape_Rsun": 3.0,
+      "events": "/Users/funyday/Documents/DaMaSCUS-SUN-EVAP/evaporation_b_rmax_controls/b_rmax_3p0_grid_1000_seed_20260722_r4/results_-2.000000_-34.000000/trajectory_events.tsv",
+      "events_sha256": "821069042900da9fe601dbfba67fdd79baa7c8e7943de1746e542f79a35af093",
+      "metadata": "/Users/funyday/Documents/DaMaSCUS-SUN-EVAP/evaporation_b_rmax_controls/b_rmax_3p0_grid_1000_seed_20260722_r4/results_-2.000000_-34.000000/run_metadata.json",
+      "metadata_sha256": "0c266b5937476b582e9cfd484aa5c84e599bdd84f0eda4deeaecde1c49510cfd",
+      "summary": "/Users/funyday/Documents/DaMaSCUS-SUN-EVAP/evaporation_b_rmax_controls/b_rmax_3p0_grid_1000_seed_20260722_r4/results_-2.000000_-34.000000/trajectory_summary.tsv",
+      "summary_sha256": "132554c0ce3c60a92ebb014e64a44346e06fa10d1a78a38b67079a29c8b33500"
+    },
+    {
+      "R_escape_Rsun": 5.0,
+      "events": "/Users/funyday/Documents/DaMaSCUS-SUN-EVAP/evaporation_b_rmax_controls/b_rmax_5p0_grid_1000_seed_20260722_r4/results_-2.000000_-34.000000/trajectory_events.tsv",
+      "events_sha256": "d7e844d0bd2294dbc856a9b329868ac25941b94e835fff44a159fc6256df74c9",
+      "metadata": "/Users/funyday/Documents/DaMaSCUS-SUN-EVAP/evaporation_b_rmax_controls/b_rmax_5p0_grid_1000_seed_20260722_r4/results_-2.000000_-34.000000/run_metadata.json",
+      "metadata_sha256": "a4caece5bc025c303241e96acd1be1a6c7d6cc7e727b4421d63d9c6c8a99b23e",
+      "summary": "/Users/funyday/Documents/DaMaSCUS-SUN-EVAP/evaporation_b_rmax_controls/b_rmax_5p0_grid_1000_seed_20260722_r4/results_-2.000000_-34.000000/trajectory_summary.tsv",
+      "summary_sha256": "8e3bc3a48f1f2cf3ff4f6fef3e4fe53393d2cae81d359579e4b04f1d1a3b496d"
+    }
+  ],
+  "outputs": [
+    "rmax_metrics.csv",
+    "rmax_quantiles.csv",
+    "strata_summary.csv",
+    "stratified_replays.tsv",
+    "stratified_events.tsv",
+    "b_rmax_controls.png"
+  ],
+  "schema_version": "b-rmax-control-analysis-v1",
+  "strata": [
+    {
+      "all_completed_candidates": 2087,
+      "center_log10_s": 2.485795454545455,
+      "half_width_dex": 0.25,
+      "median_capture_energy_eV": -8.620025437974135,
+      "median_capture_radius_Rsun": 0.5041170921034344,
+      "median_log10_lifetime_s": 2.4869760138129315,
+      "median_outside_fraction": 0.3791398342972104,
+      "median_scatter_count": 12.0,
+      "recapture_fraction": 0.34,
+      "selected_replays": 100,
+      "stratum": "short_peak",
+      "traced_candidates": 224
+    },
+    {
+      "all_completed_candidates": 496,
+      "center_log10_s": 3.440340909090909,
+      "half_width_dex": 0.18,
+      "median_capture_energy_eV": -18.65594317642325,
+      "median_capture_radius_Rsun": 0.5027116800571071,
+      "median_log10_lifetime_s": 3.4264697909193007,
+      "median_outside_fraction": 0.10720185972311248,
+      "median_scatter_count": 15.5,
+      "recapture_fraction": 0.44,
+      "selected_replays": 50,
+      "stratum": "valley",
+      "traced_candidates": 50
+    },
+    {
+      "all_completed_candidates": 1054,
+      "center_log10_s": 4.036931818181818,
+      "half_width_dex": 0.25,
+      "median_capture_energy_eV": -10.340448528077607,
+      "median_capture_radius_Rsun": 0.5881612102195332,
+      "median_log10_lifetime_s": 4.039554004027121,
+      "median_outside_fraction": 0.7480443087914176,
+      "median_scatter_count": 7.0,
+      "recapture_fraction": 0.28,
+      "selected_replays": 100,
+      "stratum": "long_peak",
+      "traced_candidates": 110
+    }
+  ]
+}

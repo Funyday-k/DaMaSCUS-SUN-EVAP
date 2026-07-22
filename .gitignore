@@ -53,6 +53,8 @@ CMakeLists.txt.user
 /evaporation_c_replay_all/
 /analysis/c_control_all_runs/
 /evaporation_b_rmax_controls/
+/analysis/b_rmax_quick/
+/analysis/b_rmax_controls/
 /bincount/
 /Mission/
 /PDF/

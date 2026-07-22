@@ -1262,7 +1262,10 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 				const double interpolated_radius = boundary_event.Radius();
 				if(std::isfinite(interpolated_radius) && interpolated_radius > 0.0)
 					boundary_event.position = maximum_distance / interpolated_radius * boundary_event.position;
-				r_boundary = boundary_event.Radius();
+				// The crossing has already been bracketed and solved.  Recomputing
+				// the norm after radial projection can round one ULP below the
+				// target and incorrectly bypass the strict boundary branch.
+				r_boundary = maximum_distance;
 				v_boundary = boundary_event.Speed();
 			}
 

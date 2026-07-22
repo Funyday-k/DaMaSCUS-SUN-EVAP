@@ -170,7 +170,15 @@ void Configuration::Import_Parameter_Scan_Parameter()
 	escape_radius_rsun = 2.0;
 	try
 	{
-		escape_radius_rsun = config.lookup("R_escape_Rsun");
+		try
+		{
+			escape_radius_rsun = config.lookup("R_escape_Rsun");
+		}
+		catch(const SettingTypeException& type_error)
+		{
+			const int integer_radius = config.lookup("R_escape_Rsun");
+			escape_radius_rsun = static_cast<double>(integer_radius);
+		}
 		if(!std::isfinite(escape_radius_rsun) || escape_radius_rsun <= 1.0)
 		{
 			std::cerr << "Error in Configuration::Import_Parameter_Scan_Parameter(): 'R_escape_Rsun' must be finite and greater than 1." << std::endl;

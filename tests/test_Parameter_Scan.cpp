@@ -41,6 +41,7 @@ TEST(TestParameterScan, TestConfiguration)
 	EXPECT_EQ(cfg.cross_sections, 5);
 	EXPECT_EQ(cfg.interpolation_points, 150);
 	EXPECT_EQ(cfg.isoreflection_rings, 3);
+	EXPECT_EQ(g_top_level_dir, "./unit_test_output/");
 	EXPECT_TRUE(cfg.snapshot_config.enabled);
 	EXPECT_DOUBLE_EQ(cfg.snapshot_config.interval_seconds, 10.0);
 }

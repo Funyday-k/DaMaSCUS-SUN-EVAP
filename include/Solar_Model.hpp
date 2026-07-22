@@ -1,6 +1,8 @@
 #ifndef __Solar_Model_hpp_
 #define __Solar_Model_hpp_
 
+#include <string>
+
 #include "libphysica/Linear_Algebra.hpp"
 #include "libphysica/Numerics.hpp"
 
@@ -9,6 +11,11 @@
 
 namespace DaMaSCUS_SUN
 {
+
+// Locate the AGSS09 input table for build-tree and installed executions.
+// DAMASCUS_SUN_SOLAR_MODEL (file) and DAMASCUS_SUN_DATA_DIR (directory)
+// provide explicit runtime overrides.
+std::string Locate_Solar_Model_Data_File(const std::string& executable_hint = "");
 
 // 1. Nuclear targets in the Sun
 class Solar_Isotope : public obscura::Isotope
@@ -30,7 +37,7 @@ class Solar_Model
 
 	// Auxiliary functions for the data import
 	std::vector<std::vector<double>> raw_data;
-	void Import_Raw_Data();
+	void Import_Raw_Data(const std::string& data_file);
 	std::vector<std::vector<double>> Create_Interpolation_Table(unsigned int row) const;
 	std::vector<std::vector<double>> Create_Escape_Speed_Table();
 	std::vector<std::vector<double>> Create_Number_Density_Table(unsigned int target, double mass) const;
@@ -52,7 +59,7 @@ class Solar_Model
 	std::string name;
 	std::vector<Solar_Isotope> target_isotopes;
 
-	Solar_Model();
+	explicit Solar_Model(const std::string& data_file = "");
 
 	double Mass(double r);
 	double Mass_Density(double r);

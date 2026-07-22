@@ -16,9 +16,11 @@
 #include <mpi.h>
 #include <numeric>
 #include <unordered_set>
+#include <unordered_map>
 #include <sstream>
 #include <stdexcept>
 #include <sys/stat.h>
+#include <type_traits>
 #include <unistd.h>
 #include <utility>
 #include <vector>
@@ -31,6 +33,7 @@
 #include "MPI_Tail_Work.hpp"
 #include "Snapshot_Heartbeat.hpp"
 #include "Snapshot_Shared_State.hpp"
+#include "version.hpp"
 
 namespace DaMaSCUS_SUN
 {
@@ -138,6 +141,7 @@ bool Build_Evaporation_Record(const TrajectoryBincount& bincount, int mpi_rank, 
 	rec.completion_wall_time_sec = completion_wall_time_sec;
 	rec.t_evap = event_observed ? lifetime_unbinding : std::numeric_limits<double>::quiet_NaN();
 	rec.t_capture = bincount.t_capture;
+	rec.t_first_unbinding_scatter = std::isfinite(bincount.t_first_unbinding_scatter) ? bincount.t_first_unbinding_scatter : -1.0;
 	rec.t_final_unbinding_scatter = std::isfinite(bincount.t_final_unbinding_scatter) ? bincount.t_final_unbinding_scatter : -1.0;
 	rec.t_boundary_escape = std::isfinite(bincount.t_boundary_escape) ? bincount.t_boundary_escape : -1.0;
 	rec.t_termination = t_termination;
@@ -147,6 +151,13 @@ bool Build_Evaporation_Record(const TrajectoryBincount& bincount, int mpi_rank, 
 	rec.r_first_negative_km = bincount.r_first_negative_km;
 	rec.E_first_negative_eV = bincount.E_first_negative_eV;
 	rec.dE_first_negative_from_prev_eV = bincount.dE_first_negative_from_prev_eV;
+	rec.r_first_unbinding_km = bincount.r_first_unbinding_km;
+	rec.E_first_unbinding_eV = bincount.E_first_unbinding_eV;
+	rec.r_final_unbinding_km = bincount.r_final_unbinding_km;
+	rec.E_final_unbinding_eV = bincount.E_final_unbinding_eV;
+	rec.r_boundary_escape_km = bincount.r_boundary_escape_km;
+	rec.vr_boundary_escape_km_s = bincount.vr_boundary_escape_km_s;
+	rec.E_boundary_escape_eV = bincount.E_boundary_escape_eV;
 	rec.event_observed = event_observed;
 	rec.boundary_escape_observed = survival_valid && bincount.boundary_escape_observed;
 	rec.survival_valid = survival_valid;
@@ -160,7 +171,57 @@ bool Build_Evaporation_Record(const TrajectoryBincount& bincount, int mpi_rank, 
 	rec.max_free_energy_drift_eV = bincount.max_free_energy_drift_eV;
 	rec.max_free_energy_drift_rel = bincount.max_free_energy_drift_rel;
 	rec.number_of_scatterings = bincount.number_of_scatterings;
+	rec.number_of_bound_to_unbound = bincount.number_of_bound_to_unbound;
+	rec.number_of_recaptures = bincount.number_of_recaptures;
+	rec.number_of_integrator_steps_after_capture = bincount.number_of_integrator_steps_after_capture;
+	rec.min_energy_after_capture_eV = bincount.min_energy_after_capture_eV;
+	rec.max_radius_after_capture_km = bincount.max_radius_after_capture_km;
+	rec.time_inside_sun_after_capture_sec = bincount.time_inside_sun_after_capture_sec;
+	rec.time_outside_sun_after_capture_sec = bincount.time_outside_sun_after_capture_sec;
 	return true;
+}
+
+const char* Termination_Reason_Key(TrajectoryTerminationReason reason)
+{
+	switch(reason)
+	{
+		case TrajectoryTerminationReason::OutwardEscape: return "outward_escape";
+		case TrajectoryTerminationReason::Scatter: return "scatter";
+		case TrajectoryTerminationReason::WallTimeLimit: return "wall_time_limit";
+		case TrajectoryTerminationReason::MaxFreeSteps: return "max_free_steps";
+		case TrajectoryTerminationReason::MaxScatterings: return "max_scatterings";
+		case TrajectoryTerminationReason::NonFiniteState: return "non_finite_state";
+		case TrajectoryTerminationReason::SpeedLimit: return "speed_limit";
+		case TrajectoryTerminationReason::NumericalFailure: return "numerical_failure";
+		case TrajectoryTerminationReason::CaptureMode: return "capture_mode";
+		case TrajectoryTerminationReason::EnergyDriftEscape: return "energy_drift_escape";
+		case TrajectoryTerminationReason::Unknown:
+		default: return "unknown";
+	}
+}
+
+bool Diagnostic_Trace_Selected(uint64_t trace_seed, int rank, uint64_t trajectory_id, double rate)
+{
+	if(rate <= 0.0)
+		return false;
+	if(rate >= 1.0)
+		return true;
+	uint64_t value = trace_seed ^ (static_cast<uint64_t>(static_cast<uint32_t>(rank)) << 32) ^ trajectory_id;
+	value += 0x9e3779b97f4a7c15ULL;
+	value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
+	value = (value ^ (value >> 27)) * 0x94d049bb133111ebULL;
+	value ^= value >> 31;
+	const double unit = static_cast<double>(value >> 11) * (1.0 / 9007199254740992.0);
+	return unit < rate;
+}
+
+const char* Diagnostic_Status(const EvaporationRecord& rec)
+{
+	if(rec.event_observed)
+		return "escaped";
+	if(Is_Numerical_Termination(rec.termination_reason))
+		return "numerical_failure";
+	return "censored";
 }
 
 bool Make_Compact_Evaporation_Event(const EvaporationRecord& rec, CompactEvaporationEvent& event)
@@ -443,6 +504,11 @@ void Build_MPI_Gatherv_Layout(const std::vector<int>& item_counts, int fields_pe
 }
 }
 
+bool TrajectoryTraceSelected(uint64_t trace_seed, int rank, uint64_t trajectory_id, double rate)
+{
+	return Diagnostic_Trace_Selected(trace_seed, rank, trajectory_id, rate);
+}
+
 Simulation_Data::Simulation_Data(unsigned int sample_size, unsigned int max_trajectories, double u_min, unsigned int iso_rings)
 : requested_captured_particles(sample_size),
   normal_mode_mpi_sync_interval(NORMAL_MODE_MPI_SYNC_INTERVAL_FALLBACK),
@@ -485,6 +551,19 @@ void Simulation_Data::Configure(double initial_radius, unsigned int min_scatteri
 	maximum_free_time_steps       = max_free_steps;
 }
 
+void Simulation_Data::Configure_Trajectory_Diagnostics(const TrajectoryDiagnosticConfig& config)
+{
+	if(!std::isfinite(config.trace_rate) || config.trace_rate < 0.0 || config.trace_rate > 1.0)
+		throw std::invalid_argument("trajectory diagnostic trace rate must lie in [0, 1]");
+	trajectory_diagnostic_config = config;
+	if(!trajectory_diagnostic_config.summary_enabled)
+	{
+		trajectory_diagnostic_config.events_enabled = false;
+		trajectory_diagnostic_config.trace_rate = 0.0;
+	}
+	evaporation_diagnostics_enabled = trajectory_diagnostic_config.summary_enabled;
+}
+
 void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, SnapshotConfig snapshot_cfg, unsigned int fixed_seed, bool capture_mode)
 {
 	if(capture_mode)
@@ -499,6 +578,15 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 			throw std::runtime_error("snapshot heartbeat requires MPI_THREAD_FUNNELED or stronger thread support");
 	}
 	normal_mode_mpi_sync_interval = capture_mode ? 0UL : Normal_Mode_MPI_Sync_Interval(In_Units(DM.Sigma_Proton(), cm * cm));
+	diagnostic_base_seed = fixed_seed;
+	diagnostic_run_id = 0;
+	if(evaporation_diagnostics_enabled && mpi_rank == 0)
+	{
+		diagnostic_run_id = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+			std::chrono::system_clock::now().time_since_epoch()).count());
+	}
+	if(evaporation_diagnostics_enabled)
+		MPI_Bcast(&diagnostic_run_id, 1, MPI_UINT64_T, 0, MPI_COMM_WORLD);
 
 	auto time_start = std::chrono::steady_clock::now();
 	unsigned long int local_captured = 0;
@@ -744,13 +832,27 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 
 		auto simulate_one_trajectory = [&]()
 		{
+			const unsigned long int trajectory_id = local_total + 1;
+			const bool trace_selected = trajectory_diagnostic_config.events_enabled
+			                         && Diagnostic_Trace_Selected(trajectory_diagnostic_config.trace_seed,
+			                                                      mpi_rank, trajectory_id,
+			                                                      trajectory_diagnostic_config.trace_rate);
+			const std::string rng_state_before_initial_conditions = trace_selected
+			                                                       ? simulator.Serialize_PRNG_State()
+			                                                       : std::string();
+			simulator.Enable_Diagnostic_Trace(trace_selected);
 			Event IC = Initial_Conditions(halo_model, solar_model, simulator.PRNG);
 			const bool initial_shift_ok = Hyperbolic_Kepler_Shift(IC, initial_and_final_radius);
+			const std::string rng_state_before_simulation = trace_selected
+			                                                ? simulator.Serialize_PRNG_State()
+			                                                : std::string();
 			if(!initial_shift_ok)
 			{
 				number_of_initial_shift_failures++;
 				number_of_numerical_failures++;
 			}
+			if(initial_shift_ok)
+				simulator.current_trajectory_id = trajectory_id - 1;
 			Trajectory_Result trajectory = initial_shift_ok
 			    ? simulator.Simulate(IC, DM, mpi_rank)
 			    : [&]() {
@@ -786,6 +888,24 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 
 				if(!capture_mode)
 				{
+					if(trace_selected)
+					{
+						trajectory_diagnostic_events.insert(trajectory_diagnostic_events.end(),
+						                                    trajectory.diagnostic_events.begin(),
+						                                    trajectory.diagnostic_events.end());
+						TrajectoryReplayRecord replay;
+						replay.rank = mpi_rank;
+						replay.trajectory_id = trajectory_id;
+						replay.initial_time_s = In_Units(IC.time, sec);
+						for(size_t component = 0; component < 3; component++)
+						{
+							replay.initial_position_km[component] = In_Units(IC.position[component], km);
+							replay.initial_velocity_km_s[component] = In_Units(IC.velocity[component], km / sec);
+						}
+						replay.rng_state_before_initial_conditions = rng_state_before_initial_conditions;
+						replay.rng_state_before_simulation = rng_state_before_simulation;
+						trajectory_replay_records.push_back(std::move(replay));
+					}
 					for(int b = 0; b < NUM_BINS; b++)
 					{
 						captured_dt_hist[b]   += trajectory.bincount.dt_hist[b];
@@ -1053,8 +1173,8 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 		MPI_Gather(&local_evap_count, 1, MPI_INT, mpi_rank == 0 ? evap_counts.data() : nullptr, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
 		constexpr int EVAPORATION_MPI_INT_FIELDS = 8;
-		constexpr int EVAPORATION_MPI_UINT_FIELDS = 2;
-		constexpr int EVAPORATION_MPI_DOUBLE_FIELDS = 14;
+		constexpr int EVAPORATION_MPI_UINT_FIELDS = 5;
+		constexpr int EVAPORATION_MPI_DOUBLE_FIELDS = 26;
 		std::vector<int> local_evap_ints(local_evap_count * EVAPORATION_MPI_INT_FIELDS);
 		std::vector<unsigned long long> local_evap_uints(local_evap_count * EVAPORATION_MPI_UINT_FIELDS);
 		std::vector<double> local_evap_doubles(local_evap_count * EVAPORATION_MPI_DOUBLE_FIELDS);
@@ -1071,6 +1191,9 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 
 			local_evap_uints[EVAPORATION_MPI_UINT_FIELDS*i] = static_cast<unsigned long long>(evaporation_records[i].trajectory_id);
 			local_evap_uints[EVAPORATION_MPI_UINT_FIELDS*i + 1] = static_cast<unsigned long long>(evaporation_records[i].number_of_scatterings);
+			local_evap_uints[EVAPORATION_MPI_UINT_FIELDS*i + 2] = static_cast<unsigned long long>(evaporation_records[i].number_of_bound_to_unbound);
+			local_evap_uints[EVAPORATION_MPI_UINT_FIELDS*i + 3] = static_cast<unsigned long long>(evaporation_records[i].number_of_recaptures);
+			local_evap_uints[EVAPORATION_MPI_UINT_FIELDS*i + 4] = static_cast<unsigned long long>(evaporation_records[i].number_of_integrator_steps_after_capture);
 
 			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i] = evaporation_records[i].completion_wall_time_sec;
 			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 1] = evaporation_records[i].t_evap;
@@ -1086,6 +1209,18 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 11] = evaporation_records[i].dE_first_negative_from_prev_eV;
 			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 12] = evaporation_records[i].max_free_energy_drift_eV;
 			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 13] = evaporation_records[i].max_free_energy_drift_rel;
+			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 14] = evaporation_records[i].t_first_unbinding_scatter;
+			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 15] = evaporation_records[i].r_first_unbinding_km;
+			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 16] = evaporation_records[i].E_first_unbinding_eV;
+			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 17] = evaporation_records[i].r_final_unbinding_km;
+			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 18] = evaporation_records[i].E_final_unbinding_eV;
+			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 19] = evaporation_records[i].r_boundary_escape_km;
+			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 20] = evaporation_records[i].vr_boundary_escape_km_s;
+			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 21] = evaporation_records[i].E_boundary_escape_eV;
+			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 22] = evaporation_records[i].min_energy_after_capture_eV;
+			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 23] = evaporation_records[i].max_radius_after_capture_km;
+			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 24] = evaporation_records[i].time_inside_sun_after_capture_sec;
+			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 25] = evaporation_records[i].time_outside_sun_after_capture_sec;
 		}
 
 		std::vector<int> recv_counts, displacements;
@@ -1130,6 +1265,7 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 		            MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
 		evaporation_records.clear();
+		compact_evaporation_events.clear();
 		if(mpi_rank == 0)
 		{
 			evaporation_records.resize(total_evap);
@@ -1159,6 +1295,28 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 				evaporation_records[i].max_free_energy_drift_eV = global_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 12];
 				evaporation_records[i].max_free_energy_drift_rel = global_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 13];
 				evaporation_records[i].number_of_scatterings = static_cast<unsigned long int>(global_evap_uints[EVAPORATION_MPI_UINT_FIELDS*i + 1]);
+				evaporation_records[i].number_of_bound_to_unbound = static_cast<unsigned long int>(global_evap_uints[EVAPORATION_MPI_UINT_FIELDS*i + 2]);
+				evaporation_records[i].number_of_recaptures = static_cast<unsigned long int>(global_evap_uints[EVAPORATION_MPI_UINT_FIELDS*i + 3]);
+				evaporation_records[i].number_of_integrator_steps_after_capture = static_cast<unsigned long int>(global_evap_uints[EVAPORATION_MPI_UINT_FIELDS*i + 4]);
+				evaporation_records[i].t_first_unbinding_scatter = global_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 14];
+				evaporation_records[i].r_first_unbinding_km = global_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 15];
+				evaporation_records[i].E_first_unbinding_eV = global_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 16];
+				evaporation_records[i].r_final_unbinding_km = global_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 17];
+				evaporation_records[i].E_final_unbinding_eV = global_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 18];
+				evaporation_records[i].r_boundary_escape_km = global_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 19];
+				evaporation_records[i].vr_boundary_escape_km_s = global_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 20];
+				evaporation_records[i].E_boundary_escape_eV = global_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 21];
+				evaporation_records[i].min_energy_after_capture_eV = global_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 22];
+				evaporation_records[i].max_radius_after_capture_km = global_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 23];
+				evaporation_records[i].time_inside_sun_after_capture_sec = global_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 24];
+				evaporation_records[i].time_outside_sun_after_capture_sec = global_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 25];
+			}
+			compact_evaporation_events.reserve(evaporation_records.size());
+			for(const auto& record : evaporation_records)
+			{
+				CompactEvaporationEvent event;
+				if(Make_Compact_Evaporation_Event(record, event))
+					compact_evaporation_events.push_back(event);
 			}
 		}
 	}
@@ -1200,6 +1358,100 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 				const size_t rank_offset = static_cast<size_t>(rank) * static_cast<size_t>(max_evap_count);
 				for(int i = 0; i < evap_counts[rank]; i++)
 					compact_evaporation_events.push_back(global_evap_padded[rank_offset + static_cast<size_t>(i)]);
+			}
+		}
+	}
+
+	if(evaporation_diagnostics_enabled)
+	{
+		static_assert(std::is_trivially_copyable<TrajectoryDiagnosticEvent>::value,
+		              "trajectory diagnostic events must remain MPI byte-copyable");
+		const int local_event_count = static_cast<int>(trajectory_diagnostic_events.size());
+		std::vector<int> event_counts(mpi_processes, 0);
+		MPI_Gather(&local_event_count, 1, MPI_INT,
+		           mpi_rank == 0 ? event_counts.data() : nullptr, 1, MPI_INT, 0, MPI_COMM_WORLD);
+		std::vector<int> event_recv_counts;
+		std::vector<int> event_displacements;
+		int total_event_count = 0;
+		std::vector<TrajectoryDiagnosticEvent> global_events;
+		if(mpi_rank == 0)
+		{
+			Build_MPI_Gatherv_Layout(event_counts, static_cast<int>(sizeof(TrajectoryDiagnosticEvent)),
+			                         event_recv_counts, event_displacements, total_event_count);
+			global_events.resize(static_cast<size_t>(total_event_count));
+		}
+		MPI_Gatherv(trajectory_diagnostic_events.empty() ? nullptr : trajectory_diagnostic_events.data(),
+		            local_event_count * static_cast<int>(sizeof(TrajectoryDiagnosticEvent)), MPI_BYTE,
+		            mpi_rank == 0 && !global_events.empty() ? global_events.data() : nullptr,
+		            mpi_rank == 0 ? event_recv_counts.data() : nullptr,
+		            mpi_rank == 0 ? event_displacements.data() : nullptr,
+		            MPI_BYTE, 0, MPI_COMM_WORLD);
+		trajectory_diagnostic_events.clear();
+		if(mpi_rank == 0)
+			trajectory_diagnostic_events.swap(global_events);
+
+		auto encode_rng_state = [](std::string state) {
+			std::replace(state.begin(), state.end(), ' ', ',');
+			return state;
+		};
+		std::ostringstream local_replay_stream;
+		local_replay_stream << std::scientific << std::setprecision(17);
+		for(const auto& replay : trajectory_replay_records)
+		{
+			local_replay_stream << replay.rank << '\t' << replay.trajectory_id << '\t' << replay.initial_time_s;
+			for(double value : replay.initial_position_km)
+				local_replay_stream << '\t' << value;
+			for(double value : replay.initial_velocity_km_s)
+				local_replay_stream << '\t' << value;
+			local_replay_stream << '\t' << encode_rng_state(replay.rng_state_before_initial_conditions)
+			                    << '\t' << encode_rng_state(replay.rng_state_before_simulation) << '\n';
+		}
+		const std::string local_replay_text = local_replay_stream.str();
+		const int local_replay_bytes = static_cast<int>(local_replay_text.size());
+		std::vector<int> replay_byte_counts(mpi_processes, 0);
+		MPI_Gather(&local_replay_bytes, 1, MPI_INT,
+		           mpi_rank == 0 ? replay_byte_counts.data() : nullptr, 1, MPI_INT, 0, MPI_COMM_WORLD);
+		std::vector<int> replay_recv_counts;
+		std::vector<int> replay_displacements;
+		int total_replay_bytes = 0;
+		std::vector<char> global_replay_text;
+		if(mpi_rank == 0)
+		{
+			Build_MPI_Gatherv_Layout(replay_byte_counts, 1, replay_recv_counts, replay_displacements, total_replay_bytes);
+			global_replay_text.resize(static_cast<size_t>(total_replay_bytes));
+		}
+		MPI_Gatherv(local_replay_text.empty() ? nullptr : local_replay_text.data(), local_replay_bytes, MPI_CHAR,
+		            mpi_rank == 0 && !global_replay_text.empty() ? global_replay_text.data() : nullptr,
+		            mpi_rank == 0 ? replay_recv_counts.data() : nullptr,
+		            mpi_rank == 0 ? replay_displacements.data() : nullptr,
+		            MPI_CHAR, 0, MPI_COMM_WORLD);
+		trajectory_replay_records.clear();
+		if(mpi_rank == 0)
+		{
+			std::string combined(global_replay_text.begin(), global_replay_text.end());
+			std::istringstream lines(combined);
+			std::string line;
+			while(std::getline(lines, line))
+			{
+				if(line.empty())
+					continue;
+				TrajectoryReplayRecord replay;
+				std::string initial_rng_state;
+				std::string simulation_rng_state;
+				std::istringstream fields(line);
+				fields >> replay.rank >> replay.trajectory_id >> replay.initial_time_s;
+				for(double& value : replay.initial_position_km)
+					fields >> value;
+				for(double& value : replay.initial_velocity_km_s)
+					fields >> value;
+				fields >> initial_rng_state >> simulation_rng_state;
+				if(!fields)
+					throw std::runtime_error("Perform_MPI_Reductions(): failed to parse trajectory replay record.");
+				std::replace(initial_rng_state.begin(), initial_rng_state.end(), ',', ' ');
+				std::replace(simulation_rng_state.begin(), simulation_rng_state.end(), ',', ' ');
+				replay.rng_state_before_initial_conditions = std::move(initial_rng_state);
+				replay.rng_state_before_simulation = std::move(simulation_rng_state);
+				trajectory_replay_records.push_back(std::move(replay));
 			}
 		}
 	}
@@ -1257,6 +1509,9 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 	std::remove((output_dir + "/captured_bincount.txt").c_str());
 	std::remove((output_dir + "/not_captured_bincount.txt").c_str());
 	std::remove((output_dir + "/evaporation_diagnostics.txt").c_str());
+	std::remove((output_dir + "/run_metadata.json").c_str());
+	std::remove((output_dir + "/trajectory_summary.tsv").c_str());
+	std::remove((output_dir + "/trajectory_events.tsv").c_str());
 	std::remove((output_dir + "/evaporation_" + "summary.txt").c_str());
 	std::remove((output_dir + "/evaporation_" + "mode_summary.txt").c_str());
 	std::remove((output_dir + "/evaporation_" + "mode_" + "bincount.txt").c_str());
@@ -1295,6 +1550,277 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 	bool evaporation_times_ok = Write_Final_Evaporation_Time_File(Evaporation_Log_Path_From_Output_Dir(output_dir), mass_gev, sigma_cm2, compact_evaporation_events);
 	if(!evaporation_times_ok)
 		std::cerr << "Warning in Write_Output_Files(): failed to write evaporation_times.txt" << std::endl;
+
+	if(evaporation_diagnostics_enabled)
+	{
+		std::vector<EvaporationRecord> records = evaporation_records;
+		std::sort(records.begin(), records.end(), [](const EvaporationRecord& lhs, const EvaporationRecord& rhs) {
+			if(lhs.rank != rhs.rank)
+				return lhs.rank < rhs.rank;
+			return lhs.trajectory_id < rhs.trajectory_id;
+		});
+
+		bool unique_keys = true;
+		bool time_invariants = true;
+		bool legacy_reconciliation = true;
+		bool escape_radius_invariant = true;
+		bool residence_time_invariant = true;
+		bool event_sequence_invariant = true;
+		bool event_count_invariant = true;
+		bool trace_selection_invariant = true;
+		bool replay_state_invariant = true;
+		std::sort(trajectory_diagnostic_events.begin(), trajectory_diagnostic_events.end(),
+		          [](const TrajectoryDiagnosticEvent& lhs, const TrajectoryDiagnosticEvent& rhs) {
+			          if(lhs.rank != rhs.rank) return lhs.rank < rhs.rank;
+			          if(lhs.trajectory_id != rhs.trajectory_id) return lhs.trajectory_id < rhs.trajectory_id;
+			          return lhs.event_index < rhs.event_index;
+		          });
+		std::unordered_map<std::string, std::vector<const TrajectoryDiagnosticEvent*> > events_by_key;
+		for(const auto& event : trajectory_diagnostic_events)
+			events_by_key[std::to_string(event.rank) + ":" + std::to_string(event.trajectory_id)].push_back(&event);
+		std::unordered_map<std::string, const TrajectoryReplayRecord*> replay_by_key;
+		for(const auto& replay : trajectory_replay_records)
+			replay_by_key[std::to_string(replay.rank) + ":" + std::to_string(replay.trajectory_id)] = &replay;
+		std::unordered_set<std::string> completed_keys;
+		for(const auto& event : compact_evaporation_events)
+		{
+			completed_keys.insert(std::to_string(event.rank) + ":" + std::to_string(event.trajectory_id));
+		}
+		for(size_t index = 0; index < records.size(); index++)
+		{
+			const auto& rec = records[index];
+			if(index > 0 && rec.rank == records[index - 1].rank
+			   && rec.trajectory_id == records[index - 1].trajectory_id)
+				unique_keys = false;
+			if(rec.t_first_unbinding_scatter >= 0.0 && rec.t_first_unbinding_scatter < rec.t_capture)
+				time_invariants = false;
+			if(rec.event_observed
+			   && (!(rec.t_final_unbinding_scatter >= rec.t_capture)
+			       || !(rec.t_boundary_escape >= rec.t_final_unbinding_scatter)))
+				time_invariants = false;
+			const std::string key = std::to_string(rec.rank) + ":" + std::to_string(rec.trajectory_id);
+			const bool expected_trace = trajectory_diagnostic_config.events_enabled
+			                         && Diagnostic_Trace_Selected(trajectory_diagnostic_config.trace_seed,
+			                                                      rec.rank, rec.trajectory_id,
+			                                                      trajectory_diagnostic_config.trace_rate);
+			const bool actual_trace = events_by_key.count(key) != 0;
+			if(expected_trace != actual_trace)
+				trace_selection_invariant = false;
+			if(expected_trace)
+			{
+				const auto replay_it = replay_by_key.find(key);
+				if(replay_it == replay_by_key.end()
+				   || replay_it->second->rng_state_before_initial_conditions.empty()
+				   || replay_it->second->rng_state_before_simulation.empty())
+					replay_state_invariant = false;
+			}
+			if(rec.event_observed)
+			{
+				const double escape_radius_rsun = rec.r_boundary_escape_km / R_SUN_KM;
+				if(!std::isfinite(escape_radius_rsun)
+				   || std::fabs(escape_radius_rsun - In_Units(initial_and_final_radius, rSun)) > 1.0e-10)
+					escape_radius_invariant = false;
+			}
+			const double observation_end = rec.event_observed ? rec.t_boundary_escape : rec.t_termination;
+			const double observed_duration = observation_end - rec.t_capture;
+			const double residence_duration = rec.time_inside_sun_after_capture_sec
+			                                + rec.time_outside_sun_after_capture_sec;
+			const double residence_tolerance = std::max(1.0e-6, 1.0e-10 * std::fabs(observed_duration));
+			if(!std::isfinite(observed_duration) || observed_duration < 0.0
+			   || !std::isfinite(residence_duration)
+			   || std::fabs(residence_duration - observed_duration) > residence_tolerance)
+				residence_time_invariant = false;
+			if(expected_trace)
+			{
+				const auto event_it = events_by_key.find(key);
+				if(event_it == events_by_key.end())
+					event_count_invariant = false;
+				else
+				{
+					uint64_t candidate_count = 0;
+					uint64_t recapture_count = 0;
+					const auto& trajectory_events = event_it->second;
+					for(size_t event_index = 0; event_index < trajectory_events.size(); event_index++)
+					{
+						const auto& event = *trajectory_events[event_index];
+						candidate_count += event.event_type == TrajectoryDiagnosticEventType::CandidateUnbinding ? 1 : 0;
+						recapture_count += event.event_type == TrajectoryDiagnosticEventType::Recapture ? 1 : 0;
+						if(event.event_index != event_index)
+							event_sequence_invariant = false;
+						if(event_index > 0)
+						{
+							const auto& previous = *trajectory_events[event_index - 1];
+							if(event.t_s < previous.t_s
+							   || event.scatter_index < previous.scatter_index
+							   || event.step_index < previous.step_index)
+								event_sequence_invariant = false;
+						}
+					}
+					if(candidate_count != rec.number_of_bound_to_unbound
+					   || recapture_count != rec.number_of_recaptures)
+						event_count_invariant = false;
+				}
+			}
+			if(rec.event_observed != (completed_keys.count(key) != 0))
+				legacy_reconciliation = false;
+		}
+		if(completed_keys.size() != number_of_complete_evaporation_particles)
+			legacy_reconciliation = false;
+
+		const std::string git_commit = GIT_COMMIT_HASH;
+		const bool git_dirty = git_commit.find("-dirty") != std::string::npos;
+#if defined(__clang__)
+		const std::string compiler = std::string("Clang ") + __clang_version__;
+#elif defined(__GNUC__)
+		const std::string compiler = std::string("GCC ") + __VERSION__;
+#else
+		const std::string compiler = "unknown";
+#endif
+#ifdef NDEBUG
+		const char* build_type = "Release";
+#else
+		const char* build_type = "Debug";
+#endif
+		{
+			std::ofstream metadata(output_dir + "/run_metadata.json");
+			metadata << "{\n"
+			         << "  \"schema_version\": \"trajectory-diagnostic-v2\",\n"
+			         << "  \"run_id\": \"" << diagnostic_run_id << "\",\n"
+			         << "  \"git_branch\": \"" << GIT_BRANCH << "\",\n"
+			         << "  \"git_commit\": \"" << git_commit << "\",\n"
+			         << "  \"git_dirty\": " << (git_dirty ? "true" : "false") << ",\n"
+			         << "  \"build_type\": \"" << build_type << "\",\n"
+			         << "  \"compiler\": \"" << compiler << "\",\n"
+			         << "  \"mass_GeV\": " << std::scientific << std::setprecision(17) << mass_gev << ",\n"
+			         << "  \"sigma_cm2\": " << sigma_cm2 << ",\n"
+			         << "  \"R_escape_Rsun\": " << In_Units(initial_and_final_radius, rSun) << ",\n"
+			         << "  \"mpi_size\": " << mpi_processes << ",\n"
+			         << "  \"rng_algorithm\": \"std::mt19937\",\n"
+			         << "  \"base_seed\": " << diagnostic_base_seed << ",\n"
+			         << "  \"rng_stream_definition\": \"rank seed = base_seed + 1000003*rank; rng_counter is the rank-local trajectory id\",\n"
+			         << "  \"integrator\": \"adaptive RK45\",\n"
+			         << "  \"rk_position_tolerance_km\": " << RK45PositionToleranceKm() << ",\n"
+			         << "  \"rk_velocity_tolerance_km_s\": " << RK45VelocityToleranceKmPerSec() << ",\n"
+			         << "  \"rk_phase_tolerance\": " << RK45PhaseTolerance() << ",\n"
+			         << "  \"rk_absolute_max_step_s\": " << RK45AbsoluteMaxStepSec() << ",\n"
+			         << "  \"interpolation_points\": " << trajectory_diagnostic_config.interpolation_points << ",\n"
+			         << "  \"max_optical_depth_step\": " << NormalModeMaxOpticalDepthStep() << ",\n"
+			         << "  \"optical_depth_relative_tolerance\": " << OpticalDepthRelativeTolerance() << ",\n"
+			         << "  \"energy_definition\": \"0.5*m_chi*(v^2-v_escape(r)^2); bound iff energy < 0\",\n"
+			         << "  \"energy_unit\": \"eV\",\n"
+			         << "  \"length_unit\": \"Rsun\",\n"
+			         << "  \"velocity_unit\": \"km/s\",\n"
+			         << "  \"angular_momentum_unit\": \"km^2/s\",\n"
+			         << "  \"n_scatter_total_definition\": \"all trajectory scatters, including scatters before first capture\",\n"
+			         << "  \"stop_conditions\": {\"max_free_steps\": " << maximum_free_time_steps
+			         << ", \"max_scatterings\": " << maximum_number_of_scatterings << "},\n"
+			         << "  \"trace_selection_rule\": \"stable hash(trace_seed, rank, trajectory_id) < trace_rate; no physics RNG calls\",\n"
+			         << "  \"trace_seed\": " << trajectory_diagnostic_config.trace_seed << ",\n"
+			         << "  \"trace_rate\": " << std::fixed << std::setprecision(8) << trajectory_diagnostic_config.trace_rate << ",\n"
+			         << "  \"events_scope\": \"real-time scatter, state transition, solar crossing, escape and termination events\",\n"
+			         << "  \"event_order_definition\": \"event_index is strictly increasing; physical time, scatter_index and step_index are non-decreasing because paired pre/post events can share an integration instant\",\n"
+			         << "  \"summary_unique_keys\": " << (unique_keys ? "true" : "false") << ",\n"
+			         << "  \"summary_time_invariants\": " << (time_invariants ? "true" : "false") << ",\n"
+			         << "  \"escape_radius_invariant\": " << (escape_radius_invariant ? "true" : "false") << ",\n"
+			         << "  \"residence_time_invariant\": " << (residence_time_invariant ? "true" : "false") << ",\n"
+			         << "  \"event_sequence_invariant\": " << (event_sequence_invariant ? "true" : "false") << ",\n"
+			         << "  \"event_count_invariant\": " << (event_count_invariant ? "true" : "false") << ",\n"
+			         << "  \"trace_selection_invariant\": " << (trace_selection_invariant ? "true" : "false") << ",\n"
+			         << "  \"replay_state_invariant\": " << (replay_state_invariant ? "true" : "false") << ",\n"
+			         << "  \"legacy_evaporation_reconciliation\": " << (legacy_reconciliation ? "true" : "false") << "\n"
+			         << "}\n";
+		}
+
+		auto nan_if_missing = [](double value) {
+			return (std::isfinite(value) && value >= 0.0)
+			       ? value : std::numeric_limits<double>::quiet_NaN();
+		};
+		{
+			std::ofstream summary(output_dir + "/trajectory_summary.tsv");
+			summary << "run_id\trank\ttrajectory_id\trng_stream\trng_counter\tstatus\ttermination_reason\tevent_observed"
+			        << "\tt_capture_s\tt_first_unbinding_s\tt_final_unbinding_s\tt_escape_s\tt_censor_s"
+			        << "\tlifetime_first_unbinding_s\tlifetime_final_unbinding_s\tlifetime_validated_escape_s"
+			        << "\tr_capture_Rsun\tE_capture_eV\tr_first_unbinding_Rsun\tE_first_unbinding_eV"
+			        << "\tr_final_unbinding_Rsun\tE_final_unbinding_eV\tr_escape_Rsun\tvr_escape_km_s\tE_escape_eV"
+			        << "\tn_scatter_total\tn_bound_to_unbound\tn_recapture\tmin_energy_after_capture_eV\tmax_r_Rsun"
+			        << "\ttime_inside_sun_s\ttime_outside_sun_s\tn_integrator_steps\tmax_abs_ballistic_energy_drift_eV"
+			        << "\tmax_scaled_ballistic_energy_drift\ttrace_written"
+			        << "\treplay_initial_time_s\treplay_initial_x_km\treplay_initial_y_km\treplay_initial_z_km"
+			        << "\treplay_initial_vx_km_s\treplay_initial_vy_km_s\treplay_initial_vz_km_s"
+			        << "\trng_state_before_initial_conditions\trng_state_before_simulation\n";
+			summary << std::scientific << std::setprecision(17);
+			for(const auto& rec : records)
+			{
+				const std::string key = std::to_string(rec.rank) + ":" + std::to_string(rec.trajectory_id);
+				const auto replay_it = replay_by_key.find(key);
+				const bool traced = replay_it != replay_by_key.end();
+				const TrajectoryReplayRecord* replay = traced ? replay_it->second : nullptr;
+				const double t_first = nan_if_missing(rec.t_first_unbinding_scatter);
+				const double t_final = rec.event_observed ? nan_if_missing(rec.t_final_unbinding_scatter)
+				                                          : std::numeric_limits<double>::quiet_NaN();
+				const double t_escape = rec.event_observed ? nan_if_missing(rec.t_boundary_escape)
+				                                           : std::numeric_limits<double>::quiet_NaN();
+				const double t_censor = rec.event_observed ? std::numeric_limits<double>::quiet_NaN()
+				                                           : nan_if_missing(rec.t_termination);
+				const double lifetime_first = std::isfinite(t_first) ? t_first - rec.t_capture
+				                                                        : std::numeric_limits<double>::quiet_NaN();
+				summary << diagnostic_run_id << '\t' << rec.rank << '\t' << rec.trajectory_id << '\t'
+				        << rec.rank << '\t' << rec.trajectory_id << '\t' << Diagnostic_Status(rec) << '\t'
+				        << Termination_Reason_Key(rec.termination_reason) << '\t' << (rec.event_observed ? 1 : 0) << '\t'
+				        << rec.t_capture << '\t' << t_first << '\t' << t_final << '\t' << t_escape << '\t' << t_censor << '\t'
+				        << lifetime_first << '\t'
+				        << (rec.event_observed ? rec.lifetime_unbinding : std::numeric_limits<double>::quiet_NaN()) << '\t'
+				        << (rec.event_observed ? rec.lifetime_boundary : std::numeric_limits<double>::quiet_NaN()) << '\t'
+				        << rec.r_first_negative_km / R_SUN_KM << '\t' << rec.E_first_negative_eV << '\t'
+				        << nan_if_missing(rec.r_first_unbinding_km) / R_SUN_KM << '\t' << rec.E_first_unbinding_eV << '\t'
+				        << (rec.event_observed ? rec.r_final_unbinding_km / R_SUN_KM : std::numeric_limits<double>::quiet_NaN()) << '\t'
+				        << (rec.event_observed ? rec.E_final_unbinding_eV : std::numeric_limits<double>::quiet_NaN()) << '\t'
+				        << (rec.event_observed ? rec.r_boundary_escape_km / R_SUN_KM : std::numeric_limits<double>::quiet_NaN()) << '\t'
+				        << (rec.event_observed ? rec.vr_boundary_escape_km_s : std::numeric_limits<double>::quiet_NaN()) << '\t'
+				        << (rec.event_observed ? rec.E_boundary_escape_eV : std::numeric_limits<double>::quiet_NaN()) << '\t'
+				        << rec.number_of_scatterings << '\t' << rec.number_of_bound_to_unbound << '\t'
+				        << rec.number_of_recaptures << '\t' << rec.min_energy_after_capture_eV << '\t'
+				        << rec.max_radius_after_capture_km / R_SUN_KM << '\t'
+				        << rec.time_inside_sun_after_capture_sec << '\t' << rec.time_outside_sun_after_capture_sec << '\t'
+				        << rec.number_of_integrator_steps_after_capture << '\t' << rec.max_free_energy_drift_eV << '\t'
+				        << rec.max_free_energy_drift_rel << '\t' << (traced ? 1 : 0) << '\t'
+				        << (traced ? replay->initial_time_s : std::numeric_limits<double>::quiet_NaN());
+				for(size_t component = 0; component < 3; component++)
+					summary << '\t' << (traced ? replay->initial_position_km[component] : std::numeric_limits<double>::quiet_NaN());
+				for(size_t component = 0; component < 3; component++)
+					summary << '\t' << (traced ? replay->initial_velocity_km_s[component] : std::numeric_limits<double>::quiet_NaN());
+				summary << '\t' << (traced ? replay->rng_state_before_initial_conditions : std::string())
+				        << '\t' << (traced ? replay->rng_state_before_simulation : std::string()) << '\n';
+			}
+		}
+
+		{
+			std::ofstream events(output_dir + "/trajectory_events.tsv");
+			events << "run_id\trank\ttrajectory_id\tevent_index\tscatter_index\tstep_index\tevent_type\tt_s"
+			       << "\tr_Rsun\tvr_km_s\tspeed_km_s\tx\ty\tz\tvx\tvy\tvz\tenergy_eV\tangular_momentum"
+			       << "\tis_bound\tinside_sun\tcandidate_active\ttarget_species\tballistic_energy_drift_eV\n";
+			events << std::scientific << std::setprecision(17);
+			for(const auto& event : trajectory_diagnostic_events)
+			{
+				events << diagnostic_run_id << '\t' << event.rank << '\t' << event.trajectory_id << '\t'
+				       << event.event_index << '\t' << event.scatter_index << '\t' << event.step_index << '\t'
+				       << TrajectoryDiagnosticEventTypeKey(event.event_type) << '\t' << event.t_s << '\t'
+				       << event.r_km / R_SUN_KM << '\t' << event.vr_km_s << '\t' << event.speed_km_s;
+				for(double value : event.position_km)
+					events << '\t' << value;
+				for(double value : event.velocity_km_s)
+					events << '\t' << value;
+				events << '\t' << event.energy_eV << '\t' << event.angular_momentum_km2_s
+				       << '\t' << event.is_bound << '\t' << event.inside_sun << '\t' << event.candidate_active
+				       << '\t' << event.target_species << '\t' << event.ballistic_energy_drift_eV << '\n';
+			}
+		}
+
+		if(!unique_keys || !time_invariants || !legacy_reconciliation || !escape_radius_invariant
+		   || !residence_time_invariant || !event_sequence_invariant || !event_count_invariant
+		   || !trace_selection_invariant || !replay_state_invariant)
+			std::cerr << "Warning in Write_Output_Files(): trajectory diagnostic invariant check failed; inspect run_metadata.json" << std::endl;
+	}
 
 
 }

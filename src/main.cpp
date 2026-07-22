@@ -1,6 +1,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>	 // for strlen
+#include <exception>
 #include <iostream>
 #include <mpi.h>
 
@@ -59,7 +60,19 @@ int main(int argc, char* argv[])
 			          << "heartbeat snapshot is disabled. Final MPI-reduced outputs are unaffected." << std::endl;
 		cfg.snapshot_config.enabled = false;
 	}
-	Solar_Model SSM;
+	std::string solar_model_data_file;
+	try
+	{
+		solar_model_data_file = Locate_Solar_Model_Data_File(argv[0]);
+	}
+	catch(const std::exception& error)
+	{
+		if(mpi_rank == 0)
+			std::cerr << "Error: " << error.what() << std::endl;
+		MPI_Finalize();
+		return 1;
+	}
+	Solar_Model SSM(solar_model_data_file);
 	cfg.Print_Summary(mpi_rank);
 	MPI_Barrier(MPI_COMM_WORLD);
 	////////////////////////////////////////////////////////////////////////
@@ -70,6 +83,7 @@ int main(int argc, char* argv[])
 		double u_min = 0.0;
 		Simulation_Data data_set(cfg.sample_size, cfg.max_trajectories, u_min, cfg.isoreflection_rings);
 		data_set.Configure(2.0 * rSun, 1, cfg.maximum_number_of_scatterings);
+		data_set.Configure_Trajectory_Diagnostics(cfg.trajectory_diagnostic_config);
 		if(mpi_rank == 0)
 			std::cout << (cfg.capture_mode ? "Generate data in CAPTURE MODE..." : "Generate data...") << std::endl
 					  << "\tm_DM [MeV]:\t" << libphysica::Round(In_Units(cfg.DM->mass, MeV)) << "\t\t"

@@ -31,6 +31,7 @@ class Configuration : public obscura::Configuration
 	unsigned int max_trajectories;
 	unsigned long int maximum_number_of_scatterings;
 	SnapshotConfig snapshot_config;
+	TrajectoryDiagnosticConfig trajectory_diagnostic_config;
 	double cross_section_min, cross_section_max;
 	bool compute_halo_constraints, perform_full_scan, capture_mode;
 	explicit Configuration(std::string cfg_filename, int MPI_rank = 0);

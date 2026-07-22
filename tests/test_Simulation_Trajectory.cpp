@@ -147,10 +147,15 @@ TEST(TestSimulationTrajectory, TestTrajectoryBincountSurvivalDefaults)
 	EXPECT_DOUBLE_EQ(bincount.t_last_bound, -1.0);
 	EXPECT_DOUBLE_EQ(bincount.t_termination, -1.0);
 	EXPECT_TRUE(std::isnan(bincount.t_final_unbinding_scatter));
+	EXPECT_TRUE(std::isnan(bincount.t_first_unbinding_scatter));
 	EXPECT_TRUE(std::isnan(bincount.t_boundary_escape));
 	EXPECT_DOUBLE_EQ(bincount.max_free_energy_drift_eV, 0.0);
 	EXPECT_DOUBLE_EQ(bincount.max_free_energy_drift_rel, 0.0);
 	EXPECT_EQ(bincount.number_of_scatterings, 0UL);
+	EXPECT_EQ(bincount.number_of_bound_to_unbound, 0UL);
+	EXPECT_EQ(bincount.number_of_recaptures, 0UL);
+	EXPECT_EQ(bincount.number_of_integrator_steps_after_capture, 0UL);
+	EXPECT_TRUE(std::isnan(bincount.min_energy_after_capture_eV));
 	EXPECT_EQ(TRAJECTORY_TERMINATION_REASON_COUNT, 11);
 	EXPECT_EQ(static_cast<int>(TrajectoryTerminationReason::EnergyDriftEscape), 10);
 }
@@ -274,9 +279,52 @@ TEST(TestSimulationTrajectory, TestSimulate)
 		ASSERT_TRUE(Hyperbolic_Kepler_Shift(IC, 1.5 * rSun));
 		Trajectory_Result result = simulator.Simulate(IC, DM, 0);
 		if(result.Particle_Reflected() || result.Particle_Free())
-			ASSERT_GE(result.final_event.Radius(), simulator.maximum_distance);
+			ASSERT_NEAR(result.final_event.Radius(), simulator.maximum_distance, 1.0e-10 * rSun);
 		else
 			ASSERT_GT(result.number_of_scatterings, 0);
+	}
+}
+
+TEST(TestSimulationTrajectory, TestSerializedPRNGStateReplaysTrajectoryExactly)
+{
+	obscura::DM_Particle_SI DM(0.5 * GeV);
+	DM.Set_Sigma_Proton(0.1 * pb);
+	Solar_Model SSM;
+	obscura::Standard_Halo_Model SHM;
+
+	Trajectory_Simulator original(SSM, 1000000, 1000, 2.0 * rSun);
+	original.Fix_PRNG_Seed(20260722);
+	Event IC = Initial_Conditions(SHM, SSM, original.PRNG);
+	ASSERT_TRUE(Hyperbolic_Kepler_Shift(IC, 1.5 * rSun));
+	const std::string state_before_simulation = original.Serialize_PRNG_State();
+	original.Enable_Diagnostic_Trace(true);
+	Trajectory_Result first = original.Simulate(IC, DM, 0);
+
+	Trajectory_Simulator replay(SSM, 1000000, 1000, 2.0 * rSun);
+	ASSERT_NO_THROW(replay.Restore_PRNG_State(state_before_simulation));
+	replay.Enable_Diagnostic_Trace(true);
+	Trajectory_Result second = replay.Simulate(IC, DM, 0);
+
+	EXPECT_EQ(first.number_of_scatterings, second.number_of_scatterings);
+	EXPECT_EQ(first.bincount.termination_reason, second.bincount.termination_reason);
+	EXPECT_DOUBLE_EQ(first.bincount.t_capture, second.bincount.t_capture);
+	if(std::isnan(first.bincount.t_final_unbinding_scatter))
+		EXPECT_TRUE(std::isnan(second.bincount.t_final_unbinding_scatter));
+	else
+		EXPECT_DOUBLE_EQ(first.bincount.t_final_unbinding_scatter, second.bincount.t_final_unbinding_scatter);
+	EXPECT_DOUBLE_EQ(first.final_event.time, second.final_event.time);
+	for(size_t component = 0; component < 3; component++)
+	{
+		EXPECT_DOUBLE_EQ(first.final_event.position[component], second.final_event.position[component]);
+		EXPECT_DOUBLE_EQ(first.final_event.velocity[component], second.final_event.velocity[component]);
+	}
+	ASSERT_EQ(first.diagnostic_events.size(), second.diagnostic_events.size());
+	for(size_t index = 0; index < first.diagnostic_events.size(); index++)
+	{
+		EXPECT_EQ(first.diagnostic_events[index].event_type, second.diagnostic_events[index].event_type);
+		EXPECT_DOUBLE_EQ(first.diagnostic_events[index].t_s, second.diagnostic_events[index].t_s);
+		EXPECT_EQ(first.diagnostic_events[index].scatter_index, second.diagnostic_events[index].scatter_index);
+		EXPECT_EQ(first.diagnostic_events[index].step_index, second.diagnostic_events[index].step_index);
 	}
 }
 

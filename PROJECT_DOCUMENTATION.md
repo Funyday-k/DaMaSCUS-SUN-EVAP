@@ -269,7 +269,7 @@ $$\xi = -\frac{\ln(u_0)}{\Gamma_\text{total}(r, v)}$$
 
 ```
 CMakeLists.txt (根目录)
-├── C++11标准
+├── C++14标准（兼容当前 Boost.Math）
 ├── MPI Required
 ├── FetchContent: obscura v1.0.1 (from GitHub)
 ├── FetchContent: Google Test (测试框架)
@@ -286,13 +286,19 @@ CMakeLists.txt (根目录)
 
 构建命令：
 ```bash
-cd build && cmake --build . --config Release && cmake --install .
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX="$PWD/install" -DBUILD_TESTING=OFF
+cmake --build build --config Release --parallel
+cmake --install build --config Release
 ```
 
 运行命令：
 ```bash
-mpirun -n 32 ./DaMaSCUS-SUN config_Lingyu.cfg
+mpirun -n 32 ./install/bin/DaMaSCUS-SUN /absolute/path/to/config_Lingyu.cfg
 ```
+
+安装后的太阳模型位于 `install/share/DaMaSCUS-SUN/model_agss09.dat`，程序按可执行
+文件相对路径自动定位，因此移动时应复制整个 `install/`，无需保留原源码目录。
 
 ---
 

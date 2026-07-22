@@ -3,9 +3,18 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
+#include <fstream>
 #include <limits>
 #include <mpi.h>
+#include <sstream>
 #include <stdexcept>
+
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#elif defined(__linux__)
+#include <unistd.h>
+#endif
 
 #include "libphysica/Integration.hpp"
 #include "libphysica/Natural_Units.hpp"
@@ -18,6 +27,120 @@ namespace DaMaSCUS_SUN
 {
 
 using namespace libphysica::natural_units;
+
+namespace
+{
+
+bool File_Is_Readable(const std::string& path)
+{
+	std::ifstream input(path.c_str());
+	return input.good();
+}
+
+std::string Join_Path(const std::string& directory, const std::string& path)
+{
+	if(directory.empty())
+		return path;
+	if(directory[directory.size() - 1] == '/')
+		return directory + path;
+	return directory + "/" + path;
+}
+
+std::string Directory_Name(const std::string& path)
+{
+	const std::string::size_type separator = path.find_last_of('/');
+	if(separator == std::string::npos)
+		return "";
+	if(separator == 0)
+		return "/";
+	return path.substr(0, separator);
+}
+
+std::string Running_Executable_Path(const std::string& executable_hint)
+{
+#if defined(__APPLE__)
+	uint32_t size = 0;
+	_NSGetExecutablePath(NULL, &size);
+	if(size > 0)
+	{
+		std::vector<char> path(size, '\0');
+		if(_NSGetExecutablePath(path.data(), &size) == 0)
+			return std::string(path.data());
+	}
+#elif defined(__linux__)
+	std::vector<char> path(4096, '\0');
+	const ssize_t length = readlink("/proc/self/exe", path.data(), path.size() - 1);
+	if(length > 0)
+	{
+		path[static_cast<std::size_t>(length)] = '\0';
+		return std::string(path.data());
+	}
+#endif
+	return executable_hint;
+}
+
+std::runtime_error Missing_Data_Error(const std::vector<std::string>& attempted_paths)
+{
+	std::ostringstream message;
+	message << "Unable to locate model_agss09.dat. Checked:";
+	for(std::vector<std::string>::const_iterator path = attempted_paths.begin(); path != attempted_paths.end(); ++path)
+		message << "\n  - " << *path;
+	message << "\nSet DAMASCUS_SUN_SOLAR_MODEL to the data file, or "
+	        << "DAMASCUS_SUN_DATA_DIR to its containing directory.";
+	return std::runtime_error(message.str());
+}
+
+} // namespace
+
+std::string Locate_Solar_Model_Data_File(const std::string& executable_hint)
+{
+	std::vector<std::string> attempted_paths;
+
+	const char* explicit_file = std::getenv("DAMASCUS_SUN_SOLAR_MODEL");
+	if(explicit_file != NULL && explicit_file[0] != '\0')
+	{
+		const std::string path(explicit_file);
+		if(File_Is_Readable(path))
+			return path;
+		attempted_paths.push_back(path + " (DAMASCUS_SUN_SOLAR_MODEL)");
+		throw Missing_Data_Error(attempted_paths);
+	}
+
+	const char* explicit_directory = std::getenv("DAMASCUS_SUN_DATA_DIR");
+	if(explicit_directory != NULL && explicit_directory[0] != '\0')
+	{
+		const std::string path = Join_Path(explicit_directory, "model_agss09.dat");
+		if(File_Is_Readable(path))
+			return path;
+		attempted_paths.push_back(path + " (DAMASCUS_SUN_DATA_DIR)");
+		throw Missing_Data_Error(attempted_paths);
+	}
+
+	const std::string executable_path = Running_Executable_Path(executable_hint);
+	std::string executable_directory = Directory_Name(executable_path);
+	// Multi-config generators may add one configuration directory below the
+	// normal build output. Check a small number of ancestors while retaining the
+	// standard <prefix>/bin -> <prefix>/share lookup as the first candidate.
+	for(unsigned int level = 0; level < 3 && !executable_directory.empty(); ++level)
+	{
+		const std::string installed_path = Join_Path(executable_directory, INSTALL_DATA_PATH_FROM_BINDIR);
+		attempted_paths.push_back(installed_path);
+		if(File_Is_Readable(installed_path))
+			return installed_path;
+		const std::string parent_directory = Directory_Name(executable_directory);
+		if(parent_directory == executable_directory)
+			break;
+		executable_directory = parent_directory;
+	}
+
+	const std::string working_directory_path = "data/model_agss09.dat";
+	attempted_paths.push_back(working_directory_path);
+	if(File_Is_Readable(working_directory_path))
+		return working_directory_path;
+
+	throw Missing_Data_Error(attempted_paths);
+}
+
 // 1. Nuclear targets in the Sun
 Solar_Isotope::Solar_Isotope(const obscura::Isotope& isotope, const std::vector<std::vector<double>>& density_table, double abundance)
 : Isotope(isotope), number_density(libphysica::Interpolation(density_table))
@@ -40,10 +163,10 @@ double Solar_Isotope::Number_Density(double r)
 
 // 2. Solar model
 // Auxiliary functions for the data import
-void Solar_Model::Import_Raw_Data()
+void Solar_Model::Import_Raw_Data(const std::string& data_file)
 {
 	std::vector<double> units = {mSun, rSun, Kelvin, gram / cm / cm / cm, dyne / cm / cm, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
-	raw_data				  = libphysica::Import_Table(PROJECT_DIR "/data/model_agss09.dat", units, 20);
+	raw_data				  = libphysica::Import_Table(data_file, units, 20);
 	// Add a first and last line to ensure a full domain of the interpolations.
 	std::vector<double> first_line(35, 0.0);
 	std::vector<double> last_line(35, 0.0);
@@ -125,13 +248,13 @@ std::vector<std::vector<double>> Solar_Model::Create_Number_Density_Table_Electr
 	return table;
 }
 
-Solar_Model::Solar_Model()
+Solar_Model::Solar_Model(const std::string& data_file)
 : using_interpolated_rate(false),
   rate_grid_radius_points(0), rate_grid_speed_points(0),
   rate_grid_inverse_radius_step(0.0), rate_grid_inverse_speed_step(0.0),
   rate_grid_max_speed(0.0), name("Standard Solar Model AGSS09")
 {
-	Import_Raw_Data();
+	Import_Raw_Data(data_file.empty() ? Locate_Solar_Model_Data_File() : data_file);
 
 	// Interpolate tables.
 	mass					   = libphysica::Interpolation(Create_Interpolation_Table(1));

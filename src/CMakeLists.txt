@@ -12,7 +12,8 @@ target_include_directories(DaMaSCUS-SUN
 	PRIVATE
 		${GENERATED_DIR} )
 
-install(TARGETS DaMaSCUS-SUN DESTINATION ${BIN_DIR})
+install(TARGETS DaMaSCUS-SUN
+	RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 # Static library
 add_library(lib_damascus_sun STATIC
@@ -41,9 +42,7 @@ add_dependencies(lib_damascus_sun generate_version_header)
 
 target_link_libraries(lib_damascus_sun
 	    PUBLIC
-	        coverage_config
+		coverage_config
 			libobscura
-			${MPI_CXX_LIBRARIES}
+			MPI::MPI_CXX
 			Threads::Threads )
-
-install(TARGETS lib_damascus_sun DESTINATION ${LIB_DIR})

@@ -46,6 +46,8 @@ CMakeLists.txt.user
 /Trajectoies/
 /Trajectories/
 /evaporation/
+/evaporation_diagnostic_*/
+/evaporation_secondary_peak_*/
 /bincount/
 /Mission/
 /PDF/

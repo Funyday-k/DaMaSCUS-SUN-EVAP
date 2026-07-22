@@ -7,6 +7,7 @@
 #include <vector>
 #include <array>
 #include <chrono>
+#include <cstdint>
 #include <limits>
 
 #include "libphysica/Natural_Units.hpp"
@@ -47,6 +48,51 @@ enum class TrajectoryTerminationReason
 	EnergyDriftEscape = 10
 };
 
+enum class TrajectoryDiagnosticEventType
+{
+	Capture = 0,
+	ScatterPre = 1,
+	ScatterPost = 2,
+	CandidateUnbinding = 3,
+	Recapture = 4,
+	SunExit = 5,
+	SunEntry = 6,
+	EscapeValidated = 7,
+	Censored = 8,
+	NumericalFailure = 9
+};
+
+struct TrajectoryDiagnosticEvent
+{
+	int rank = -1;
+	uint64_t trajectory_id = 0;
+	uint64_t event_index = 0;
+	uint64_t scatter_index = 0;
+	uint64_t step_index = 0;
+	TrajectoryDiagnosticEventType event_type = TrajectoryDiagnosticEventType::Capture;
+	double t_s = 0.0;
+	double r_km = 0.0;
+	double vr_km_s = 0.0;
+	double speed_km_s = 0.0;
+	std::array<double, 3> position_km{{0.0, 0.0, 0.0}};
+	std::array<double, 3> velocity_km_s{{0.0, 0.0, 0.0}};
+	double energy_eV = 0.0;
+	double angular_momentum_km2_s = 0.0;
+	int is_bound = 0;
+	int inside_sun = 0;
+	int candidate_active = 0;
+	char target_species[32] = {0};
+	double ballistic_energy_drift_eV = 0.0;
+};
+
+const char* TrajectoryDiagnosticEventTypeKey(TrajectoryDiagnosticEventType type);
+double RK45PositionToleranceKm();
+double RK45VelocityToleranceKmPerSec();
+double RK45PhaseTolerance();
+double RK45AbsoluteMaxStepSec();
+double NormalModeMaxOpticalDepthStep();
+double OpticalDepthRelativeTolerance();
+
 bool TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason reason);
 
 // Per-trajectory bincount result
@@ -61,12 +107,20 @@ struct TrajectoryBincount
 	double t_last_negative  = -1.0;  // compatibility alias for t_last_bound [seconds]
 	double t_capture = -1.0;         // first post-scatter transition to E < 0 [seconds]
 	double t_last_bound = -1.0;      // latest time physically bound during free flight [seconds]
+	double t_first_unbinding_scatter = std::numeric_limits<double>::quiet_NaN();  // first bound-to-unbound scatter [seconds]
 	double t_final_unbinding_scatter = std::numeric_limits<double>::quiet_NaN();  // scatter that unbound the particle before a successful escape [seconds]
 	double t_boundary_escape = std::numeric_limits<double>::quiet_NaN();          // outward escape boundary crossing [seconds]
 	double t_termination = -1.0;     // final simulated time, event or censoring time [seconds]
 	double r_first_negative_km = -1.0;  // radius when E first becomes negative [km]
 	double E_first_negative_eV = std::numeric_limits<double>::quiet_NaN();  // first negative energy [eV]
 	double dE_first_negative_from_prev_eV = std::numeric_limits<double>::quiet_NaN();  // E_now - E_previous_step [eV]
+	double r_first_unbinding_km = std::numeric_limits<double>::quiet_NaN();
+	double E_first_unbinding_eV = std::numeric_limits<double>::quiet_NaN();
+	double r_final_unbinding_km = std::numeric_limits<double>::quiet_NaN();
+	double E_final_unbinding_eV = std::numeric_limits<double>::quiet_NaN();
+	double r_boundary_escape_km = std::numeric_limits<double>::quiet_NaN();
+	double vr_boundary_escape_km_s = std::numeric_limits<double>::quiet_NaN();
+	double E_boundary_escape_eV = std::numeric_limits<double>::quiet_NaN();
 	bool event_observed = false;     // true if final unbinding was followed by outward escape
 	bool boundary_escape_observed = false;  // true if the captured particle escaped through R_max with E >= 0
 	bool survival_valid = true;      // false for captured trajectories invalid as survival samples
@@ -74,6 +128,13 @@ struct TrajectoryBincount
 	double max_free_energy_drift_eV = 0.0;
 	double max_free_energy_drift_rel = 0.0;
 	unsigned long int number_of_scatterings = 0;
+	unsigned long int number_of_bound_to_unbound = 0;
+	unsigned long int number_of_recaptures = 0;
+	unsigned long int number_of_integrator_steps_after_capture = 0;
+	double min_energy_after_capture_eV = std::numeric_limits<double>::quiet_NaN();
+	double max_radius_after_capture_km = std::numeric_limits<double>::quiet_NaN();
+	double time_inside_sun_after_capture_sec = 0.0;
+	double time_outside_sun_after_capture_sec = 0.0;
 	bool truncated = false;          // compatibility alias for right-censored unbinding lifetime
 	TrajectoryTerminationReason termination_reason = TrajectoryTerminationReason::Unknown;
 
@@ -95,6 +156,15 @@ struct SnapshotConfig
 	double max_trajectory_wall_time_sec = 0.0;
 };
 
+struct TrajectoryDiagnosticConfig
+{
+	bool summary_enabled = false;
+	bool events_enabled = false;
+	double trace_rate = 0.0;
+	uint64_t trace_seed = 0;
+	unsigned int interpolation_points = 0;
+};
+
 bool IsValidSnapshotIntervalSeconds(double interval_seconds);
 
 // 1. Result of one trajectory
@@ -103,8 +173,10 @@ struct Trajectory_Result
 	Event initial_event, final_event;
 	unsigned long int number_of_scatterings;
 	TrajectoryBincount bincount;
+	std::vector<TrajectoryDiagnosticEvent> diagnostic_events;
 
-	Trajectory_Result(const Event& event_ini, const Event& event_final, unsigned long int nScat, TrajectoryBincount bc);
+	Trajectory_Result(const Event& event_ini, const Event& event_final, unsigned long int nScat, TrajectoryBincount bc,
+	                  std::vector<TrajectoryDiagnosticEvent> events = std::vector<TrajectoryDiagnosticEvent>());
 
 	bool Particle_Reflected() const;
 	bool Particle_Free() const;
@@ -122,19 +194,28 @@ class Trajectory_Simulator
 
 	// Per-trajectory bincount accumulation
 	TrajectoryBincount current_bincount;
-	double prev_time_sec;       // previous step time in seconds (for dt calculation)
-	double prev_r_km;           // previous step radius in km
-	double prev_v2_km2s2;       // previous step v² in (km/s)²
-	double prev_dt_sec;         // previous step dt in seconds (for last-step accumulation)
+	Event previous_bincount_event;
+	bool has_previous_bincount_event;
 	double previous_capture_energy_eV;
 	double free_flight_reference_energy_eV;
+	double current_ballistic_energy_drift_eV;
 	bool current_physical_bound_state;
 	bool terminate_on_capture;
 
 	void Accumulate_Bincount_Step(double r_km, double v2_km2s2, double dt_sec, double simulated_time_sec);
+	void Accumulate_Bincount_Interval(const Event& before, const Event& after, double simulated_time_sec);
 	void Reset_Bincount_Anchor(const Event& event);
 	double Capture_Energy_eV(double radius, double speed, obscura::DM_Particle& DM);
 	bool Update_Capture_State(double radius, double speed, double time, obscura::DM_Particle& DM, bool allow_new_capture);
+	void Record_Diagnostic_Event(TrajectoryDiagnosticEventType type, const Event& event, obscura::DM_Particle& DM,
+	                             const char* target_species = "");
+	void Record_Surface_Crossing_Events(const Event& before, const Event& after, obscura::DM_Particle& DM);
+	bool diagnostic_trace_enabled;
+	uint64_t diagnostic_event_index;
+	uint64_t diagnostic_scatter_index;
+	uint64_t diagnostic_step_index;
+	int last_scatter_target_index;
+	std::vector<TrajectoryDiagnosticEvent> current_diagnostic_events;
 
 	SnapshotRecorder* snapshot_recorder;
 	bool trajectory_in_progress;
@@ -167,8 +248,11 @@ class Trajectory_Simulator
 	Trajectory_Simulator(const Solar_Model& model, unsigned long int max_time_steps = DEFAULT_MAXIMUM_FREE_TIME_STEPS, unsigned long int max_scatterings = DEFAULT_MAXIMUM_SCATTERINGS, double max_distance = 2.0 * libphysica::natural_units::rSun);
 
 	void Fix_PRNG_Seed(unsigned int fixed_seed);
+	void Restore_PRNG_State(const std::string& serialized_state);
+	std::string Serialize_PRNG_State() const;
 	void Set_Snapshot_Recorder(SnapshotRecorder* recorder);
 	void Enable_Capture_Mode(bool enabled);
+	void Enable_Diagnostic_Trace(bool enabled);
 
 	void Scatter(Event& current_event, obscura::DM_Particle& DM);
 	Trajectory_Result Simulate(const Event& initial_condition, obscura::DM_Particle& DM, unsigned int mpi_rank);

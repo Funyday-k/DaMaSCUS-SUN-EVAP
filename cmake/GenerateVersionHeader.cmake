@@ -1,7 +1,9 @@
 # Regenerate the build-tree version header so rebuilt binaries report the
 # current branch and commit.
-if(NOT DEFINED SOURCE_DIR OR NOT DEFINED TEMPLATE OR NOT DEFINED OUTPUT)
-  message(FATAL_ERROR "SOURCE_DIR, TEMPLATE, and OUTPUT must be defined")
+if(NOT DEFINED SOURCE_DIR OR NOT DEFINED TEMPLATE OR NOT DEFINED OUTPUT
+   OR NOT DEFINED INSTALL_DATA_PATH_FROM_BINDIR)
+  message(FATAL_ERROR
+    "SOURCE_DIR, TEMPLATE, OUTPUT, and INSTALL_DATA_PATH_FROM_BINDIR must be defined")
 endif()
 
 execute_process(

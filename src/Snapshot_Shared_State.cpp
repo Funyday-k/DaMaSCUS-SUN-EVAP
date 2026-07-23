@@ -62,7 +62,9 @@ void SnapshotSharedState::BeginTrajectory(uint64_t trajectory_id, double initial
 	current_v2dt_hist_.fill(0.0);
 }
 
-void SnapshotSharedState::AddCurrentBincountStep(int bin, double dt_sec, double v2dt, double simulated_time_sec)
+void SnapshotSharedState::AddCurrentBincountInterval(
+	const std::vector<BincountContribution>& contributions,
+	double simulated_time_sec)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 	if(!trajectory_in_progress_)
@@ -70,10 +72,15 @@ void SnapshotSharedState::AddCurrentBincountStep(int bin, double dt_sec, double 
 	if(std::isfinite(simulated_time_sec))
 		current_trajectory_simulated_elapsed_sec_ =
 			std::max(0.0, simulated_time_sec - current_trajectory_simulation_start_sec_);
-	if(bin >= 0 && bin < NUM_BINS)
+	for(const BincountContribution& contribution : contributions)
 	{
-		current_dt_hist_[bin] += dt_sec;
-		current_v2dt_hist_[bin] += v2dt;
+		if(contribution.bin < 0 || contribution.bin >= NUM_BINS
+		   || !std::isfinite(contribution.dt_sec) || contribution.dt_sec <= 0.0
+		   || !std::isfinite(contribution.v2dt_km2_per_sec)
+		   || contribution.v2dt_km2_per_sec < 0.0)
+			continue;
+		current_dt_hist_[contribution.bin] += contribution.dt_sec;
+		current_v2dt_hist_[contribution.bin] += contribution.v2dt_km2_per_sec;
 	}
 }
 
@@ -235,9 +242,11 @@ void SnapshotRecorder::BeginTrajectory(uint64_t trajectory_id, double initial_si
 	state_.BeginTrajectory(trajectory_id, initial_simulated_time_sec);
 }
 
-void SnapshotRecorder::AddCurrentBincountStep(int bin, double dt_sec, double v2dt, double simulated_time_sec)
+void SnapshotRecorder::AddCurrentBincountInterval(
+	const std::vector<BincountContribution>& contributions,
+	double simulated_time_sec)
 {
-	state_.AddCurrentBincountStep(bin, dt_sec, v2dt, simulated_time_sec);
+	state_.AddCurrentBincountInterval(contributions, simulated_time_sec);
 }
 
 void SnapshotRecorder::UpdateCurrentSimulationTime(double simulated_time_sec)

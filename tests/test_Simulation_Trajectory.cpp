@@ -1,5 +1,6 @@
 #include "gtest/gtest.h"
 
+#include <array>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -15,6 +16,45 @@
 
 using namespace DaMaSCUS_SUN;
 using namespace libphysica::natural_units;
+
+namespace
+{
+struct AggregatedBincount
+{
+	std::array<double, NUM_BINS> dt{};
+	std::array<double, NUM_BINS> v2dt{};
+};
+
+void AddContributions(
+	AggregatedBincount& aggregate,
+	const std::vector<BincountContribution>& contributions)
+{
+	for(const BincountContribution& contribution : contributions)
+	{
+		ASSERT_GE(contribution.bin, 0);
+		ASSERT_LT(contribution.bin, NUM_BINS);
+		aggregate.dt[contribution.bin] += contribution.dt_sec;
+		aggregate.v2dt[contribution.bin] += contribution.v2dt_km2_per_sec;
+	}
+}
+
+AggregatedBincount ComputeContributions(const Event& before, const Event& after)
+{
+	std::vector<BincountContribution> contributions;
+	Compute_Bincount_Interval_Contributions(before, after, contributions);
+	AggregatedBincount aggregate;
+	AddContributions(aggregate, contributions);
+	return aggregate;
+}
+
+double SumBins(const std::array<double, NUM_BINS>& values)
+{
+	double sum = 0.0;
+	for(double value : values)
+		sum += value;
+	return sum;
+}
+}
 
 // 1. Result of one trajectory
 TEST(TestSimulationTrajectory, TestTrajectoryResultConstructor)
@@ -158,6 +198,91 @@ TEST(TestSimulationTrajectory, TestTrajectoryBincountSurvivalDefaults)
 	EXPECT_TRUE(std::isnan(bincount.min_energy_after_capture_eV));
 	EXPECT_EQ(TRAJECTORY_TERMINATION_REASON_COUNT, 11);
 	EXPECT_EQ(static_cast<int>(TrajectoryTerminationReason::EnergyDriftEscape), 10);
+}
+
+TEST(TestSimulationTrajectory, TestBincountDepositsLinearRadialIntervalAcrossEveryBin)
+{
+	const int first_bin = 1500;
+	const double start_radius_km = (static_cast<double>(first_bin) + 0.25) * BIN_WIDTH_KM;
+	const double speed_km_s = BIN_WIDTH_KM;
+	const double duration_sec = 10.5;
+	Event before(
+	    0.0,
+	    libphysica::Vector({start_radius_km * km, 0.0, 0.0}),
+	    libphysica::Vector({speed_km_s * km / sec, 0.0, 0.0}));
+	Event after(
+	    duration_sec * sec,
+	    libphysica::Vector({
+	        (start_radius_km + speed_km_s * duration_sec) * km, 0.0, 0.0}),
+	    before.velocity);
+
+	const AggregatedBincount aggregate = ComputeContributions(before, after);
+	EXPECT_NEAR(aggregate.dt[first_bin], 0.75, 1.0e-11);
+	for(int bin = first_bin + 1; bin < first_bin + 10; bin++)
+		EXPECT_NEAR(aggregate.dt[bin], 1.0, 1.0e-11);
+	EXPECT_NEAR(aggregate.dt[first_bin + 10], 0.75, 1.0e-11);
+	EXPECT_NEAR(SumBins(aggregate.dt), duration_sec, 1.0e-10);
+	EXPECT_NEAR(
+	    SumBins(aggregate.v2dt),
+	    speed_km_s * speed_km_s * duration_sec,
+	    1.0e-9 * speed_km_s * speed_km_s * duration_sec);
+}
+
+TEST(TestSimulationTrajectory, TestBincountLinearDepositionIsStepPhaseInvariant)
+{
+	const double start_radius_km = 1300.37 * BIN_WIDTH_KM;
+	const double speed_km_s = 0.8 * BIN_WIDTH_KM;
+	const double duration_sec = 17.25;
+	const double split_sec = 4.137;
+	auto event_at = [&](double time_sec)
+	{
+		return Event(
+		    time_sec * sec,
+		    libphysica::Vector({
+		        (start_radius_km + speed_km_s * time_sec) * km, 0.0, 0.0}),
+		    libphysica::Vector({speed_km_s * km / sec, 0.0, 0.0}));
+	};
+
+	const AggregatedBincount one_step =
+	    ComputeContributions(event_at(0.0), event_at(duration_sec));
+	AggregatedBincount split_steps;
+	std::vector<BincountContribution> contributions;
+	Compute_Bincount_Interval_Contributions(
+	    event_at(0.0), event_at(split_sec), contributions);
+	AddContributions(split_steps, contributions);
+	Compute_Bincount_Interval_Contributions(
+	    event_at(split_sec), event_at(duration_sec), contributions);
+	AddContributions(split_steps, contributions);
+
+	for(int bin = 0; bin < NUM_BINS; bin++)
+	{
+		EXPECT_NEAR(one_step.dt[bin], split_steps.dt[bin], 1.0e-10);
+		EXPECT_NEAR(
+		    one_step.v2dt[bin],
+		    split_steps.v2dt[bin],
+		    1.0e-8 * std::max(1.0, one_step.v2dt[bin]));
+	}
+}
+
+TEST(TestSimulationTrajectory, TestBincountClipsOutwardIntervalAtTwoSolarRadii)
+{
+	const double speed_km_s = BIN_WIDTH_KM;
+	const double start_radius_km = 1998.5 * BIN_WIDTH_KM;
+	const double duration_sec = 3.0;
+	Event before(
+	    0.0,
+	    libphysica::Vector({start_radius_km * km, 0.0, 0.0}),
+	    libphysica::Vector({speed_km_s * km / sec, 0.0, 0.0}));
+	Event after(
+	    duration_sec * sec,
+	    libphysica::Vector({
+	        (start_radius_km + speed_km_s * duration_sec) * km, 0.0, 0.0}),
+	    before.velocity);
+
+	const AggregatedBincount aggregate = ComputeContributions(before, after);
+	EXPECT_NEAR(aggregate.dt[1998], 0.5, 1.0e-11);
+	EXPECT_NEAR(aggregate.dt[1999], 1.0, 1.0e-11);
+	EXPECT_NEAR(SumBins(aggregate.dt), 1.5, 1.0e-10);
 }
 
 TEST(TestSimulationTrajectory, TestSurvivalInvalidTerminationReasons)

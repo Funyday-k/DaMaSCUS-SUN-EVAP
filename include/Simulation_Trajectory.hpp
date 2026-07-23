@@ -33,6 +33,21 @@ constexpr unsigned long int DEFAULT_MAXIMUM_FREE_TIME_STEPS = 1000000000000UL;
 constexpr unsigned long int DEFAULT_MAXIMUM_SCATTERINGS = 100000000000000UL;
 constexpr int TRAJECTORY_TERMINATION_REASON_COUNT = 11;
 
+struct BincountContribution
+{
+	int bin = -1;
+	double dt_sec = 0.0;
+	double v2dt_km2_per_sec = 0.0;
+};
+
+// Conservatively project one accepted trajectory interval onto the radial
+// histogram. The trajectory dynamics are not re-integrated or otherwise
+// changed; this only supplies dense-output quadrature for bincount.
+void Compute_Bincount_Interval_Contributions(
+	const Event& before,
+	const Event& after,
+	std::vector<BincountContribution>& contributions);
+
 enum class TrajectoryTerminationReason
 {
 	Unknown = 0,
@@ -92,6 +107,8 @@ double RK45PhaseTolerance();
 double RK45AbsoluteMaxStepSec();
 double NormalModeMaxOpticalDepthStep();
 double OpticalDepthRelativeTolerance();
+const char* BincountIntegrationScheme();
+double BincountDensePositionToleranceKm();
 
 bool TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason reason);
 
@@ -196,13 +213,13 @@ class Trajectory_Simulator
 	TrajectoryBincount current_bincount;
 	Event previous_bincount_event;
 	bool has_previous_bincount_event;
+	std::vector<BincountContribution> bincount_contribution_cache;
 	double previous_capture_energy_eV;
 	double free_flight_reference_energy_eV;
 	double current_ballistic_energy_drift_eV;
 	bool current_physical_bound_state;
 	bool terminate_on_capture;
 
-	void Accumulate_Bincount_Step(double r_km, double v2_km2s2, double dt_sec, double simulated_time_sec);
 	void Accumulate_Bincount_Interval(const Event& before, const Event& after, double simulated_time_sec);
 	void Reset_Bincount_Anchor(const Event& event);
 	double Capture_Energy_eV(double radius, double speed, obscura::DM_Particle& DM);

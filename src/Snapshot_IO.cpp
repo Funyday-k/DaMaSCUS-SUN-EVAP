@@ -522,6 +522,10 @@ void WriteReportHeader(
 	file << "# DM_sigma_cm2 = " << std::scientific << std::setprecision(6) << sigma_cm2 << "\n";
 	file << "# total_trajectories = " << total_trajectories << "\n";
 	file << "# captured_particles = " << captured_particles << "\n";
+	file << "# bincount_integration = " << BincountIntegrationScheme() << "\n";
+	file << "# bincount_dense_position_tolerance_km = "
+	     << std::scientific << std::setprecision(6)
+	     << BincountDensePositionToleranceKm() << "\n";
 	file << "# valid_trajectories = " << classified_trajectories << "\n";
 	file << "# numerical_failures = " << numerical_failures << "\n";
 	file << "# unresolved_not_captured_trajectories = "

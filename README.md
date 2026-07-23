@@ -207,7 +207,9 @@ For non-capture parameter-point runs, the final files are written after MPI
 reduction:
 
 - `bincount.txt`: captured and not-captured time-weighted radial histograms with
-  error estimates.
+  error estimates. Accepted RK intervals are conservatively split across every
+  crossed radial bin using adaptive Hermite dense output; the header records the
+  integration scheme and dense-output tolerance.
 - `evaporation_times.txt`: compact complete-event table with
   `rank trajectory_id lifetime_unbinding_sec`, sorted by
   `lifetime_unbinding_sec` with `rank trajectory_id` tie-breakers.

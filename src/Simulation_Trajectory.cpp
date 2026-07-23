@@ -43,6 +43,8 @@ constexpr unsigned int MAX_OPTICAL_DEPTH_RETRIES = 100;
 constexpr std::size_t MAX_OPTICAL_DEPTH_PIECES = 4;
 constexpr std::size_t CAPTURE_MODE_OPTICAL_DEPTH_PIECES = 2;
 constexpr unsigned long int TARGET_VELOCITY_MAX_REJECTION_ATTEMPTS = 10000UL;
+constexpr double BINCOUNT_DENSE_POSITION_TOLERANCE_KM = 2.0e-3 * BIN_WIDTH_KM;
+constexpr int BINCOUNT_DENSE_MAX_RECURSION = 20;
 
 struct OpticalDepthPiece
 {
@@ -532,6 +534,331 @@ double RK45_Next_Step_Size(double current_step, const double errors[3], const do
 	factor = std::max(RK45_MIN_STEP_FACTOR, std::min(factor, RK45_MAX_STEP_FACTOR));
 	return RK45_Sanitized_Time_Step(factor * current_step);
 }
+
+using Cartesian3 = std::array<double, 3>;
+
+Cartesian3 Cartesian_Add(const Cartesian3& lhs, const Cartesian3& rhs)
+{
+	Cartesian3 result;
+	for(std::size_t component = 0; component < result.size(); component++)
+		result[component] = lhs[component] + rhs[component];
+	return result;
+}
+
+Cartesian3 Cartesian_Subtract(const Cartesian3& lhs, const Cartesian3& rhs)
+{
+	Cartesian3 result;
+	for(std::size_t component = 0; component < result.size(); component++)
+		result[component] = lhs[component] - rhs[component];
+	return result;
+}
+
+Cartesian3 Cartesian_Scale(double scale, const Cartesian3& value)
+{
+	Cartesian3 result;
+	for(std::size_t component = 0; component < result.size(); component++)
+		result[component] = scale * value[component];
+	return result;
+}
+
+double Cartesian_Dot(const Cartesian3& lhs, const Cartesian3& rhs)
+{
+	double result = 0.0;
+	for(std::size_t component = 0; component < lhs.size(); component++)
+		result += lhs[component] * rhs[component];
+	return result;
+}
+
+double Cartesian_Norm(const Cartesian3& value)
+{
+	return sqrt(std::max(0.0, Cartesian_Dot(value, value)));
+}
+
+bool Cartesian_Finite(const Cartesian3& value)
+{
+	for(double component : value)
+		if(!std::isfinite(component))
+			return false;
+	return true;
+}
+
+class HermiteBincountDepositor
+{
+  public:
+	HermiteBincountDepositor(
+		const Event& before,
+		const Event& after,
+		std::vector<BincountContribution>& contributions)
+	: dt_sec_(In_Units(after.time - before.time, sec)),
+	  contributions_(contributions)
+	{
+		for(std::size_t component = 0; component < 3; component++)
+		{
+			position_before_km_[component] = In_Units(before.position[component], km);
+			position_after_km_[component] = In_Units(after.position[component], km);
+			velocity_before_km_s_[component] = In_Units(before.velocity[component], km / sec);
+			velocity_after_km_s_[component] = In_Units(after.velocity[component], km / sec);
+		}
+	}
+
+	void Deposit()
+	{
+		if(!std::isfinite(dt_sec_) || dt_sec_ <= 0.0
+		   || !Cartesian_Finite(position_before_km_) || !Cartesian_Finite(position_after_km_)
+		   || !Cartesian_Finite(velocity_before_km_s_) || !Cartesian_Finite(velocity_after_km_s_))
+			return;
+		Deposit_Dense_Interval(0.0, 1.0, 0);
+	}
+
+  private:
+	double dt_sec_;
+	Cartesian3 position_before_km_;
+	Cartesian3 position_after_km_;
+	Cartesian3 velocity_before_km_s_;
+	Cartesian3 velocity_after_km_s_;
+	std::vector<BincountContribution>& contributions_;
+
+	Cartesian3 Position(double fraction) const
+	{
+		fraction = Clamp_Unit_Interval(fraction);
+		const double fraction_sqr = fraction * fraction;
+		const double fraction_cubed = fraction_sqr * fraction;
+		const double h00 = 2.0 * fraction_cubed - 3.0 * fraction_sqr + 1.0;
+		const double h10 = fraction_cubed - 2.0 * fraction_sqr + fraction;
+		const double h01 = -2.0 * fraction_cubed + 3.0 * fraction_sqr;
+		const double h11 = fraction_cubed - fraction_sqr;
+		Cartesian3 result;
+		for(std::size_t component = 0; component < result.size(); component++)
+		{
+			result[component] =
+			    h00 * position_before_km_[component]
+			    + h10 * dt_sec_ * velocity_before_km_s_[component]
+			    + h01 * position_after_km_[component]
+			    + h11 * dt_sec_ * velocity_after_km_s_[component];
+		}
+		return result;
+	}
+
+	Cartesian3 Velocity(double fraction) const
+	{
+		fraction = Clamp_Unit_Interval(fraction);
+		const double fraction_sqr = fraction * fraction;
+		const double dh00 = 6.0 * fraction_sqr - 6.0 * fraction;
+		const double dh10 = 3.0 * fraction_sqr - 4.0 * fraction + 1.0;
+		const double dh01 = -6.0 * fraction_sqr + 6.0 * fraction;
+		const double dh11 = 3.0 * fraction_sqr - 2.0 * fraction;
+		Cartesian3 result;
+		for(std::size_t component = 0; component < result.size(); component++)
+		{
+			result[component] =
+			    dh00 * position_before_km_[component] / dt_sec_
+			    + dh10 * velocity_before_km_s_[component]
+			    + dh01 * position_after_km_[component] / dt_sec_
+			    + dh11 * velocity_after_km_s_[component];
+		}
+		return result;
+	}
+
+	double Position_Linearity_Error(double start, double end) const
+	{
+		const Cartesian3 position_start = Position(start);
+		const Cartesian3 position_end = Position(end);
+		double maximum_error = 0.0;
+		const double probes[3] = {0.25, 0.5, 0.75};
+		for(double probe : probes)
+		{
+			const double fraction = start + probe * (end - start);
+			const Cartesian3 dense_position = Position(fraction);
+			const Cartesian3 chord_position = Cartesian_Add(
+			    Cartesian_Scale(1.0 - probe, position_start),
+			    Cartesian_Scale(probe, position_end));
+			maximum_error = std::max(
+			    maximum_error,
+			    Cartesian_Norm(Cartesian_Subtract(dense_position, chord_position)));
+		}
+		return maximum_error;
+	}
+
+	double Integrate_Speed_Squared(double start, double end) const
+	{
+		if(!(end > start))
+			return 0.0;
+		const double midpoint = 0.5 * (start + end);
+		const double half_width = 0.5 * (end - start);
+		const double offset = half_width * sqrt(3.0 / 5.0);
+		const Cartesian3 velocity_left = Velocity(midpoint - offset);
+		const Cartesian3 velocity_midpoint = Velocity(midpoint);
+		const Cartesian3 velocity_right = Velocity(midpoint + offset);
+		const double integral_over_fraction = half_width * (
+		    (5.0 / 9.0) * Cartesian_Dot(velocity_left, velocity_left)
+		    + (8.0 / 9.0) * Cartesian_Dot(velocity_midpoint, velocity_midpoint)
+		    + (5.0 / 9.0) * Cartesian_Dot(velocity_right, velocity_right));
+		return dt_sec_ * integral_over_fraction;
+	}
+
+	void Append_Contribution(int bin, double start, double end)
+	{
+		if(bin < 0 || bin >= NUM_BINS || !(end > start))
+			return;
+		BincountContribution contribution;
+		contribution.bin = bin;
+		contribution.dt_sec = dt_sec_ * (end - start);
+		contribution.v2dt_km2_per_sec = Integrate_Speed_Squared(start, end);
+		if(!std::isfinite(contribution.dt_sec) || contribution.dt_sec <= 0.0
+		   || !std::isfinite(contribution.v2dt_km2_per_sec)
+		   || contribution.v2dt_km2_per_sec < 0.0)
+			return;
+		if(!contributions_.empty() && contributions_.back().bin == contribution.bin)
+		{
+			contributions_.back().dt_sec += contribution.dt_sec;
+			contributions_.back().v2dt_km2_per_sec += contribution.v2dt_km2_per_sec;
+		}
+		else
+			contributions_.push_back(contribution);
+	}
+
+	void Deposit_Monotonic_Chord(
+		double dense_start,
+		double dense_end,
+		const Cartesian3& chord_start,
+		const Cartesian3& chord_delta,
+		double chord_fraction_start,
+		double chord_fraction_end)
+	{
+		const Cartesian3 position_start = Cartesian_Add(
+		    chord_start, Cartesian_Scale(chord_fraction_start, chord_delta));
+		const Cartesian3 position_end = Cartesian_Add(
+		    chord_start, Cartesian_Scale(chord_fraction_end, chord_delta));
+		const double radius_start = Cartesian_Norm(position_start);
+		const double radius_end = Cartesian_Norm(position_end);
+		const double radius_min = std::min(radius_start, radius_end);
+		const double radius_max = std::max(radius_start, radius_end);
+
+		std::vector<double> chord_fractions;
+		chord_fractions.push_back(chord_fraction_start);
+		const int first_boundary = std::max(
+		    1, static_cast<int>(floor(radius_min / BIN_WIDTH_KM)) + 1);
+		const int last_boundary = std::min(
+		    NUM_BINS, static_cast<int>(floor(radius_max / BIN_WIDTH_KM)));
+		const double quadratic_a = Cartesian_Dot(chord_delta, chord_delta);
+		const double quadratic_b = 2.0 * Cartesian_Dot(chord_start, chord_delta);
+		for(int boundary = first_boundary; boundary <= last_boundary; boundary++)
+		{
+			const double target_radius = static_cast<double>(boundary) * BIN_WIDTH_KM;
+			if(!(target_radius > radius_min + 1.0e-10 * BIN_WIDTH_KM
+			     && target_radius < radius_max - 1.0e-10 * BIN_WIDTH_KM))
+				continue;
+			const double quadratic_c =
+			    Cartesian_Dot(chord_start, chord_start) - target_radius * target_radius;
+			const double discriminant =
+			    quadratic_b * quadratic_b - 4.0 * quadratic_a * quadratic_c;
+			if(!std::isfinite(discriminant) || discriminant < 0.0 || quadratic_a <= 0.0)
+				continue;
+			const double sqrt_discriminant = sqrt(std::max(0.0, discriminant));
+			const double roots[2] = {
+			    (-quadratic_b - sqrt_discriminant) / (2.0 * quadratic_a),
+			    (-quadratic_b + sqrt_discriminant) / (2.0 * quadratic_a)
+			};
+			for(double root : roots)
+			{
+				if(root > chord_fraction_start + 1.0e-12
+				   && root < chord_fraction_end - 1.0e-12)
+				{
+					chord_fractions.push_back(root);
+					break;
+				}
+			}
+		}
+		chord_fractions.push_back(chord_fraction_end);
+		std::sort(chord_fractions.begin(), chord_fractions.end());
+		chord_fractions.erase(
+		    std::unique(
+		        chord_fractions.begin(),
+		        chord_fractions.end(),
+		        [](double lhs, double rhs) { return std::fabs(lhs - rhs) <= 1.0e-12; }),
+		    chord_fractions.end());
+
+		for(std::size_t piece = 1; piece < chord_fractions.size(); piece++)
+		{
+			const double chord_piece_start = chord_fractions[piece - 1];
+			const double chord_piece_end = chord_fractions[piece];
+			if(!(chord_piece_end > chord_piece_start))
+				continue;
+			const double chord_midpoint = 0.5 * (chord_piece_start + chord_piece_end);
+			const Cartesian3 position_midpoint = Cartesian_Add(
+			    chord_start, Cartesian_Scale(chord_midpoint, chord_delta));
+			const double radius_midpoint = Cartesian_Norm(position_midpoint);
+			int bin = -1;
+			if(std::isfinite(radius_midpoint)
+			   && radius_midpoint >= 0.0 && radius_midpoint < BIN_MAX_KM)
+				bin = static_cast<int>(radius_midpoint / BIN_WIDTH_KM);
+			const double dense_piece_start = dense_start + (dense_end - dense_start) * chord_piece_start;
+			const double dense_piece_end = dense_start + (dense_end - dense_start) * chord_piece_end;
+			Append_Contribution(bin, dense_piece_start, dense_piece_end);
+		}
+	}
+
+	void Deposit_Chord(double start, double end)
+	{
+		const Cartesian3 chord_start = Position(start);
+		const Cartesian3 chord_end = Position(end);
+		const Cartesian3 chord_delta = Cartesian_Subtract(chord_end, chord_start);
+		const double chord_length_sqr = Cartesian_Dot(chord_delta, chord_delta);
+		if(!std::isfinite(chord_length_sqr))
+			return;
+		if(chord_length_sqr <= 0.0)
+		{
+			const double radius = Cartesian_Norm(chord_start);
+			const int bin = (std::isfinite(radius) && radius >= 0.0 && radius < BIN_MAX_KM)
+			              ? static_cast<int>(radius / BIN_WIDTH_KM)
+			              : -1;
+			Append_Contribution(bin, start, end);
+			return;
+		}
+
+		std::vector<double> monotonic_boundaries;
+		monotonic_boundaries.push_back(0.0);
+		const double closest_approach =
+		    -Cartesian_Dot(chord_start, chord_delta) / chord_length_sqr;
+		if(closest_approach > 1.0e-12 && closest_approach < 1.0 - 1.0e-12)
+			monotonic_boundaries.push_back(closest_approach);
+		monotonic_boundaries.push_back(1.0);
+		for(std::size_t interval = 1; interval < monotonic_boundaries.size(); interval++)
+		{
+			Deposit_Monotonic_Chord(
+			    start,
+			    end,
+			    chord_start,
+			    chord_delta,
+			    monotonic_boundaries[interval - 1],
+			    monotonic_boundaries[interval]);
+		}
+	}
+
+	void Deposit_Dense_Interval(double start, double end, int depth)
+	{
+		const double linearity_error = Position_Linearity_Error(start, end);
+		if(std::isfinite(linearity_error)
+		   && linearity_error > BINCOUNT_DENSE_POSITION_TOLERANCE_KM
+		   && depth < BINCOUNT_DENSE_MAX_RECURSION)
+		{
+			const double midpoint = 0.5 * (start + end);
+			Deposit_Dense_Interval(start, midpoint, depth + 1);
+			Deposit_Dense_Interval(midpoint, end, depth + 1);
+			return;
+		}
+		Deposit_Chord(start, end);
+	}
+};
+}
+
+void Compute_Bincount_Interval_Contributions(
+	const Event& before,
+	const Event& after,
+	std::vector<BincountContribution>& contributions)
+{
+	contributions.clear();
+	HermiteBincountDepositor(before, after, contributions).Deposit();
 }
 
 const char* TrajectoryDiagnosticEventTypeKey(TrajectoryDiagnosticEventType type)
@@ -558,6 +885,8 @@ double RK45PhaseTolerance() { return 1.0e-7; }
 double RK45AbsoluteMaxStepSec() { return In_Units(RK45_Absolute_Max_Time_Step(), sec); }
 double NormalModeMaxOpticalDepthStep() { return MAX_OPTICAL_DEPTH_STEP; }
 double OpticalDepthRelativeTolerance() { return OPTICAL_DEPTH_RELATIVE_TOLERANCE; }
+const char* BincountIntegrationScheme() { return "conservative-hermite-radial-v1"; }
+double BincountDensePositionToleranceKm() { return BINCOUNT_DENSE_POSITION_TOLERANCE_KM; }
 
 // 1. Result of one trajectory
 bool TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason reason)
@@ -656,6 +985,7 @@ Trajectory_Simulator::Trajectory_Simulator(const Solar_Model& model, unsigned lo
 	std::random_device rd;
 	PRNG.seed(rd());
 	rate_nuclei_cache.resize(solar_model.target_isotopes.size());
+	bincount_contribution_cache.reserve(256);
 }
 
 void Trajectory_Simulator::Set_Snapshot_Recorder(SnapshotRecorder* recorder)
@@ -721,38 +1051,6 @@ const TrajectoryBincount& Trajectory_Simulator::Current_Trajectory_Bincount() co
 	return current_bincount;
 }
 
-// Accumulate one step into the current bincount
-void Trajectory_Simulator::Accumulate_Bincount_Step(
-	double r_km,
-	double v2_km2s2,
-	double dt_sec,
-	double simulated_time_sec)
-{
-	if(!std::isfinite(dt_sec) || dt_sec <= 0.0)
-		return;
-	int bin_idx = -1;
-	if(std::isfinite(r_km) && r_km >= 0.0 && r_km < BIN_MAX_KM)
-	{
-		bin_idx = static_cast<int>(r_km / BIN_WIDTH_KM);
-		if(bin_idx < 0)
-			bin_idx = 0;
-		if(bin_idx >= NUM_BINS)
-			bin_idx = -1;
-	}
-	const double v2dt = (bin_idx >= 0) ? v2_km2s2 * dt_sec : 0.0;
-	if(bin_idx >= 0)
-	{
-		current_bincount.dt_hist[bin_idx] += dt_sec;
-		current_bincount.v2dt_hist[bin_idx] += v2dt;
-	}
-	if(snapshot_recorder != nullptr)
-	{
-		const auto snapshot_operation_start = std::chrono::steady_clock::now();
-		snapshot_recorder->AddCurrentBincountStep(bin_idx, dt_sec, v2dt, simulated_time_sec);
-		Accumulate_Snapshot_Overhead(snapshot_operation_start);
-	}
-}
-
 void Trajectory_Simulator::Accumulate_Bincount_Interval(
 	const Event& before,
 	const Event& after,
@@ -761,10 +1059,23 @@ void Trajectory_Simulator::Accumulate_Bincount_Interval(
 	const double dt_sec = In_Units(after.time - before.time, sec);
 	if(!std::isfinite(dt_sec) || dt_sec <= 0.0)
 		return;
-	const double r_before_km = In_Units(before.Radius(), km);
-	const double speed_before_km_s = In_Units(before.Speed(), km / sec);
-	Accumulate_Bincount_Step(r_before_km, speed_before_km_s * speed_before_km_s, dt_sec, simulated_time_sec);
+	Compute_Bincount_Interval_Contributions(before, after, bincount_contribution_cache);
+	for(const BincountContribution& contribution : bincount_contribution_cache)
+	{
+		if(contribution.bin < 0 || contribution.bin >= NUM_BINS)
+			continue;
+		current_bincount.dt_hist[contribution.bin] += contribution.dt_sec;
+		current_bincount.v2dt_hist[contribution.bin] += contribution.v2dt_km2_per_sec;
+	}
+	if(snapshot_recorder != nullptr)
+	{
+		const auto snapshot_operation_start = std::chrono::steady_clock::now();
+		snapshot_recorder->AddCurrentBincountInterval(
+		    bincount_contribution_cache, simulated_time_sec);
+		Accumulate_Snapshot_Overhead(snapshot_operation_start);
+	}
 
+	const double r_before_km = In_Units(before.Radius(), km);
 	if(!current_bincount.is_captured)
 		return;
 	double interior_start = 0.0;

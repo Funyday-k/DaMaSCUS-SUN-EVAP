@@ -323,6 +323,10 @@ void Write_Report_Header(
 	file << "# DM_sigma_cm2 = " << std::scientific << std::setprecision(6) << sigma_cm2 << "\n";
 	file << "# total_trajectories = " << total_trajectories << "\n";
 	file << "# captured_particles = " << captured_particles << "\n";
+	file << "# bincount_integration = " << BincountIntegrationScheme() << "\n";
+	file << "# bincount_dense_position_tolerance_km = "
+	     << std::scientific << std::setprecision(6)
+	     << BincountDensePositionToleranceKm() << "\n";
 
 	const BinomialRateEstimate raw = Estimate_Binomial_Rate(total_trajectories, captured_particles);
 	file << "# capture_rate = " << std::fixed << std::setprecision(8) << raw.rate << "\n";
@@ -1703,6 +1707,8 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 			         << "  \"rk_velocity_tolerance_km_s\": " << RK45VelocityToleranceKmPerSec() << ",\n"
 			         << "  \"rk_phase_tolerance\": " << RK45PhaseTolerance() << ",\n"
 			         << "  \"rk_absolute_max_step_s\": " << RK45AbsoluteMaxStepSec() << ",\n"
+			         << "  \"bincount_integration\": \"" << BincountIntegrationScheme() << "\",\n"
+			         << "  \"bincount_dense_position_tolerance_km\": " << BincountDensePositionToleranceKm() << ",\n"
 			         << "  \"interpolation_points\": " << trajectory_diagnostic_config.interpolation_points << ",\n"
 			         << "  \"max_optical_depth_step\": " << NormalModeMaxOpticalDepthStep() << ",\n"
 			         << "  \"optical_depth_relative_tolerance\": " << OpticalDepthRelativeTolerance() << ",\n"

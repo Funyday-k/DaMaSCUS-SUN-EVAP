@@ -25,6 +25,151 @@ struct OrbitError
 	double velocity;
 };
 
+struct OrbitBincount
+{
+	std::array<double, NUM_BINS> dt{};
+	std::array<double, NUM_BINS> v2dt{};
+};
+
+void AddBincountContributions(
+	OrbitBincount& histogram,
+	const std::vector<BincountContribution>& contributions)
+{
+	for(const BincountContribution& contribution : contributions)
+	{
+		ASSERT_GE(contribution.bin, 0);
+		ASSERT_LT(contribution.bin, NUM_BINS);
+		histogram.dt[contribution.bin] += contribution.dt_sec;
+		histogram.v2dt[contribution.bin] += contribution.v2dt_km2_per_sec;
+	}
+}
+
+OrbitBincount EllipticOutboundBincount(double step, double first_step)
+{
+	const double semi_major_axis = 1.5 * rSun;
+	const double eccentricity = 1.0 / 3.0;
+	const double mu = G_Newton * mSun;
+	const double mean_motion = std::sqrt(mu / std::pow(semi_major_axis, 3.0));
+	const double duration = M_PI / mean_motion;
+	const double periapsis = semi_major_axis * (1.0 - eccentricity);
+	const double periapsis_speed = std::sqrt(
+	    mu * (1.0 + eccentricity) / (semi_major_axis * (1.0 - eccentricity)));
+	Event initial(
+	    0.0,
+	    libphysica::Vector({periapsis, 0.0, 0.0}),
+	    libphysica::Vector({0.0, periapsis_speed, 0.0}));
+	Free_Particle_Propagator propagator(initial);
+	OrbitBincount histogram;
+	std::vector<BincountContribution> contributions;
+	unsigned int steps = 0;
+	while(propagator.Current_Time() < duration * (1.0 - 1.0e-14))
+	{
+		const Event before = propagator.Event_In_3D();
+		const double requested_step = (steps == 0 && first_step > 0.0) ? first_step : step;
+		propagator.time_step = std::min(
+		    requested_step, duration - propagator.Current_Time());
+		EXPECT_TRUE(propagator.Runge_Kutta_45_Step(mSun));
+		const Event after = propagator.Event_In_3D();
+		Compute_Bincount_Interval_Contributions(before, after, contributions);
+		AddBincountContributions(histogram, contributions);
+		steps++;
+		if(steps > 10000)
+		{
+			ADD_FAILURE() << "Elliptic bincount validation exceeded its step guard";
+			break;
+		}
+	}
+	return histogram;
+}
+
+OrbitBincount LegacyLeftEndpointEllipticBincount(double step)
+{
+	const double semi_major_axis = 1.5 * rSun;
+	const double eccentricity = 1.0 / 3.0;
+	const double mu = G_Newton * mSun;
+	const double mean_motion = std::sqrt(mu / std::pow(semi_major_axis, 3.0));
+	const double duration = M_PI / mean_motion;
+	const double periapsis = semi_major_axis * (1.0 - eccentricity);
+	const double periapsis_speed = std::sqrt(
+	    mu * (1.0 + eccentricity) / (semi_major_axis * (1.0 - eccentricity)));
+	Free_Particle_Propagator propagator(Event(
+	    0.0,
+	    libphysica::Vector({periapsis, 0.0, 0.0}),
+	    libphysica::Vector({0.0, periapsis_speed, 0.0})));
+	OrbitBincount histogram;
+	while(propagator.Current_Time() < duration * (1.0 - 1.0e-14))
+	{
+		const Event before = propagator.Event_In_3D();
+		propagator.time_step = std::min(
+		    step, duration - propagator.Current_Time());
+		EXPECT_TRUE(propagator.Runge_Kutta_45_Step(mSun));
+		const Event after = propagator.Event_In_3D();
+		const double radius_km = In_Units(before.Radius(), km);
+		const double speed_km_s = In_Units(before.Speed(), km / sec);
+		const double dt_sec = In_Units(after.time - before.time, sec);
+		if(radius_km >= 0.0 && radius_km < BIN_MAX_KM)
+		{
+			const int bin = static_cast<int>(radius_km / BIN_WIDTH_KM);
+			histogram.dt[bin] += dt_sec;
+			histogram.v2dt[bin] += speed_km_s * speed_km_s * dt_sec;
+		}
+	}
+	return histogram;
+}
+
+OrbitBincount ExactEllipticOutboundBincount()
+{
+	const double semi_major_axis_km = 1.5 * R_SUN_KM;
+	const double eccentricity = 1.0 / 3.0;
+	const double mu_km3_s2 = In_Units(
+	    G_Newton * mSun, km * km * km / sec / sec);
+	const double mean_motion_s =
+	    std::sqrt(mu_km3_s2 / std::pow(semi_major_axis_km, 3.0));
+	OrbitBincount histogram;
+	for(int bin = 1000; bin < NUM_BINS; bin++)
+	{
+		const double radius_low_km =
+		    std::max(R_SUN_KM, static_cast<double>(bin) * BIN_WIDTH_KM);
+		const double radius_high_km =
+		    std::min(BIN_MAX_KM, static_cast<double>(bin + 1) * BIN_WIDTH_KM);
+		if(!(radius_high_km > radius_low_km))
+			continue;
+		const double cosine_low = std::max(
+		    -1.0, std::min(1.0,
+		                  (1.0 - radius_low_km / semi_major_axis_km) / eccentricity));
+		const double cosine_high = std::max(
+		    -1.0, std::min(1.0,
+		                  (1.0 - radius_high_km / semi_major_axis_km) / eccentricity));
+		const double anomaly_low = std::acos(cosine_low);
+		const double anomaly_high = std::acos(cosine_high);
+		const double mean_anomaly_low =
+		    anomaly_low - eccentricity * std::sin(anomaly_low);
+		const double mean_anomaly_high =
+		    anomaly_high - eccentricity * std::sin(anomaly_high);
+		histogram.dt[bin] =
+		    (mean_anomaly_high - mean_anomaly_low) / mean_motion_s;
+		histogram.v2dt[bin] =
+		    mu_km3_s2 / (semi_major_axis_km * mean_motion_s)
+		    * (anomaly_high - anomaly_low
+		       + eccentricity * (std::sin(anomaly_high) - std::sin(anomaly_low)));
+	}
+	return histogram;
+}
+
+double RelativeL1(
+	const std::array<double, NUM_BINS>& actual,
+	const std::array<double, NUM_BINS>& expected)
+{
+	double absolute_error = 0.0;
+	double expected_total = 0.0;
+	for(int bin = 0; bin < NUM_BINS; bin++)
+	{
+		absolute_error += std::fabs(actual[bin] - expected[bin]);
+		expected_total += std::fabs(expected[bin]);
+	}
+	return absolute_error / expected_total;
+}
+
 OrbitError EllipticOrbitError(double step, double duration)
 {
 	const double semi_major_axis = 2.0 * rSun;
@@ -119,6 +264,28 @@ TEST(PhysicsValidation, PointMassEllipticOrbitShowsFourthOrderConvergence)
 	EXPECT_GT(medium.velocity / fine.velocity, 8.0);
 	EXPECT_LT(In_Units(fine.position, km), 0.01);
 	EXPECT_LT(In_Units(fine.velocity, km / sec), 1.0e-5);
+}
+
+TEST(PhysicsValidation, BincountMatchesAnalyticKeplerShellResidenceTimes)
+{
+	const OrbitBincount exact = ExactEllipticOutboundBincount();
+	const OrbitBincount coarse =
+	    EllipticOutboundBincount(400.0 * sec, 0.0);
+	const OrbitBincount shifted =
+	    EllipticOutboundBincount(400.0 * sec, 137.0 * sec);
+	const OrbitBincount fine =
+	    EllipticOutboundBincount(100.0 * sec, 0.0);
+	const OrbitBincount legacy =
+	    LegacyLeftEndpointEllipticBincount(400.0 * sec);
+
+	EXPECT_LT(RelativeL1(coarse.dt, exact.dt), 5.0e-3);
+	EXPECT_LT(RelativeL1(shifted.dt, exact.dt), 5.0e-3);
+	EXPECT_LT(RelativeL1(fine.dt, exact.dt), 3.0e-3);
+	EXPECT_LT(RelativeL1(coarse.v2dt, exact.v2dt), 5.0e-3);
+	EXPECT_LT(RelativeL1(shifted.v2dt, exact.v2dt), 5.0e-3);
+	EXPECT_LT(RelativeL1(fine.v2dt, exact.v2dt), 3.0e-3);
+	EXPECT_LT(RelativeL1(coarse.dt, shifted.dt), 5.0e-3);
+	EXPECT_GT(RelativeL1(legacy.dt, exact.dt), 5.0e-1);
 }
 
 TEST(PhysicsValidation, SolarProfilesObeyBasicPhysicalStructure)

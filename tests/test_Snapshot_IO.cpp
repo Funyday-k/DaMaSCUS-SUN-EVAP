@@ -305,7 +305,18 @@ TEST_F(SnapshotIOTest, SharedStatePublishesCurrentTrajectoryProgress)
 	SnapshotSharedState shared_state;
 	shared_state.Initialize(501, 4);
 	shared_state.BeginTrajectory(77, 100.0);
-	shared_state.AddCurrentBincountStep(3, 2.5, 10.0, 102.5);
+	std::vector<BincountContribution> interval;
+	BincountContribution first_contribution;
+	first_contribution.bin = 3;
+	first_contribution.dt_sec = 1.0;
+	first_contribution.v2dt_km2_per_sec = 4.0;
+	interval.push_back(first_contribution);
+	BincountContribution second_contribution;
+	second_contribution.bin = 4;
+	second_contribution.dt_sec = 1.5;
+	second_contribution.v2dt_km2_per_sec = 6.0;
+	interval.push_back(second_contribution);
+	shared_state.AddCurrentBincountInterval(interval, 102.5);
 	shared_state.UpdateCurrentScatterings(9);
 	shared_state.MarkCurrentCaptured(true);
 
@@ -317,8 +328,10 @@ TEST_F(SnapshotIOTest, SharedStatePublishesCurrentTrajectoryProgress)
 	EXPECT_GE(running.current_trajectory_wall_sec, 0.0);
 	EXPECT_DOUBLE_EQ(2.5, running.current_trajectory_simulated_elapsed_sec);
 	EXPECT_EQ(9U, running.current_trajectory_scatterings);
-	EXPECT_DOUBLE_EQ(2.5, running.current_trajectory_dt_hist[3]);
-	EXPECT_DOUBLE_EQ(10.0, running.current_trajectory_v2dt_hist[3]);
+	EXPECT_DOUBLE_EQ(1.0, running.current_trajectory_dt_hist[3]);
+	EXPECT_DOUBLE_EQ(4.0, running.current_trajectory_v2dt_hist[3]);
+	EXPECT_DOUBLE_EQ(1.5, running.current_trajectory_dt_hist[4]);
+	EXPECT_DOUBLE_EQ(6.0, running.current_trajectory_v2dt_hist[4]);
 
 	TrajectoryBincount completed;
 	completed.is_captured = true;

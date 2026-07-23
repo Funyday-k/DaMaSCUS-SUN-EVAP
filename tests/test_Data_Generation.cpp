@@ -505,6 +505,9 @@ TEST(TestDataGeneration, TestDefaultOutputContract)
 	{
 		EXPECT_TRUE(FileExists(output_dir + "bincount.txt"));
 		EXPECT_TRUE(FileExists(output_dir + "evaporation_times.txt"));
+		EXPECT_TRUE(FileContains(
+		    output_dir + "bincount.txt",
+		    "# bincount_integration = conservative-hermite-radial-v1"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# normal_mode_mpi_sync_interval = 1048576"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# mpi_sync_rounds = 1"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# final_mpi_round_trajectories = 1"));
@@ -556,6 +559,9 @@ TEST(TestDataGeneration, TestTrajectoryDiagnosticOutputContract)
 	if(rank == 0)
 	{
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"schema_version\": \"trajectory-diagnostic-v2\""));
+		EXPECT_TRUE(FileContains(
+		    output_dir + "run_metadata.json",
+		    "\"bincount_integration\": \"conservative-hermite-radial-v1\""));
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"interpolation_points\": 20"));
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"legacy_evaporation_reconciliation\": true"));
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"escape_radius_invariant\": true"));

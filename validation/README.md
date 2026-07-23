@@ -30,7 +30,7 @@ baseline. Each interpolated run is checked against the same-seed baseline.
 ```bash
 python3 validation/physics_validation.py \
   --executable build/src/DaMaSCUS-SUN \
-  --config bin/config_Lingyu.cfg \
+  --config /path/to/physics.cfg \
   --output validation-results/m0p5-s36 \
   --grids 0 1000 2000 \
   --seeds 271828 314159 161803 \

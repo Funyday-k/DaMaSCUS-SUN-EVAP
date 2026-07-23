@@ -69,22 +69,18 @@ rank_snapshot/
 *.tmp
 *.tmp.*
 
-# Local/user-specific configuration and server job files
-/bin/config_Lingyu.cfg
+# Local configuration and server job files
 /bin/config_smoke_snapshot.cfg
 /bin/config_*.cfg
-/bin/job_Lingyu.sh
 /bin/job-*
 /job-*
 slurm-*.out
 
-# Version-controlled CHPC regression tools (keep other bin/ artifacts local)
+# Version-controlled server scripts (keep other bin/ artifacts local)
 !/bin/
 /bin/*
-!/bin/benchmark_metrics.py
-!/bin/job_perf_regression.sh
-!/bin/submit_perf_regression.sh
-!/bin/README_perf_regression.md
+!/bin/compile.sh
+!/bin/submit.sh
 *.slurm
 *.pbs
 *.lsf

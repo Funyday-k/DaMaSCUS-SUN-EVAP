@@ -45,6 +45,7 @@ constexpr std::size_t CAPTURE_MODE_OPTICAL_DEPTH_PIECES = 2;
 constexpr unsigned long int TARGET_VELOCITY_MAX_REJECTION_ATTEMPTS = 10000UL;
 constexpr double BINCOUNT_DENSE_POSITION_TOLERANCE_KM = 2.0e-3 * BIN_WIDTH_KM;
 constexpr int BINCOUNT_DENSE_MAX_RECURSION = 20;
+constexpr double BINCOUNT_GAUSS_LEGENDRE_OFFSET = 0.77459666924148337704;
 
 struct OpticalDepthPiece
 {
@@ -599,13 +600,43 @@ class HermiteBincountDepositor
 			velocity_before_km_s_[component] = In_Units(before.velocity[component], km / sec);
 			velocity_after_km_s_[component] = In_Units(after.velocity[component], km / sec);
 		}
+		if(std::isfinite(dt_sec_) && dt_sec_ > 0.0)
+		{
+			// Cache the cubic Hermite curve and its derivative in power-basis
+			// form. This is algebraically identical to evaluating h00..h11,
+			// but avoids rebuilding the basis at every recursion probe.
+			for(std::size_t component = 0; component < 3; component++)
+			{
+				position_constant_km_[component] = position_before_km_[component];
+				position_linear_km_[component] = dt_sec_ * velocity_before_km_s_[component];
+				position_quadratic_km_[component] =
+				    -3.0 * position_before_km_[component]
+				    -2.0 * dt_sec_ * velocity_before_km_s_[component]
+				    +3.0 * position_after_km_[component]
+				    -dt_sec_ * velocity_after_km_s_[component];
+				position_cubic_km_[component] =
+				    2.0 * position_before_km_[component]
+				    +dt_sec_ * velocity_before_km_s_[component]
+				    -2.0 * position_after_km_[component]
+				    +dt_sec_ * velocity_after_km_s_[component];
+				velocity_constant_km_s_[component] = velocity_before_km_s_[component];
+				velocity_linear_km_s_[component] =
+				    2.0 * position_quadratic_km_[component] / dt_sec_;
+				velocity_quadratic_km_s_[component] =
+				    3.0 * position_cubic_km_[component] / dt_sec_;
+			}
+		}
 	}
 
 	void Deposit()
 	{
 		if(!std::isfinite(dt_sec_) || dt_sec_ <= 0.0
 		   || !Cartesian_Finite(position_before_km_) || !Cartesian_Finite(position_after_km_)
-		   || !Cartesian_Finite(velocity_before_km_s_) || !Cartesian_Finite(velocity_after_km_s_))
+		   || !Cartesian_Finite(velocity_before_km_s_) || !Cartesian_Finite(velocity_after_km_s_)
+		   || !Cartesian_Finite(position_constant_km_) || !Cartesian_Finite(position_linear_km_)
+		   || !Cartesian_Finite(position_quadratic_km_) || !Cartesian_Finite(position_cubic_km_)
+		   || !Cartesian_Finite(velocity_constant_km_s_) || !Cartesian_Finite(velocity_linear_km_s_)
+		   || !Cartesian_Finite(velocity_quadratic_km_s_))
 			return;
 		Deposit_Dense_Interval(0.0, 1.0, 0);
 	}
@@ -616,25 +647,25 @@ class HermiteBincountDepositor
 	Cartesian3 position_after_km_;
 	Cartesian3 velocity_before_km_s_;
 	Cartesian3 velocity_after_km_s_;
+	Cartesian3 position_constant_km_{};
+	Cartesian3 position_linear_km_{};
+	Cartesian3 position_quadratic_km_{};
+	Cartesian3 position_cubic_km_{};
+	Cartesian3 velocity_constant_km_s_{};
+	Cartesian3 velocity_linear_km_s_{};
+	Cartesian3 velocity_quadratic_km_s_{};
 	std::vector<BincountContribution>& contributions_;
 
 	Cartesian3 Position(double fraction) const
 	{
 		fraction = Clamp_Unit_Interval(fraction);
-		const double fraction_sqr = fraction * fraction;
-		const double fraction_cubed = fraction_sqr * fraction;
-		const double h00 = 2.0 * fraction_cubed - 3.0 * fraction_sqr + 1.0;
-		const double h10 = fraction_cubed - 2.0 * fraction_sqr + fraction;
-		const double h01 = -2.0 * fraction_cubed + 3.0 * fraction_sqr;
-		const double h11 = fraction_cubed - fraction_sqr;
 		Cartesian3 result;
 		for(std::size_t component = 0; component < result.size(); component++)
 		{
-			result[component] =
-			    h00 * position_before_km_[component]
-			    + h10 * dt_sec_ * velocity_before_km_s_[component]
-			    + h01 * position_after_km_[component]
-			    + h11 * dt_sec_ * velocity_after_km_s_[component];
+			result[component] = position_constant_km_[component]
+			    + fraction * (position_linear_km_[component]
+			    + fraction * (position_quadratic_km_[component]
+			    + fraction * position_cubic_km_[component]));
 		}
 		return result;
 	}
@@ -642,19 +673,12 @@ class HermiteBincountDepositor
 	Cartesian3 Velocity(double fraction) const
 	{
 		fraction = Clamp_Unit_Interval(fraction);
-		const double fraction_sqr = fraction * fraction;
-		const double dh00 = 6.0 * fraction_sqr - 6.0 * fraction;
-		const double dh10 = 3.0 * fraction_sqr - 4.0 * fraction + 1.0;
-		const double dh01 = -6.0 * fraction_sqr + 6.0 * fraction;
-		const double dh11 = 3.0 * fraction_sqr - 2.0 * fraction;
 		Cartesian3 result;
 		for(std::size_t component = 0; component < result.size(); component++)
 		{
-			result[component] =
-			    dh00 * position_before_km_[component] / dt_sec_
-			    + dh10 * velocity_before_km_s_[component]
-			    + dh01 * position_after_km_[component] / dt_sec_
-			    + dh11 * velocity_after_km_s_[component];
+			result[component] = velocity_constant_km_s_[component]
+			    + fraction * (velocity_linear_km_s_[component]
+			    + fraction * velocity_quadratic_km_s_[component]);
 		}
 		return result;
 	}
@@ -685,7 +709,7 @@ class HermiteBincountDepositor
 			return 0.0;
 		const double midpoint = 0.5 * (start + end);
 		const double half_width = 0.5 * (end - start);
-		const double offset = half_width * sqrt(3.0 / 5.0);
+		const double offset = half_width * BINCOUNT_GAUSS_LEGENDRE_OFFSET;
 		const Cartesian3 velocity_left = Velocity(midpoint - offset);
 		const Cartesian3 velocity_midpoint = Velocity(midpoint);
 		const Cartesian3 velocity_right = Velocity(midpoint + offset);
@@ -717,6 +741,64 @@ class HermiteBincountDepositor
 			contributions_.push_back(contribution);
 	}
 
+	void Append_Chord_Piece(
+		double dense_start,
+		double dense_end,
+		const Cartesian3& chord_start,
+		const Cartesian3& chord_delta,
+		double chord_piece_start,
+		double chord_piece_end)
+	{
+		if(!(chord_piece_end > chord_piece_start))
+			return;
+		const double chord_midpoint = 0.5 * (chord_piece_start + chord_piece_end);
+		const Cartesian3 position_midpoint = Cartesian_Add(
+		    chord_start, Cartesian_Scale(chord_midpoint, chord_delta));
+		const double radius_midpoint = Cartesian_Norm(position_midpoint);
+		int bin = -1;
+		if(std::isfinite(radius_midpoint)
+		   && radius_midpoint >= 0.0 && radius_midpoint < BIN_MAX_KM)
+			bin = static_cast<int>(radius_midpoint / BIN_WIDTH_KM);
+		const double dense_piece_start =
+		    dense_start + (dense_end - dense_start) * chord_piece_start;
+		const double dense_piece_end =
+		    dense_start + (dense_end - dense_start) * chord_piece_end;
+		Append_Contribution(bin, dense_piece_start, dense_piece_end);
+	}
+
+	bool Chord_Boundary_Root(
+		const Cartesian3& chord_start,
+		const Cartesian3& chord_delta,
+		double quadratic_a,
+		double quadratic_b,
+		double target_radius,
+		double chord_fraction_start,
+		double chord_fraction_end,
+		double& root) const
+	{
+		const double quadratic_c =
+		    Cartesian_Dot(chord_start, chord_start) - target_radius * target_radius;
+		const double discriminant =
+		    quadratic_b * quadratic_b - 4.0 * quadratic_a * quadratic_c;
+		if(!std::isfinite(discriminant) || discriminant < 0.0 || quadratic_a <= 0.0)
+			return false;
+		const double sqrt_discriminant = sqrt(std::max(0.0, discriminant));
+		const double roots[2] = {
+		    (-quadratic_b - sqrt_discriminant) / (2.0 * quadratic_a),
+		    (-quadratic_b + sqrt_discriminant) / (2.0 * quadratic_a)
+		};
+		for(double candidate : roots)
+		{
+			if(candidate > chord_fraction_start + 1.0e-12
+			   && candidate < chord_fraction_end - 1.0e-12)
+			{
+				root = candidate;
+				return true;
+			}
+		}
+		return false;
+	}
+
 	void Deposit_Monotonic_Chord(
 		double dense_start,
 		double dense_end,
@@ -733,69 +815,56 @@ class HermiteBincountDepositor
 		const double radius_end = Cartesian_Norm(position_end);
 		const double radius_min = std::min(radius_start, radius_end);
 		const double radius_max = std::max(radius_start, radius_end);
-
-		std::vector<double> chord_fractions;
-		chord_fractions.push_back(chord_fraction_start);
 		const int first_boundary = std::max(
 		    1, static_cast<int>(floor(radius_min / BIN_WIDTH_KM)) + 1);
 		const int last_boundary = std::min(
 		    NUM_BINS, static_cast<int>(floor(radius_max / BIN_WIDTH_KM)));
 		const double quadratic_a = Cartesian_Dot(chord_delta, chord_delta);
 		const double quadratic_b = 2.0 * Cartesian_Dot(chord_start, chord_delta);
-		for(int boundary = first_boundary; boundary <= last_boundary; boundary++)
+		const int boundary_step = (radius_end >= radius_start) ? 1 : -1;
+		int boundary = (boundary_step > 0) ? first_boundary : last_boundary;
+		const int boundary_end = (boundary_step > 0) ? last_boundary : first_boundary;
+		double previous_fraction = chord_fraction_start;
+		// Radius is monotonic on this chord segment, so its shell crossings
+		// already occur in radial-boundary order. Emit them directly instead
+		// of allocating and sorting a temporary fraction vector.
+		while((boundary_step > 0 && boundary <= boundary_end)
+		      || (boundary_step < 0 && boundary >= boundary_end))
 		{
 			const double target_radius = static_cast<double>(boundary) * BIN_WIDTH_KM;
-			if(!(target_radius > radius_min + 1.0e-10 * BIN_WIDTH_KM
-			     && target_radius < radius_max - 1.0e-10 * BIN_WIDTH_KM))
-				continue;
-			const double quadratic_c =
-			    Cartesian_Dot(chord_start, chord_start) - target_radius * target_radius;
-			const double discriminant =
-			    quadratic_b * quadratic_b - 4.0 * quadratic_a * quadratic_c;
-			if(!std::isfinite(discriminant) || discriminant < 0.0 || quadratic_a <= 0.0)
-				continue;
-			const double sqrt_discriminant = sqrt(std::max(0.0, discriminant));
-			const double roots[2] = {
-			    (-quadratic_b - sqrt_discriminant) / (2.0 * quadratic_a),
-			    (-quadratic_b + sqrt_discriminant) / (2.0 * quadratic_a)
-			};
-			for(double root : roots)
+			if(target_radius > radius_min + 1.0e-10 * BIN_WIDTH_KM
+			   && target_radius < radius_max - 1.0e-10 * BIN_WIDTH_KM)
 			{
-				if(root > chord_fraction_start + 1.0e-12
-				   && root < chord_fraction_end - 1.0e-12)
+				double root = 0.0;
+				if(Chord_Boundary_Root(
+				       chord_start,
+				       chord_delta,
+				       quadratic_a,
+				       quadratic_b,
+				       target_radius,
+				       chord_fraction_start,
+				       chord_fraction_end,
+				       root))
 				{
-					chord_fractions.push_back(root);
-					break;
+					Append_Chord_Piece(
+					    dense_start,
+					    dense_end,
+					    chord_start,
+					    chord_delta,
+					    previous_fraction,
+					    root);
+					previous_fraction = root;
 				}
 			}
+			boundary += boundary_step;
 		}
-		chord_fractions.push_back(chord_fraction_end);
-		std::sort(chord_fractions.begin(), chord_fractions.end());
-		chord_fractions.erase(
-		    std::unique(
-		        chord_fractions.begin(),
-		        chord_fractions.end(),
-		        [](double lhs, double rhs) { return std::fabs(lhs - rhs) <= 1.0e-12; }),
-		    chord_fractions.end());
-
-		for(std::size_t piece = 1; piece < chord_fractions.size(); piece++)
-		{
-			const double chord_piece_start = chord_fractions[piece - 1];
-			const double chord_piece_end = chord_fractions[piece];
-			if(!(chord_piece_end > chord_piece_start))
-				continue;
-			const double chord_midpoint = 0.5 * (chord_piece_start + chord_piece_end);
-			const Cartesian3 position_midpoint = Cartesian_Add(
-			    chord_start, Cartesian_Scale(chord_midpoint, chord_delta));
-			const double radius_midpoint = Cartesian_Norm(position_midpoint);
-			int bin = -1;
-			if(std::isfinite(radius_midpoint)
-			   && radius_midpoint >= 0.0 && radius_midpoint < BIN_MAX_KM)
-				bin = static_cast<int>(radius_midpoint / BIN_WIDTH_KM);
-			const double dense_piece_start = dense_start + (dense_end - dense_start) * chord_piece_start;
-			const double dense_piece_end = dense_start + (dense_end - dense_start) * chord_piece_end;
-			Append_Contribution(bin, dense_piece_start, dense_piece_end);
-		}
+		Append_Chord_Piece(
+		    dense_start,
+		    dense_end,
+		    chord_start,
+		    chord_delta,
+		    previous_fraction,
+		    chord_fraction_end);
 	}
 
 	void Deposit_Chord(double start, double end)
@@ -816,27 +885,95 @@ class HermiteBincountDepositor
 			return;
 		}
 
-		std::vector<double> monotonic_boundaries;
-		monotonic_boundaries.push_back(0.0);
 		const double closest_approach =
 		    -Cartesian_Dot(chord_start, chord_delta) / chord_length_sqr;
 		if(closest_approach > 1.0e-12 && closest_approach < 1.0 - 1.0e-12)
-			monotonic_boundaries.push_back(closest_approach);
-		monotonic_boundaries.push_back(1.0);
-		for(std::size_t interval = 1; interval < monotonic_boundaries.size(); interval++)
 		{
 			Deposit_Monotonic_Chord(
 			    start,
 			    end,
 			    chord_start,
 			    chord_delta,
-			    monotonic_boundaries[interval - 1],
-			    monotonic_boundaries[interval]);
+			    0.0,
+			    closest_approach);
+			Deposit_Monotonic_Chord(
+			    start,
+			    end,
+			    chord_start,
+			    chord_delta,
+			    closest_approach,
+			    1.0);
 		}
+		else
+			Deposit_Monotonic_Chord(
+			    start, end, chord_start, chord_delta, 0.0, 1.0);
+	}
+
+	bool Try_Deposit_Single_Bin(double start, double end)
+	{
+		if(!(end > start))
+			return true;
+		const Cartesian3 control_start = Position(start);
+		const Cartesian3 control_end = Position(end);
+		const Cartesian3 velocity_start = Velocity(start);
+		const Cartesian3 velocity_end = Velocity(end);
+		const double interval_dt_sec = dt_sec_ * (end - start);
+		const Cartesian3 control_inner_start = Cartesian_Add(
+		    control_start, Cartesian_Scale(interval_dt_sec / 3.0, velocity_start));
+		const Cartesian3 control_inner_end = Cartesian_Subtract(
+		    control_end, Cartesian_Scale(interval_dt_sec / 3.0, velocity_end));
+		const Cartesian3 controls[4] = {
+		    control_start, control_inner_start, control_inner_end, control_end
+		};
+		const Cartesian3 midpoint_position = Position(0.5 * (start + end));
+		const double midpoint_radius = Cartesian_Norm(midpoint_position);
+		if(!std::isfinite(midpoint_radius)
+		   || !Cartesian_Finite(control_start) || !Cartesian_Finite(control_inner_start)
+		   || !Cartesian_Finite(control_inner_end) || !Cartesian_Finite(control_end))
+			return false;
+
+		// A cubic Hermite segment is the cubic Bezier curve defined by these
+		// four controls. Its convex hull bounds the maximum norm, while the
+		// projection onto any unit vector is bounded by the control-point
+		// projections. Together these give a conservative proof that the
+		// entire dense curve stays inside one radial bin.
+		Cartesian3 radial_direction{};
+		if(midpoint_radius > 0.0)
+			radial_direction = Cartesian_Scale(1.0 / midpoint_radius, midpoint_position);
+
+		double maximum_control_radius = 0.0;
+		double minimum_radial_projection = std::numeric_limits<double>::infinity();
+		for(const Cartesian3& control : controls)
+		{
+			maximum_control_radius =
+			    std::max(maximum_control_radius, Cartesian_Norm(control));
+			if(midpoint_radius > 0.0)
+				minimum_radial_projection =
+				    std::min(minimum_radial_projection, Cartesian_Dot(radial_direction, control));
+		}
+		const double margin =
+		    BINCOUNT_DENSE_POSITION_TOLERANCE_KM + 1.0e-10 * BIN_WIDTH_KM;
+		if(midpoint_radius >= BIN_MAX_KM)
+			return midpoint_radius > 0.0
+			    && minimum_radial_projection >= BIN_MAX_KM + margin;
+
+		const int bin = static_cast<int>(midpoint_radius / BIN_WIDTH_KM);
+		const double lower_radius = static_cast<double>(bin) * BIN_WIDTH_KM;
+		const double upper_radius = static_cast<double>(bin + 1) * BIN_WIDTH_KM;
+		if(maximum_control_radius >= upper_radius - margin)
+			return false;
+		if(lower_radius > 0.0
+		   && (midpoint_radius <= 0.0
+		       || minimum_radial_projection <= lower_radius + margin))
+			return false;
+		Append_Contribution(bin, start, end);
+		return true;
 	}
 
 	void Deposit_Dense_Interval(double start, double end, int depth)
 	{
+		if(Try_Deposit_Single_Bin(start, end))
+			return;
 		const double linearity_error = Position_Linearity_Error(start, end);
 		if(std::isfinite(linearity_error)
 		   && linearity_error > BINCOUNT_DENSE_POSITION_TOLERANCE_KM

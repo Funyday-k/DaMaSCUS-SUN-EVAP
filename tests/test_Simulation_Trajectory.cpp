@@ -228,6 +228,58 @@ TEST(TestSimulationTrajectory, TestBincountDepositsLinearRadialIntervalAcrossEve
 	    1.0e-9 * speed_km_s * speed_km_s * duration_sec);
 }
 
+TEST(TestSimulationTrajectory, TestBincountDepositsSingleBinIntervalConservatively)
+{
+	const int bin = 100;
+	const double duration_sec = 1.0;
+	const double start_radius_km = (static_cast<double>(bin) + 0.2) * BIN_WIDTH_KM;
+	const double speed_km_s = 0.6 * BIN_WIDTH_KM;
+	Event before(
+	    0.0,
+	    libphysica::Vector({start_radius_km * km, 0.0, 0.0}),
+	    libphysica::Vector({speed_km_s * km / sec, 0.0, 0.0}));
+	Event after(
+	    duration_sec * sec,
+	    libphysica::Vector({
+	        (start_radius_km + speed_km_s * duration_sec) * km, 0.0, 0.0}),
+	    before.velocity);
+
+	const AggregatedBincount aggregate = ComputeContributions(before, after);
+	EXPECT_NEAR(aggregate.dt[bin], duration_sec, 1.0e-12);
+	EXPECT_NEAR(SumBins(aggregate.dt), duration_sec, 1.0e-12);
+	EXPECT_NEAR(
+	    SumBins(aggregate.v2dt),
+	    speed_km_s * speed_km_s * duration_sec,
+	    1.0e-12 * speed_km_s * speed_km_s * duration_sec);
+}
+
+TEST(TestSimulationTrajectory, TestBincountSingleBinFastPathRejectsCurvedBoundaryCrossing)
+{
+	const int endpoint_bin = 100;
+	const double duration_sec = 1.0;
+	const double endpoint_radius_km =
+	    (static_cast<double>(endpoint_bin) + 0.5) * BIN_WIDTH_KM;
+	const double endpoint_speed_km_s = 4.0 * BIN_WIDTH_KM;
+	Event before(
+	    0.0,
+	    libphysica::Vector({endpoint_radius_km * km, 0.0, 0.0}),
+	    libphysica::Vector({endpoint_speed_km_s * km / sec, 0.0, 0.0}));
+	Event after(
+	    duration_sec * sec,
+	    before.position,
+	    libphysica::Vector({-endpoint_speed_km_s * km / sec, 0.0, 0.0}));
+
+	const AggregatedBincount aggregate = ComputeContributions(before, after);
+	const double expected_outer_fraction = std::sqrt(0.5);
+	EXPECT_NEAR(aggregate.dt[endpoint_bin], 1.0 - expected_outer_fraction, 1.0e-3);
+	EXPECT_NEAR(aggregate.dt[endpoint_bin + 1], expected_outer_fraction, 1.0e-3);
+	EXPECT_NEAR(SumBins(aggregate.dt), duration_sec, 1.0e-10);
+	EXPECT_NEAR(
+	    SumBins(aggregate.v2dt),
+	    endpoint_speed_km_s * endpoint_speed_km_s / 3.0,
+	    1.0e-9 * endpoint_speed_km_s * endpoint_speed_km_s);
+}
+
 TEST(TestSimulationTrajectory, TestBincountLinearDepositionIsStepPhaseInvariant)
 {
 	const double start_radius_km = 1300.37 * BIN_WIDTH_KM;

@@ -23,7 +23,6 @@ target_link_libraries(test_Dark_Photon
 		lib_damascus_sun
 		gtest_main)	#contains the main function
 target_compile_options(test_Dark_Photon PUBLIC -Wall -pedantic)
-install(TARGETS test_Dark_Photon DESTINATION ${TESTS_DIR})
 add_test(NAME test_Dark_Photon COMMAND test_Dark_Photon
 	WORKING_DIRECTORY ${TESTS_DIR})
 
@@ -36,7 +35,6 @@ target_link_libraries(test_Data_Generation
 		lib_damascus_sun
 		gtest)
 target_compile_options(test_Data_Generation PUBLIC -Wall -pedantic)
-install(TARGETS test_Data_Generation DESTINATION ${TESTS_DIR})
 add_test(NAME test_Data_Generation COMMAND test_Data_Generation
 	WORKING_DIRECTORY ${TESTS_DIR})
 
@@ -49,7 +47,6 @@ target_link_libraries(test_Parameter_Scan
 		lib_damascus_sun
 		gtest_main)	#contains the main function
 target_compile_options(test_Parameter_Scan PUBLIC -Wall -pedantic)
-install(TARGETS test_Parameter_Scan DESTINATION ${TESTS_DIR})
 add_test(NAME test_Parameter_Scan COMMAND test_Parameter_Scan
 	WORKING_DIRECTORY ${TESTS_DIR})
 
@@ -62,7 +59,6 @@ target_link_libraries(test_Reflection_Spectrum
 		lib_damascus_sun
 		gtest_main)	#contains the main function
 target_compile_options(test_Reflection_Spectrum PUBLIC -Wall -pedantic)
-install(TARGETS test_Reflection_Spectrum DESTINATION ${TESTS_DIR})
 add_test(NAME test_Reflection_Spectrum COMMAND test_Reflection_Spectrum
 	WORKING_DIRECTORY ${TESTS_DIR})
 
@@ -75,7 +71,6 @@ target_link_libraries(test_Simulation_Trajectory
 		lib_damascus_sun
 		gtest_main)	#contains the main function
 target_compile_options(test_Simulation_Trajectory PUBLIC -Wall -pedantic)
-install(TARGETS test_Simulation_Trajectory DESTINATION ${TESTS_DIR})
 add_test(NAME test_Simulation_Trajectory COMMAND test_Simulation_Trajectory
 	WORKING_DIRECTORY ${TESTS_DIR})
 
@@ -88,7 +83,6 @@ target_link_libraries(test_Simulation_Utilities
 		lib_damascus_sun
 		gtest_main)	#contains the main function
 target_compile_options(test_Simulation_Utilities PUBLIC -Wall -pedantic)
-install(TARGETS test_Simulation_Utilities DESTINATION ${TESTS_DIR})
 add_test(NAME test_Simulation_Utilities COMMAND test_Simulation_Utilities
 	WORKING_DIRECTORY ${TESTS_DIR})
 
@@ -101,7 +95,6 @@ target_link_libraries(test_Physics_Validation
 		lib_damascus_sun
 		gtest_main)
 target_compile_options(test_Physics_Validation PUBLIC -Wall -pedantic)
-install(TARGETS test_Physics_Validation DESTINATION ${TESTS_DIR})
 add_test(NAME test_Physics_Validation COMMAND test_Physics_Validation
 	WORKING_DIRECTORY ${TESTS_DIR})
 set_tests_properties(test_Physics_Validation PROPERTIES
@@ -117,7 +110,6 @@ target_link_libraries(test_Solar_Model
 		lib_damascus_sun
 		gtest_main)	#contains the main function
 target_compile_options(test_Solar_Model PUBLIC -Wall -pedantic)
-install(TARGETS test_Solar_Model DESTINATION ${TESTS_DIR})
 add_test(NAME test_Solar_Model COMMAND test_Solar_Model
 	WORKING_DIRECTORY ${TESTS_DIR})
 if(MPIEXEC_EXECUTABLE
@@ -151,7 +143,6 @@ target_link_libraries(test_Snapshot_IO
 		lib_damascus_sun
 		gtest_main)
 target_compile_options(test_Snapshot_IO PUBLIC -Wall -pedantic)
-install(TARGETS test_Snapshot_IO DESTINATION ${TESTS_DIR})
 add_test(NAME test_Snapshot_IO COMMAND test_Snapshot_IO
 	WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 set_tests_properties(test_Snapshot_IO PROPERTIES
@@ -165,9 +156,8 @@ target_include_directories(test_Snapshot_Heartbeat_MPI PRIVATE ${GENERATED_DIR})
 target_link_libraries(test_Snapshot_Heartbeat_MPI
 	PRIVATE
 		lib_damascus_sun
-		${MPI_CXX_LIBRARIES})
+		MPI::MPI_CXX)
 target_compile_options(test_Snapshot_Heartbeat_MPI PUBLIC -Wall -pedantic)
-install(TARGETS test_Snapshot_Heartbeat_MPI DESTINATION ${TESTS_DIR})
 if(MPIEXEC_EXECUTABLE
 	AND MPIEXEC_NUMPROC_FLAG
 	AND DEFINED MPIEXEC_MAX_NUMPROCS
@@ -219,15 +209,9 @@ else()
 	message(STATUS "Skipping two-rank MPI tail-work test: MPI launcher or explicit two-rank capacity is unavailable (MPIEXEC_EXECUTABLE='${MPIEXEC_EXECUTABLE}', MPIEXEC_MAX_NUMPROCS='${MPIEXEC_MAX_NUMPROCS}')")
 endif()
 
-# 11. Regression-metric extraction and comparison (standard-library Python only).
+# 11. Python workflow tests.
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
-	add_test(NAME test_Benchmark_Metrics
-		COMMAND ${Python3_EXECUTABLE} ${TESTS_DIR}/test_benchmark_metrics.py
-		WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
-	set_tests_properties(test_Benchmark_Metrics PROPERTIES
-		TIMEOUT 10
-		LABELS "benchmark;unit")
 	add_test(NAME test_Numerical_Stability_Python
 		COMMAND ${Python3_EXECUTABLE} ${TESTS_DIR}/test_numerical_stability.py
 		WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
@@ -241,5 +225,5 @@ if(Python3_Interpreter_FOUND)
 		TIMEOUT 10
 		LABELS "physics-validation;unit")
 else()
-	message(STATUS "Skipping benchmark-metrics test: Python3 interpreter is unavailable")
+	message(STATUS "Skipping Python workflow tests: Python3 interpreter is unavailable")
 endif()

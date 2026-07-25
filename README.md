@@ -44,59 +44,110 @@ Compared with the upstream DaMaSCUS-SUN workflow, this branch emphasizes:
 
 ### Dependencies
 
-- CMake 3.12 or newer
-- C++11-capable compiler
-- MPI implementation such as OpenMPI or MPICH
-- Boost
-- libconfig++
+- CMake 3.12 or newer and Git
+- C++14-capable compiler
+- OpenMPI or MPICH, including development headers
+- Boost 1.65 or newer
+- libconfig++ development headers and library
+- Python 3 only when building/running the full test suite
 
-`obscura` and `libphysica` are fetched by CMake under `external/`.
+On Ubuntu/Debian, install the native prerequisites with:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y build-essential cmake git libboost-dev libconfig++-dev libopenmpi-dev openmpi-bin python3
+```
+
+On macOS with Homebrew:
+
+```bash
+brew install cmake boost libconfig open-mpi
+```
+
+The first CMake configure downloads `obscura` v1.0.1 and `libphysica` v0.1.2
+under the build tree's `_deps/` directory. Their exact Git commits are pinned by the root CMake project.
+GoogleTest is fetched only when `BUILD_TESTING=ON`. Internet access is therefore
+needed on the first configure unless those FetchContent source directories have
+already been populated.
 
 ### Local Build
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCODE_COVERAGE=OFF
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX="$PWD/install" \
+  -DBUILD_TESTING=OFF \
+  -DCODE_COVERAGE=OFF
 cmake --build build --config Release --parallel
 cmake --install build --config Release
 ```
 
-The installed executable is expected at:
+This produces a self-contained project install layout (apart from the native
+MPI and libconfig++ shared libraries):
 
-```bash
-bin/DaMaSCUS-SUN
+```text
+install/
+├── bin/DaMaSCUS-SUN
+└── share/DaMaSCUS-SUN/
+    ├── model_agss09.dat
+    └── examples/quickstart.cfg
 ```
 
-The repository ignores `bin/`, so local run scripts, cluster submission scripts,
-and private configuration files can live there without being committed.
+Verify the fresh install with the tracked, intentionally tiny configuration:
 
-The installed binary is currently checkout-bound: its build records the source
-directory used to locate `data/model_agss09.dat`. Keep the checkout in place and
-rebuild after moving it; copying the executable alone is not supported.
+```bash
+mpirun -np 1 ./install/bin/DaMaSCUS-SUN \
+  ./install/share/DaMaSCUS-SUN/examples/quickstart.cfg
+```
+
+The installed program locates `model_agss09.dat` relative to its own executable,
+not relative to the checkout or the current working directory. The complete
+`install/` directory can therefore be moved to another location on the same
+machine. Do not copy only the executable; copy the whole install prefix.
+
+Native binaries still use the MPI and libconfig++ libraries from the build
+machine. When moving to a machine with a different OS, CPU architecture, MPI
+implementation, or module stack, rebuild there. On module-based clusters, load
+the same compiler/MPI/libconfig modules for both build and execution.
 
 ### Cluster Deployment
 
 A typical cluster checkout follows the same pattern:
 
 ```bash
-git clone git@github.com:Funyday-k/DaMaSCUS-SUN-EVAP.git
+git clone https://github.com/Funyday-k/DaMaSCUS-SUN-EVAP.git
 cd DaMaSCUS-SUN-EVAP
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCODE_COVERAGE=OFF
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX="$PWD/install" \
+  -DBUILD_TESTING=OFF \
+  -DCODE_COVERAGE=OFF
 cmake --build build --config Release --parallel
 cmake --install build --config Release
 ```
 
-Keep machine-specific files such as `bin/config_Lingyu.cfg`,
-`bin/job_Lingyu.sh`, and scheduler output files in `bin/`. They are local
-deployment state, not source files.
+Keep machine-specific configuration, batch scripts, and scheduler output outside
+the install prefix (the repository's ignored `bin/` directory is one option).
 
 Run a parameter point with MPI:
 
 ```bash
-mpirun -np 8 bin/DaMaSCUS-SUN bin/config.cfg
+mpirun -np 8 ./install/bin/DaMaSCUS-SUN /absolute/path/to/config.cfg
 ```
 
 For a scheduler, wrap the same executable/config pair in the local batch script
 used by that machine.
+
+If a nonstandard packaging layout stores the solar table elsewhere, set either
+an exact file or its containing directory:
+
+```bash
+export DAMASCUS_SUN_SOLAR_MODEL=/absolute/path/model_agss09.dat
+# or: export DAMASCUS_SUN_DATA_DIR=/absolute/path/to/data
+```
+
+To build and run the test suite, configure separately with
+`-DBUILD_TESTING=ON`, build, then run `ctest --test-dir build --output-on-failure`.
 
 ## Configuration
 
@@ -110,7 +161,8 @@ Configuration files use libconfig syntax. The most important controls are:
 | `fixed_seed` | Optional non-negative PRNG seed. `0` or an omitted setting uses nondeterministic seeding; a nonzero value is expanded independently by MPI rank. |
 | `max_trajectories` | Optional hard cap on generated trajectories. `0` or unset means no trajectory-count cap. |
 | `interpolation_points` | Scattering-rate interpolation grid size. `0` disables interpolation; production runs should compare representative values before fixing this. |
-| `output_dir` | Root directory for generated result folders. |
+| `R_escape_Rsun` | Optional trajectory escape boundary in solar radii. Defaults to `2.0` and must be greater than `1.0`. |
+| `output_dir` | Root directory for generated result folders; a trailing `/` is optional. A relative path is resolved from the process working directory, so production batch jobs should normally use an absolute path. |
 | `DM_mass` | Dark matter mass in GeV. |
 | `DM_cross_section_nucleon` | DM-nucleon cross section in cm^2. |
 | `DM_cross_section_electron` | DM-electron cross section in cm^2 where relevant. |
@@ -155,10 +207,23 @@ For non-capture parameter-point runs, the final files are written after MPI
 reduction:
 
 - `bincount.txt`: captured and not-captured time-weighted radial histograms with
-  error estimates.
+  error estimates. Accepted RK intervals are conservatively split across every
+  crossed radial bin using adaptive Hermite dense output; the header records the
+  integration scheme and dense-output tolerance.
 - `evaporation_times.txt`: compact complete-event table with
   `rank trajectory_id lifetime_unbinding_sec`, sorted by
   `lifetime_unbinding_sec` with `rank trajectory_id` tie-breakers.
+
+Optional trajectory diagnostics are enabled with `trajectory_summary_enabled = true`.
+This adds `run_metadata.json`, `trajectory_summary.tsv`, and
+`trajectory_events.tsv` without changing the capture or evaporation state
+definitions. Set `trajectory_events_enabled = true` and
+`trajectory_trace_rate` in `[0, 1]` to select lifecycle traces by a stable hash;
+set `trajectory_trace_seed` to keep that selection identical across runs. The
+selection does not consume the physics RNG. Traced trajectories include the
+complete pre-initial-condition `std::mt19937` state and shifted initial
+condition, plus real-time scatter, state-transition, solar-crossing, escape,
+censoring, and numerical-failure events.
 
 The `bincount.txt` and snapshot report headers expose both `capture_rate_raw`
 (captured / all attempted) and `capture_rate_valid` (captured / physically

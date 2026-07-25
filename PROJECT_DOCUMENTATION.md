@@ -269,7 +269,7 @@ $$\xi = -\frac{\ln(u_0)}{\Gamma_\text{total}(r, v)}$$
 
 ```
 CMakeLists.txt (根目录)
-├── C++11标准
+├── C++14标准（兼容当前 Boost.Math）
 ├── MPI Required
 ├── FetchContent: obscura v1.0.1 (from GitHub)
 ├── FetchContent: Google Test (测试框架)
@@ -286,13 +286,19 @@ CMakeLists.txt (根目录)
 
 构建命令：
 ```bash
-cd build && cmake --build . --config Release && cmake --install .
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX="$PWD/install" -DBUILD_TESTING=OFF
+cmake --build build --config Release --parallel
+cmake --install build --config Release
 ```
 
 运行命令：
 ```bash
-mpirun -n 32 ./DaMaSCUS-SUN config_Lingyu.cfg
+mpirun -n 32 ./install/bin/DaMaSCUS-SUN /absolute/path/to/config_Lingyu.cfg
 ```
+
+安装后的太阳模型位于 `install/share/DaMaSCUS-SUN/model_agss09.dat`，程序按可执行
+文件相对路径自动定位，因此移动时应复制整个 `install/`，无需保留原源码目录。
 
 ---
 
@@ -373,7 +379,7 @@ while (未终止):
 
 **在线统计与输出策略**：
 
-当前 C++ 主模拟不再把每条轨迹写成 `.dat` 文件，而是在内存中在线累积径向箱计数。径向范围为 `[0, 2R_\odot)`，共 `2000` 个 bin，bin 宽约 `695.7 km`。每个 RK45 步用前一状态和当前步长累积：
+当前 C++ 主模拟不再把每条轨迹写成 `.dat` 文件，而是在内存中在线累积径向箱计数。径向范围为 `[0, 2R_\odot)`，共 `2000` 个 bin，bin 宽约 `695.7 km`。每个已接受 RK45 区间由端点位置和速度构造三次 Hermite dense output，再按所有径向 bin 边界守恒切分；因此一个太阳外大步经过的时间会分配到实际穿越的全部 bin，而不是全部记到步长起点：
 
 $$\sum \Delta t,\qquad \sum v^2 \Delta t$$
 
@@ -506,11 +512,11 @@ Snapshot 会合并各 rank 的当前进度，包括已完成轨迹的 captured /
 
 ### 7.2 在线统计替代逐轨迹文件
 
-**优化内容**：将原始逐轨迹文件记录改为 C++ 内部在线统计。每个 RK45 步只更新当前轨迹的 `TrajectoryBincount`，轨迹结束后再按 captured / not_captured 汇总到全局数组。
+**优化内容**：将原始逐轨迹文件记录改为 C++ 内部在线统计。每个 RK45 步通过自适应 Hermite dense output 对径向 bin 做守恒区间沉积，更新当前轨迹的 `TrajectoryBincount`，轨迹结束后再按 captured / not_captured 汇总到全局数组。
 
 **效率提升**：避免了大量小文件 I/O 和后处理扫描，MPI rank 之间只需要在模拟结束或 snapshot 边界合并聚合量。
 
-**物理影响**：径向统计仍按真实 RK45 步长加权，保留 $\sum \Delta t$ 与 $\sum v^2\Delta t$，可直接用于估计被捕获暗物质的径向分布与速度二阶矩。
+**物理影响**：径向统计仍按真实 RK45 步长加权，保留 $\sum \Delta t$ 与 $\sum v^2\Delta t$；统计 quadrature 与轨道积分步长解耦，避免太阳外大步长在固定 bin 上产生相位锁定凸起。
 
 ### 7.3 太阳内外的步长策略分区
 
@@ -662,7 +668,7 @@ DaMaSCUS-SUN 实现了暗物质与太阳相互作用的完整物理图景：
 | **MPI并行化** | 各rank独立采样 + AllReduce/AllGather 汇总 | 线性可扩展（32+进程） |
 | **2D散射率缓存** | $\Gamma(r,v)$ 内插表 | 数量级加速内循环 |
 | **STA边界跟踪** | 排斥区域周长遍历 | 避免完整 $N^2$ 网格计算 |
-| **在线径向bincount** | 每个RK45步累积 $\Delta t$ 与 $v^2\Delta t$ | 避免逐轨迹大文件输出，直接产出捕获/未捕获统计 |
+| **在线径向bincount** | 每个RK45区间按径向边界守恒切分并累积 $\Delta t$ 与 $v^2\Delta t$ | 避免逐轨迹大文件输出和步长相位混叠，直接产出捕获/未捕获统计 |
 | **理论-模拟交叉验证** | `evaporation_theory.py` ↔ 轨迹数据 | 确保数值结果的物理一致性 |
 
 ### 9.3 数据管线完整流程

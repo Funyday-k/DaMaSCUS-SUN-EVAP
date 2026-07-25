@@ -5,12 +5,14 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <cstring>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <string>
 #include <iostream>
 #include <limits>
 #include <numeric>
+#include <sstream>
 #include <stdexcept>
 
 #include "libphysica/Special_Functions.hpp"
@@ -41,6 +43,9 @@ constexpr unsigned int MAX_OPTICAL_DEPTH_RETRIES = 100;
 constexpr std::size_t MAX_OPTICAL_DEPTH_PIECES = 4;
 constexpr std::size_t CAPTURE_MODE_OPTICAL_DEPTH_PIECES = 2;
 constexpr unsigned long int TARGET_VELOCITY_MAX_REJECTION_ATTEMPTS = 10000UL;
+constexpr double BINCOUNT_DENSE_POSITION_TOLERANCE_KM = 2.0e-3 * BIN_WIDTH_KM;
+constexpr int BINCOUNT_DENSE_MAX_RECURSION = 20;
+constexpr double BINCOUNT_GAUSS_LEGENDRE_OFFSET = 0.77459666924148337704;
 
 struct OpticalDepthPiece
 {
@@ -149,7 +154,8 @@ double Radial_Velocity(const Event& event)
 	return event.position.Dot(event.velocity) / radius;
 }
 
-bool Bound_Kepler_Return_At_Same_Radius(const Event& outward_event, Event& inbound_event)
+bool Bound_Kepler_Return_At_Same_Radius(const Event& outward_event, Event& inbound_event,
+	                                    double& return_time, double& apoapsis_radius)
 {
 	// Bound particles outside the Sun can spend very long times on Kepler arcs.
 	// Fast-forward only this scatter-free exterior segment; this is not a
@@ -189,8 +195,11 @@ bool Bound_Kepler_Return_At_Same_Radius(const Event& outward_event, Event& inbou
 	if(!std::isfinite(mean_motion) || mean_motion <= 0.0)
 		return false;
 
-	const double return_time = (2.0 * M_PI - 2.0 * eccentric_anomaly + 2.0 * eccentricity * sin_eccentric_anomaly) / mean_motion;
+	return_time = (2.0 * M_PI - 2.0 * eccentric_anomaly + 2.0 * eccentricity * sin_eccentric_anomaly) / mean_motion;
 	if(!std::isfinite(return_time) || return_time <= 0.0)
+		return false;
+	apoapsis_radius = semi_major_axis * (1.0 + eccentricity);
+	if(!std::isfinite(apoapsis_radius) || apoapsis_radius < radius)
 		return false;
 
 	const libphysica::Vector radial_unit = outward_event.position / radius;
@@ -226,6 +235,32 @@ double Radius_At_Fraction(const Event& before, const Event& after, double fracti
 		radius_squared += value * value;
 	}
 	return sqrt(std::max(0.0, radius_squared));
+}
+
+double Find_Radius_Crossing_Fraction(const Event& before, const Event& after, double target_radius)
+{
+	double lower = 0.0;
+	double upper = 1.0;
+	double lower_value = Radius_At_Fraction(before, after, lower) - target_radius;
+	double upper_value = Radius_At_Fraction(before, after, upper) - target_radius;
+	if(!std::isfinite(lower_value) || !std::isfinite(upper_value)
+	   || lower_value == 0.0 || upper_value == 0.0)
+		return (lower_value == 0.0) ? lower : upper;
+	if((lower_value < 0.0) == (upper_value < 0.0))
+		throw std::runtime_error("Find_Radius_Crossing_Fraction(): interval does not bracket target radius.");
+	for(int iteration = 0; iteration < 80; iteration++)
+	{
+		const double middle = 0.5 * (lower + upper);
+		const double middle_value = Radius_At_Fraction(before, after, middle) - target_radius;
+		if((middle_value < 0.0) == (lower_value < 0.0))
+		{
+			lower = middle;
+			lower_value = middle_value;
+		}
+		else
+			upper = middle;
+	}
+	return 0.5 * (lower + upper);
 }
 
 bool Surface_Crossing_Fractions(const Event& before, const Event& after, double& first, double& second)
@@ -500,7 +535,495 @@ double RK45_Next_Step_Size(double current_step, const double errors[3], const do
 	factor = std::max(RK45_MIN_STEP_FACTOR, std::min(factor, RK45_MAX_STEP_FACTOR));
 	return RK45_Sanitized_Time_Step(factor * current_step);
 }
+
+using Cartesian3 = std::array<double, 3>;
+
+Cartesian3 Cartesian_Add(const Cartesian3& lhs, const Cartesian3& rhs)
+{
+	Cartesian3 result;
+	for(std::size_t component = 0; component < result.size(); component++)
+		result[component] = lhs[component] + rhs[component];
+	return result;
 }
+
+Cartesian3 Cartesian_Subtract(const Cartesian3& lhs, const Cartesian3& rhs)
+{
+	Cartesian3 result;
+	for(std::size_t component = 0; component < result.size(); component++)
+		result[component] = lhs[component] - rhs[component];
+	return result;
+}
+
+Cartesian3 Cartesian_Scale(double scale, const Cartesian3& value)
+{
+	Cartesian3 result;
+	for(std::size_t component = 0; component < result.size(); component++)
+		result[component] = scale * value[component];
+	return result;
+}
+
+double Cartesian_Dot(const Cartesian3& lhs, const Cartesian3& rhs)
+{
+	double result = 0.0;
+	for(std::size_t component = 0; component < lhs.size(); component++)
+		result += lhs[component] * rhs[component];
+	return result;
+}
+
+double Cartesian_Norm(const Cartesian3& value)
+{
+	return sqrt(std::max(0.0, Cartesian_Dot(value, value)));
+}
+
+bool Cartesian_Finite(const Cartesian3& value)
+{
+	for(double component : value)
+		if(!std::isfinite(component))
+			return false;
+	return true;
+}
+
+class HermiteBincountDepositor
+{
+  public:
+	HermiteBincountDepositor(
+		const Event& before,
+		const Event& after,
+		std::vector<BincountContribution>& contributions)
+	: dt_sec_(In_Units(after.time - before.time, sec)),
+	  contributions_(contributions)
+	{
+		for(std::size_t component = 0; component < 3; component++)
+		{
+			position_before_km_[component] = In_Units(before.position[component], km);
+			position_after_km_[component] = In_Units(after.position[component], km);
+			velocity_before_km_s_[component] = In_Units(before.velocity[component], km / sec);
+			velocity_after_km_s_[component] = In_Units(after.velocity[component], km / sec);
+		}
+		if(std::isfinite(dt_sec_) && dt_sec_ > 0.0)
+		{
+			// Cache the cubic Hermite curve and its derivative in power-basis
+			// form. This is algebraically identical to evaluating h00..h11,
+			// but avoids rebuilding the basis at every recursion probe.
+			for(std::size_t component = 0; component < 3; component++)
+			{
+				position_constant_km_[component] = position_before_km_[component];
+				position_linear_km_[component] = dt_sec_ * velocity_before_km_s_[component];
+				position_quadratic_km_[component] =
+				    -3.0 * position_before_km_[component]
+				    -2.0 * dt_sec_ * velocity_before_km_s_[component]
+				    +3.0 * position_after_km_[component]
+				    -dt_sec_ * velocity_after_km_s_[component];
+				position_cubic_km_[component] =
+				    2.0 * position_before_km_[component]
+				    +dt_sec_ * velocity_before_km_s_[component]
+				    -2.0 * position_after_km_[component]
+				    +dt_sec_ * velocity_after_km_s_[component];
+				velocity_constant_km_s_[component] = velocity_before_km_s_[component];
+				velocity_linear_km_s_[component] =
+				    2.0 * position_quadratic_km_[component] / dt_sec_;
+				velocity_quadratic_km_s_[component] =
+				    3.0 * position_cubic_km_[component] / dt_sec_;
+			}
+		}
+	}
+
+	void Deposit()
+	{
+		if(!std::isfinite(dt_sec_) || dt_sec_ <= 0.0
+		   || !Cartesian_Finite(position_before_km_) || !Cartesian_Finite(position_after_km_)
+		   || !Cartesian_Finite(velocity_before_km_s_) || !Cartesian_Finite(velocity_after_km_s_)
+		   || !Cartesian_Finite(position_constant_km_) || !Cartesian_Finite(position_linear_km_)
+		   || !Cartesian_Finite(position_quadratic_km_) || !Cartesian_Finite(position_cubic_km_)
+		   || !Cartesian_Finite(velocity_constant_km_s_) || !Cartesian_Finite(velocity_linear_km_s_)
+		   || !Cartesian_Finite(velocity_quadratic_km_s_))
+			return;
+		Deposit_Dense_Interval(0.0, 1.0, 0);
+	}
+
+  private:
+	double dt_sec_;
+	Cartesian3 position_before_km_;
+	Cartesian3 position_after_km_;
+	Cartesian3 velocity_before_km_s_;
+	Cartesian3 velocity_after_km_s_;
+	Cartesian3 position_constant_km_{};
+	Cartesian3 position_linear_km_{};
+	Cartesian3 position_quadratic_km_{};
+	Cartesian3 position_cubic_km_{};
+	Cartesian3 velocity_constant_km_s_{};
+	Cartesian3 velocity_linear_km_s_{};
+	Cartesian3 velocity_quadratic_km_s_{};
+	std::vector<BincountContribution>& contributions_;
+
+	Cartesian3 Position(double fraction) const
+	{
+		fraction = Clamp_Unit_Interval(fraction);
+		Cartesian3 result;
+		for(std::size_t component = 0; component < result.size(); component++)
+		{
+			result[component] = position_constant_km_[component]
+			    + fraction * (position_linear_km_[component]
+			    + fraction * (position_quadratic_km_[component]
+			    + fraction * position_cubic_km_[component]));
+		}
+		return result;
+	}
+
+	Cartesian3 Velocity(double fraction) const
+	{
+		fraction = Clamp_Unit_Interval(fraction);
+		Cartesian3 result;
+		for(std::size_t component = 0; component < result.size(); component++)
+		{
+			result[component] = velocity_constant_km_s_[component]
+			    + fraction * (velocity_linear_km_s_[component]
+			    + fraction * velocity_quadratic_km_s_[component]);
+		}
+		return result;
+	}
+
+	double Position_Linearity_Error(double start, double end) const
+	{
+		const Cartesian3 position_start = Position(start);
+		const Cartesian3 position_end = Position(end);
+		double maximum_error = 0.0;
+		const double probes[3] = {0.25, 0.5, 0.75};
+		for(double probe : probes)
+		{
+			const double fraction = start + probe * (end - start);
+			const Cartesian3 dense_position = Position(fraction);
+			const Cartesian3 chord_position = Cartesian_Add(
+			    Cartesian_Scale(1.0 - probe, position_start),
+			    Cartesian_Scale(probe, position_end));
+			maximum_error = std::max(
+			    maximum_error,
+			    Cartesian_Norm(Cartesian_Subtract(dense_position, chord_position)));
+		}
+		return maximum_error;
+	}
+
+	double Integrate_Speed_Squared(double start, double end) const
+	{
+		if(!(end > start))
+			return 0.0;
+		const double midpoint = 0.5 * (start + end);
+		const double half_width = 0.5 * (end - start);
+		const double offset = half_width * BINCOUNT_GAUSS_LEGENDRE_OFFSET;
+		const Cartesian3 velocity_left = Velocity(midpoint - offset);
+		const Cartesian3 velocity_midpoint = Velocity(midpoint);
+		const Cartesian3 velocity_right = Velocity(midpoint + offset);
+		const double integral_over_fraction = half_width * (
+		    (5.0 / 9.0) * Cartesian_Dot(velocity_left, velocity_left)
+		    + (8.0 / 9.0) * Cartesian_Dot(velocity_midpoint, velocity_midpoint)
+		    + (5.0 / 9.0) * Cartesian_Dot(velocity_right, velocity_right));
+		return dt_sec_ * integral_over_fraction;
+	}
+
+	void Append_Contribution(int bin, double start, double end)
+	{
+		if(bin < 0 || bin >= NUM_BINS || !(end > start))
+			return;
+		BincountContribution contribution;
+		contribution.bin = bin;
+		contribution.dt_sec = dt_sec_ * (end - start);
+		contribution.v2dt_km2_per_sec = Integrate_Speed_Squared(start, end);
+		if(!std::isfinite(contribution.dt_sec) || contribution.dt_sec <= 0.0
+		   || !std::isfinite(contribution.v2dt_km2_per_sec)
+		   || contribution.v2dt_km2_per_sec < 0.0)
+			return;
+		if(!contributions_.empty() && contributions_.back().bin == contribution.bin)
+		{
+			contributions_.back().dt_sec += contribution.dt_sec;
+			contributions_.back().v2dt_km2_per_sec += contribution.v2dt_km2_per_sec;
+		}
+		else
+			contributions_.push_back(contribution);
+	}
+
+	void Append_Chord_Piece(
+		double dense_start,
+		double dense_end,
+		const Cartesian3& chord_start,
+		const Cartesian3& chord_delta,
+		double chord_piece_start,
+		double chord_piece_end)
+	{
+		if(!(chord_piece_end > chord_piece_start))
+			return;
+		const double chord_midpoint = 0.5 * (chord_piece_start + chord_piece_end);
+		const Cartesian3 position_midpoint = Cartesian_Add(
+		    chord_start, Cartesian_Scale(chord_midpoint, chord_delta));
+		const double radius_midpoint = Cartesian_Norm(position_midpoint);
+		int bin = -1;
+		if(std::isfinite(radius_midpoint)
+		   && radius_midpoint >= 0.0 && radius_midpoint < BIN_MAX_KM)
+			bin = static_cast<int>(radius_midpoint / BIN_WIDTH_KM);
+		const double dense_piece_start =
+		    dense_start + (dense_end - dense_start) * chord_piece_start;
+		const double dense_piece_end =
+		    dense_start + (dense_end - dense_start) * chord_piece_end;
+		Append_Contribution(bin, dense_piece_start, dense_piece_end);
+	}
+
+	bool Chord_Boundary_Root(
+		const Cartesian3& chord_start,
+		const Cartesian3& chord_delta,
+		double quadratic_a,
+		double quadratic_b,
+		double target_radius,
+		double chord_fraction_start,
+		double chord_fraction_end,
+		double& root) const
+	{
+		const double quadratic_c =
+		    Cartesian_Dot(chord_start, chord_start) - target_radius * target_radius;
+		const double discriminant =
+		    quadratic_b * quadratic_b - 4.0 * quadratic_a * quadratic_c;
+		if(!std::isfinite(discriminant) || discriminant < 0.0 || quadratic_a <= 0.0)
+			return false;
+		const double sqrt_discriminant = sqrt(std::max(0.0, discriminant));
+		const double roots[2] = {
+		    (-quadratic_b - sqrt_discriminant) / (2.0 * quadratic_a),
+		    (-quadratic_b + sqrt_discriminant) / (2.0 * quadratic_a)
+		};
+		for(double candidate : roots)
+		{
+			if(candidate > chord_fraction_start + 1.0e-12
+			   && candidate < chord_fraction_end - 1.0e-12)
+			{
+				root = candidate;
+				return true;
+			}
+		}
+		return false;
+	}
+
+	void Deposit_Monotonic_Chord(
+		double dense_start,
+		double dense_end,
+		const Cartesian3& chord_start,
+		const Cartesian3& chord_delta,
+		double chord_fraction_start,
+		double chord_fraction_end)
+	{
+		const Cartesian3 position_start = Cartesian_Add(
+		    chord_start, Cartesian_Scale(chord_fraction_start, chord_delta));
+		const Cartesian3 position_end = Cartesian_Add(
+		    chord_start, Cartesian_Scale(chord_fraction_end, chord_delta));
+		const double radius_start = Cartesian_Norm(position_start);
+		const double radius_end = Cartesian_Norm(position_end);
+		const double radius_min = std::min(radius_start, radius_end);
+		const double radius_max = std::max(radius_start, radius_end);
+		const int first_boundary = std::max(
+		    1, static_cast<int>(floor(radius_min / BIN_WIDTH_KM)) + 1);
+		const int last_boundary = std::min(
+		    NUM_BINS, static_cast<int>(floor(radius_max / BIN_WIDTH_KM)));
+		const double quadratic_a = Cartesian_Dot(chord_delta, chord_delta);
+		const double quadratic_b = 2.0 * Cartesian_Dot(chord_start, chord_delta);
+		const int boundary_step = (radius_end >= radius_start) ? 1 : -1;
+		int boundary = (boundary_step > 0) ? first_boundary : last_boundary;
+		const int boundary_end = (boundary_step > 0) ? last_boundary : first_boundary;
+		double previous_fraction = chord_fraction_start;
+		// Radius is monotonic on this chord segment, so its shell crossings
+		// already occur in radial-boundary order. Emit them directly instead
+		// of allocating and sorting a temporary fraction vector.
+		while((boundary_step > 0 && boundary <= boundary_end)
+		      || (boundary_step < 0 && boundary >= boundary_end))
+		{
+			const double target_radius = static_cast<double>(boundary) * BIN_WIDTH_KM;
+			if(target_radius > radius_min + 1.0e-10 * BIN_WIDTH_KM
+			   && target_radius < radius_max - 1.0e-10 * BIN_WIDTH_KM)
+			{
+				double root = 0.0;
+				if(Chord_Boundary_Root(
+				       chord_start,
+				       chord_delta,
+				       quadratic_a,
+				       quadratic_b,
+				       target_radius,
+				       chord_fraction_start,
+				       chord_fraction_end,
+				       root))
+				{
+					Append_Chord_Piece(
+					    dense_start,
+					    dense_end,
+					    chord_start,
+					    chord_delta,
+					    previous_fraction,
+					    root);
+					previous_fraction = root;
+				}
+			}
+			boundary += boundary_step;
+		}
+		Append_Chord_Piece(
+		    dense_start,
+		    dense_end,
+		    chord_start,
+		    chord_delta,
+		    previous_fraction,
+		    chord_fraction_end);
+	}
+
+	void Deposit_Chord(double start, double end)
+	{
+		const Cartesian3 chord_start = Position(start);
+		const Cartesian3 chord_end = Position(end);
+		const Cartesian3 chord_delta = Cartesian_Subtract(chord_end, chord_start);
+		const double chord_length_sqr = Cartesian_Dot(chord_delta, chord_delta);
+		if(!std::isfinite(chord_length_sqr))
+			return;
+		if(chord_length_sqr <= 0.0)
+		{
+			const double radius = Cartesian_Norm(chord_start);
+			const int bin = (std::isfinite(radius) && radius >= 0.0 && radius < BIN_MAX_KM)
+			              ? static_cast<int>(radius / BIN_WIDTH_KM)
+			              : -1;
+			Append_Contribution(bin, start, end);
+			return;
+		}
+
+		const double closest_approach =
+		    -Cartesian_Dot(chord_start, chord_delta) / chord_length_sqr;
+		if(closest_approach > 1.0e-12 && closest_approach < 1.0 - 1.0e-12)
+		{
+			Deposit_Monotonic_Chord(
+			    start,
+			    end,
+			    chord_start,
+			    chord_delta,
+			    0.0,
+			    closest_approach);
+			Deposit_Monotonic_Chord(
+			    start,
+			    end,
+			    chord_start,
+			    chord_delta,
+			    closest_approach,
+			    1.0);
+		}
+		else
+			Deposit_Monotonic_Chord(
+			    start, end, chord_start, chord_delta, 0.0, 1.0);
+	}
+
+	bool Try_Deposit_Single_Bin(double start, double end)
+	{
+		if(!(end > start))
+			return true;
+		const Cartesian3 control_start = Position(start);
+		const Cartesian3 control_end = Position(end);
+		const Cartesian3 velocity_start = Velocity(start);
+		const Cartesian3 velocity_end = Velocity(end);
+		const double interval_dt_sec = dt_sec_ * (end - start);
+		const Cartesian3 control_inner_start = Cartesian_Add(
+		    control_start, Cartesian_Scale(interval_dt_sec / 3.0, velocity_start));
+		const Cartesian3 control_inner_end = Cartesian_Subtract(
+		    control_end, Cartesian_Scale(interval_dt_sec / 3.0, velocity_end));
+		const Cartesian3 controls[4] = {
+		    control_start, control_inner_start, control_inner_end, control_end
+		};
+		const Cartesian3 midpoint_position = Position(0.5 * (start + end));
+		const double midpoint_radius = Cartesian_Norm(midpoint_position);
+		if(!std::isfinite(midpoint_radius)
+		   || !Cartesian_Finite(control_start) || !Cartesian_Finite(control_inner_start)
+		   || !Cartesian_Finite(control_inner_end) || !Cartesian_Finite(control_end))
+			return false;
+
+		// A cubic Hermite segment is the cubic Bezier curve defined by these
+		// four controls. Its convex hull bounds the maximum norm, while the
+		// projection onto any unit vector is bounded by the control-point
+		// projections. Together these give a conservative proof that the
+		// entire dense curve stays inside one radial bin.
+		Cartesian3 radial_direction{};
+		if(midpoint_radius > 0.0)
+			radial_direction = Cartesian_Scale(1.0 / midpoint_radius, midpoint_position);
+
+		double maximum_control_radius = 0.0;
+		double minimum_radial_projection = std::numeric_limits<double>::infinity();
+		for(const Cartesian3& control : controls)
+		{
+			maximum_control_radius =
+			    std::max(maximum_control_radius, Cartesian_Norm(control));
+			if(midpoint_radius > 0.0)
+				minimum_radial_projection =
+				    std::min(minimum_radial_projection, Cartesian_Dot(radial_direction, control));
+		}
+		const double margin =
+		    BINCOUNT_DENSE_POSITION_TOLERANCE_KM + 1.0e-10 * BIN_WIDTH_KM;
+		if(midpoint_radius >= BIN_MAX_KM)
+			return midpoint_radius > 0.0
+			    && minimum_radial_projection >= BIN_MAX_KM + margin;
+
+		const int bin = static_cast<int>(midpoint_radius / BIN_WIDTH_KM);
+		const double lower_radius = static_cast<double>(bin) * BIN_WIDTH_KM;
+		const double upper_radius = static_cast<double>(bin + 1) * BIN_WIDTH_KM;
+		if(maximum_control_radius >= upper_radius - margin)
+			return false;
+		if(lower_radius > 0.0
+		   && (midpoint_radius <= 0.0
+		       || minimum_radial_projection <= lower_radius + margin))
+			return false;
+		Append_Contribution(bin, start, end);
+		return true;
+	}
+
+	void Deposit_Dense_Interval(double start, double end, int depth)
+	{
+		if(Try_Deposit_Single_Bin(start, end))
+			return;
+		const double linearity_error = Position_Linearity_Error(start, end);
+		if(std::isfinite(linearity_error)
+		   && linearity_error > BINCOUNT_DENSE_POSITION_TOLERANCE_KM
+		   && depth < BINCOUNT_DENSE_MAX_RECURSION)
+		{
+			const double midpoint = 0.5 * (start + end);
+			Deposit_Dense_Interval(start, midpoint, depth + 1);
+			Deposit_Dense_Interval(midpoint, end, depth + 1);
+			return;
+		}
+		Deposit_Chord(start, end);
+	}
+};
+}
+
+void Compute_Bincount_Interval_Contributions(
+	const Event& before,
+	const Event& after,
+	std::vector<BincountContribution>& contributions)
+{
+	contributions.clear();
+	HermiteBincountDepositor(before, after, contributions).Deposit();
+}
+
+const char* TrajectoryDiagnosticEventTypeKey(TrajectoryDiagnosticEventType type)
+{
+	switch(type)
+	{
+		case TrajectoryDiagnosticEventType::Capture: return "capture";
+		case TrajectoryDiagnosticEventType::ScatterPre: return "scatter_pre";
+		case TrajectoryDiagnosticEventType::ScatterPost: return "scatter_post";
+		case TrajectoryDiagnosticEventType::CandidateUnbinding: return "candidate_unbinding";
+		case TrajectoryDiagnosticEventType::Recapture: return "recapture";
+		case TrajectoryDiagnosticEventType::SunExit: return "sun_exit";
+		case TrajectoryDiagnosticEventType::SunEntry: return "sun_entry";
+		case TrajectoryDiagnosticEventType::EscapeValidated: return "escape_validated";
+		case TrajectoryDiagnosticEventType::Censored: return "censored";
+		case TrajectoryDiagnosticEventType::NumericalFailure: return "numerical_failure";
+		default: return "unknown";
+	}
+}
+
+double RK45PositionToleranceKm() { return In_Units(1.0 * km, km); }
+double RK45VelocityToleranceKmPerSec() { return In_Units(1.0e-3 * km / sec, km / sec); }
+double RK45PhaseTolerance() { return 1.0e-7; }
+double RK45AbsoluteMaxStepSec() { return In_Units(RK45_Absolute_Max_Time_Step(), sec); }
+double NormalModeMaxOpticalDepthStep() { return MAX_OPTICAL_DEPTH_STEP; }
+double OpticalDepthRelativeTolerance() { return OPTICAL_DEPTH_RELATIVE_TOLERANCE; }
+const char* BincountIntegrationScheme() { return "conservative-hermite-radial-v1"; }
+double BincountDensePositionToleranceKm() { return BINCOUNT_DENSE_POSITION_TOLERANCE_KM; }
 
 // 1. Result of one trajectory
 bool TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason reason)
@@ -521,8 +1044,10 @@ bool TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason reason
 	}
 }
 
-Trajectory_Result::Trajectory_Result(const Event& event_ini, const Event& event_final, unsigned long int nScat, TrajectoryBincount bc)
-: initial_event(event_ini), final_event(event_final), number_of_scatterings(nScat), bincount(std::move(bc))
+Trajectory_Result::Trajectory_Result(const Event& event_ini, const Event& event_final, unsigned long int nScat,
+	                                 TrajectoryBincount bc, std::vector<TrajectoryDiagnosticEvent> events)
+: initial_event(event_ini), final_event(event_final), number_of_scatterings(nScat), bincount(std::move(bc)),
+  diagnostic_events(std::move(events))
 {
 }
 
@@ -585,13 +1110,19 @@ void Trajectory_Result::Print_Summary(Solar_Model& solar_model, unsigned int mpi
 
 // 2. Simulator
 Trajectory_Simulator::Trajectory_Simulator(const Solar_Model& model, unsigned long int max_time_steps, unsigned long int max_scatterings, double max_distance)
-: solar_model(model), free_flight_reference_energy_eV(std::numeric_limits<double>::quiet_NaN()), current_physical_bound_state(false), terminate_on_capture(false), snapshot_recorder(nullptr), trajectory_in_progress(false), track_trajectory_wall_time(false), accumulated_snapshot_overhead_sec(0.0), maximum_time_steps(max_time_steps), maximum_scatterings(max_scatterings), maximum_distance(max_distance), current_mpi_rank(0), current_trajectory_id(0)
+: solar_model(model), has_previous_bincount_event(false),
+  free_flight_reference_energy_eV(std::numeric_limits<double>::quiet_NaN()), current_ballistic_energy_drift_eV(0.0),
+  current_physical_bound_state(false), terminate_on_capture(false), diagnostic_trace_enabled(false),
+  diagnostic_event_index(0), diagnostic_scatter_index(0), diagnostic_step_index(0), last_scatter_target_index(-2),
+  snapshot_recorder(nullptr), trajectory_in_progress(false), track_trajectory_wall_time(false), accumulated_snapshot_overhead_sec(0.0),
+  maximum_time_steps(max_time_steps), maximum_scatterings(max_scatterings), maximum_distance(max_distance), current_mpi_rank(0), current_trajectory_id(0)
 {
 	if(!std::isfinite(maximum_distance) || maximum_distance <= 0.0)
 		throw std::invalid_argument("Trajectory_Simulator(): maximum distance must be finite and positive.");
 	std::random_device rd;
 	PRNG.seed(rd());
 	rate_nuclei_cache.resize(solar_model.target_isotopes.size());
+	bincount_contribution_cache.reserve(256);
 }
 
 void Trajectory_Simulator::Set_Snapshot_Recorder(SnapshotRecorder* recorder)
@@ -602,6 +1133,27 @@ void Trajectory_Simulator::Set_Snapshot_Recorder(SnapshotRecorder* recorder)
 void Trajectory_Simulator::Enable_Capture_Mode(bool enabled)
 {
 	terminate_on_capture = enabled;
+}
+
+void Trajectory_Simulator::Enable_Diagnostic_Trace(bool enabled)
+{
+	diagnostic_trace_enabled = enabled;
+}
+
+void Trajectory_Simulator::Restore_PRNG_State(const std::string& serialized_state)
+{
+	std::istringstream stream(serialized_state);
+	stream >> PRNG;
+	stream >> std::ws;
+	if(!stream.eof())
+		throw std::invalid_argument("Restore_PRNG_State(): invalid std::mt19937 state.");
+}
+
+std::string Trajectory_Simulator::Serialize_PRNG_State() const
+{
+	std::ostringstream stream;
+	stream << PRNG;
+	return stream.str();
 }
 
 bool Trajectory_Simulator::Trajectory_In_Progress() const
@@ -636,47 +1188,52 @@ const TrajectoryBincount& Trajectory_Simulator::Current_Trajectory_Bincount() co
 	return current_bincount;
 }
 
-// Accumulate one step into the current bincount
-void Trajectory_Simulator::Accumulate_Bincount_Step(
-	double r_km,
-	double v2_km2s2,
-	double dt_sec,
+void Trajectory_Simulator::Accumulate_Bincount_Interval(
+	const Event& before,
+	const Event& after,
 	double simulated_time_sec)
 {
+	const double dt_sec = In_Units(after.time - before.time, sec);
 	if(!std::isfinite(dt_sec) || dt_sec <= 0.0)
 		return;
-	int bin_idx = -1;
-	if(std::isfinite(r_km) && r_km >= 0.0 && r_km < BIN_MAX_KM)
+	Compute_Bincount_Interval_Contributions(before, after, bincount_contribution_cache);
+	for(const BincountContribution& contribution : bincount_contribution_cache)
 	{
-		bin_idx = static_cast<int>(r_km / BIN_WIDTH_KM);
-		if(bin_idx < 0)
-			bin_idx = 0;
-		if(bin_idx >= NUM_BINS)
-			bin_idx = -1;
-	}
-	const double v2dt = (bin_idx >= 0) ? v2_km2s2 * dt_sec : 0.0;
-	if(bin_idx >= 0)
-	{
-		current_bincount.dt_hist[bin_idx] += dt_sec;
-		current_bincount.v2dt_hist[bin_idx] += v2dt;
+		if(contribution.bin < 0 || contribution.bin >= NUM_BINS)
+			continue;
+		current_bincount.dt_hist[contribution.bin] += contribution.dt_sec;
+		current_bincount.v2dt_hist[contribution.bin] += contribution.v2dt_km2_per_sec;
 	}
 	if(snapshot_recorder != nullptr)
 	{
 		const auto snapshot_operation_start = std::chrono::steady_clock::now();
-		snapshot_recorder->AddCurrentBincountStep(bin_idx, dt_sec, v2dt, simulated_time_sec);
+		snapshot_recorder->AddCurrentBincountInterval(
+		    bincount_contribution_cache, simulated_time_sec);
 		Accumulate_Snapshot_Overhead(snapshot_operation_start);
 	}
+
+	const double r_before_km = In_Units(before.Radius(), km);
+	if(!current_bincount.is_captured)
+		return;
+	double interior_start = 0.0;
+	double interior_end = 0.0;
+	double inside_fraction = 0.0;
+	if(Solar_Interior_Fraction_Interval(before, after, before.Radius(), after.Radius(), interior_start, interior_end))
+		inside_fraction = std::max(0.0, std::min(1.0, interior_end - interior_start));
+	current_bincount.time_inside_sun_after_capture_sec += inside_fraction * dt_sec;
+	current_bincount.time_outside_sun_after_capture_sec += (1.0 - inside_fraction) * dt_sec;
+	const double max_radius_km = std::max(r_before_km, In_Units(after.Radius(), km));
+	if(!std::isfinite(current_bincount.max_radius_after_capture_km)
+	   || max_radius_km > current_bincount.max_radius_after_capture_km)
+		current_bincount.max_radius_after_capture_km = max_radius_km;
 }
 
 void Trajectory_Simulator::Reset_Bincount_Anchor(const Event& event)
 {
 	if(terminate_on_capture)
 		return;
-
-	prev_time_sec = In_Units(event.time, sec);
-	prev_r_km = In_Units(event.Radius(), km);
-	const double v_kms = In_Units(event.Speed(), km / sec);
-	prev_v2_km2s2 = v_kms * v_kms;
+	previous_bincount_event = event;
+	has_previous_bincount_event = true;
 }
 
 double Trajectory_Simulator::Capture_Energy_eV(double radius, double speed, obscura::DM_Particle& DM)
@@ -684,6 +1241,69 @@ double Trajectory_Simulator::Capture_Energy_eV(double radius, double speed, obsc
 	double vesc = solar_model.Local_Escape_Speed(radius);
 	double E = 0.5 * DM.mass * (speed * speed - vesc * vesc);
 	return In_Units(E, eV);
+}
+
+void Trajectory_Simulator::Record_Diagnostic_Event(
+	TrajectoryDiagnosticEventType type,
+	const Event& event,
+	obscura::DM_Particle& DM,
+	const char* target_species)
+{
+	if(!diagnostic_trace_enabled)
+		return;
+	const auto diagnostic_operation_start = std::chrono::steady_clock::now();
+	TrajectoryDiagnosticEvent record;
+	record.rank = static_cast<int>(current_mpi_rank);
+	record.trajectory_id = current_trajectory_id;
+	record.event_index = diagnostic_event_index++;
+	record.scatter_index = diagnostic_scatter_index;
+	record.step_index = diagnostic_step_index;
+	record.event_type = type;
+	record.t_s = In_Units(event.time, sec);
+	record.r_km = In_Units(event.Radius(), km);
+	record.vr_km_s = In_Units(Radial_Velocity(event), km / sec);
+	record.speed_km_s = In_Units(event.Speed(), km / sec);
+	for(size_t component = 0; component < 3; component++)
+	{
+		record.position_km[component] = In_Units(event.position[component], km);
+		record.velocity_km_s[component] = In_Units(event.velocity[component], km / sec);
+	}
+	record.energy_eV = Capture_Energy_eV(event.Radius(), event.Speed(), DM);
+	record.angular_momentum_km2_s = In_Units(event.Angular_Momentum(), km * km / sec);
+	record.is_bound = record.energy_eV < 0.0 ? 1 : 0;
+	record.inside_sun = event.Radius() < rSun ? 1 : 0;
+	record.candidate_active = std::isfinite(current_bincount.t_final_unbinding_scatter) ? 1 : 0;
+	std::strncpy(record.target_species, target_species == nullptr ? "" : target_species,
+	             sizeof(record.target_species) - 1);
+	record.target_species[sizeof(record.target_species) - 1] = '\0';
+	record.ballistic_energy_drift_eV = current_ballistic_energy_drift_eV;
+	current_diagnostic_events.push_back(record);
+	Accumulate_Snapshot_Overhead(diagnostic_operation_start);
+}
+
+void Trajectory_Simulator::Record_Surface_Crossing_Events(
+	const Event& before,
+	const Event& after,
+	obscura::DM_Particle& DM)
+{
+	if(!diagnostic_trace_enabled || !current_bincount.is_captured)
+		return;
+	double first = 0.0;
+	double second = 0.0;
+	if(!Surface_Crossing_Fractions(before, after, first, second))
+		return;
+	const double fractions[2] = {first, second};
+	for(double fraction : fractions)
+	{
+		if(fraction <= 1.0e-12 || fraction > 1.0 + 1.0e-12)
+			continue;
+		Event crossing = Interpolate_Event(before, after, fraction);
+		const bool entering = Radial_Velocity(crossing) < 0.0;
+		Record_Diagnostic_Event(entering ? TrajectoryDiagnosticEventType::SunEntry
+		                                 : TrajectoryDiagnosticEventType::SunExit,
+		                        crossing, DM);
+		current_diagnostic_events.back().inside_sun = entering ? 1 : 0;
+	}
 }
 
 bool Trajectory_Simulator::Update_Capture_State(double radius, double speed, double time, obscura::DM_Particle& DM, bool allow_new_capture)
@@ -698,6 +1318,16 @@ bool Trajectory_Simulator::Update_Capture_State(double radius, double speed, dou
 	previous_capture_energy_eV = E_eV;
 	bool negative_energy = E_eV < 0.0;
 	double t_now_sec = In_Units(time, sec);
+	if(current_bincount.is_captured)
+	{
+		if(!std::isfinite(current_bincount.min_energy_after_capture_eV)
+		   || E_eV < current_bincount.min_energy_after_capture_eV)
+			current_bincount.min_energy_after_capture_eV = E_eV;
+		const double radius_km = In_Units(radius, km);
+		if(!std::isfinite(current_bincount.max_radius_after_capture_km)
+		   || radius_km > current_bincount.max_radius_after_capture_km)
+			current_bincount.max_radius_after_capture_km = radius_km;
+	}
 
 	if(!allow_new_capture)
 	{
@@ -706,6 +1336,7 @@ bool Trajectory_Simulator::Update_Capture_State(double radius, double speed, dou
 			double drift_eV = std::fabs(E_eV - free_flight_reference_energy_eV);
 			if(std::isfinite(drift_eV) && drift_eV > current_bincount.max_free_energy_drift_eV)
 				current_bincount.max_free_energy_drift_eV = drift_eV;
+			current_ballistic_energy_drift_eV = std::isfinite(drift_eV) ? drift_eV : 0.0;
 			double scale_eV = std::max(std::fabs(free_flight_reference_energy_eV), FREE_ENERGY_DRIFT_REL_E_SCALE_EV);
 			double drift_rel = drift_eV / scale_eV;
 			if(std::isfinite(drift_rel) && drift_rel > current_bincount.max_free_energy_drift_rel)
@@ -723,6 +1354,7 @@ bool Trajectory_Simulator::Update_Capture_State(double radius, double speed, dou
 	bool was_bound = current_physical_bound_state;
 	current_physical_bound_state = negative_energy;
 	free_flight_reference_energy_eV = E_eV;
+	current_ballistic_energy_drift_eV = 0.0;
 
 	if(negative_energy)
 	{
@@ -735,6 +1367,8 @@ bool Trajectory_Simulator::Update_Capture_State(double radius, double speed, dou
 			current_bincount.r_first_negative_km = In_Units(radius, km);
 			current_bincount.E_first_negative_eV = E_eV;
 			current_bincount.dE_first_negative_from_prev_eV = dE_from_prev_eV;
+			current_bincount.min_energy_after_capture_eV = E_eV;
+			current_bincount.max_radius_after_capture_km = In_Units(radius, km);
 			if(snapshot_recorder != nullptr)
 			{
 				const auto snapshot_operation_start = std::chrono::steady_clock::now();
@@ -744,7 +1378,10 @@ bool Trajectory_Simulator::Update_Capture_State(double radius, double speed, dou
 		}
 		else if(!was_bound)
 		{
+			current_bincount.number_of_recaptures++;
 			current_bincount.t_final_unbinding_scatter = std::numeric_limits<double>::quiet_NaN();
+			current_bincount.r_final_unbinding_km = std::numeric_limits<double>::quiet_NaN();
+			current_bincount.E_final_unbinding_eV = std::numeric_limits<double>::quiet_NaN();
 		}
 		current_bincount.t_last_bound = t_now_sec;
 		current_bincount.t_last_negative = t_now_sec;
@@ -753,7 +1390,16 @@ bool Trajectory_Simulator::Update_Capture_State(double radius, double speed, dou
 
 	if(was_bound && current_bincount.is_captured)
 	{
+		current_bincount.number_of_bound_to_unbound++;
+		if(!std::isfinite(current_bincount.t_first_unbinding_scatter))
+		{
+			current_bincount.t_first_unbinding_scatter = t_now_sec;
+			current_bincount.r_first_unbinding_km = In_Units(radius, km);
+			current_bincount.E_first_unbinding_eV = E_eV;
+		}
 		current_bincount.t_final_unbinding_scatter = t_now_sec;
+		current_bincount.r_final_unbinding_km = In_Units(radius, km);
+		current_bincount.E_final_unbinding_eV = E_eV;
 	}
 
 	return false;
@@ -801,9 +1447,6 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 	const double optical_depth_step_limit = fast_capture_mode ? CAPTURE_MODE_MAX_OPTICAL_DEPTH_STEP : MAX_OPTICAL_DEPTH_STEP;
 	const std::size_t optical_depth_piece_target = fast_capture_mode ? CAPTURE_MODE_OPTICAL_DEPTH_PIECES : MAX_OPTICAL_DEPTH_PIECES;
 
-	if(!terminate_on_capture && prev_time_sec >= 0.0)
-		prev_time_sec = 0.0;
-
 	auto to_absolute_event = [&](const Event& local_event)
 	{
 		Event absolute_event = local_event;
@@ -817,8 +1460,6 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 		Event local_event = absolute_event;
 		local_event.time = 0.0;
 		particle_propagator = Free_Particle_Propagator(local_event);
-		if(!terminate_on_capture && prev_time_sec >= 0.0)
-			prev_time_sec = 0.0;
 	};
 
 	auto abort_if_wall_time_exceeded = [&](const char* phase)
@@ -844,24 +1485,18 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 		const Event absolute_accepted_event = to_absolute_event(local_accepted_event);
 		const double simulated_time_sec = In_Units(absolute_accepted_event.time, sec);
 		bool snapshot_progress_updated = false;
-		const double t_now_sec = In_Units(local_accepted_event.time, sec);
+		diagnostic_step_index++;
 		if(!terminate_on_capture)
 		{
-			const double r_now_km  = In_Units(local_accepted_event.Radius(), km);
-			const double v_now_kms = In_Units(local_accepted_event.Speed(), km / sec);
-			const double v2_now    = v_now_kms * v_now_kms;
-
-			if(prev_time_sec >= 0.0)
+			if(has_previous_bincount_event)
 			{
-				const double dt_sec = t_now_sec - prev_time_sec;
-				Accumulate_Bincount_Step(prev_r_km, prev_v2_km2s2, dt_sec, simulated_time_sec);
+				const double dt_sec = In_Units(absolute_accepted_event.time - previous_bincount_event.time, sec);
+				Accumulate_Bincount_Interval(previous_bincount_event, absolute_accepted_event, simulated_time_sec);
+				Record_Surface_Crossing_Events(previous_bincount_event, absolute_accepted_event, DM);
 				snapshot_progress_updated = std::isfinite(dt_sec) && dt_sec > 0.0;
-				prev_dt_sec = dt_sec;
 			}
-
-			prev_time_sec = t_now_sec;
-			prev_r_km     = r_now_km;
-			prev_v2_km2s2 = v2_now;
+			previous_bincount_event = absolute_accepted_event;
+			has_previous_bincount_event = true;
 		}
 
 		if(snapshot_recorder != nullptr && !snapshot_progress_updated)
@@ -870,6 +1505,8 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 			snapshot_recorder->UpdateCurrentSimulationTime(In_Units(absolute_accepted_event.time, sec));
 			Accumulate_Snapshot_Overhead(snapshot_operation_start);
 		}
+		if(current_bincount.is_captured)
+			current_bincount.number_of_integrator_steps_after_capture++;
 		return Update_Capture_State(absolute_accepted_event.Radius(), absolute_accepted_event.Speed(), absolute_accepted_event.time, DM, false);
 	};
 
@@ -951,7 +1588,11 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 			}
 
 		if(abort_if_wall_time_exceeded("after_rk45_step"))
+		{
+			commit_accepted_event(event_after);
+			current_event = to_absolute_event(event_after);
 			return TrajectoryTerminationReason::WallTimeLimit;
+		}
 
 		// Check for scatterings and reflection
 		bool scattering = false;
@@ -1064,9 +1705,15 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 			double v_boundary = v_after;
 			if(r_before < maximum_distance && r_after >= maximum_distance && r_after > r_before)
 			{
-				const double boundary_fraction = (maximum_distance - r_before) / (r_after - r_before);
+				const double boundary_fraction = Find_Radius_Crossing_Fraction(event_before, event_after, maximum_distance);
 				boundary_event = Interpolate_Event(event_before, event_after, boundary_fraction);
-				r_boundary = boundary_event.Radius();
+				const double interpolated_radius = boundary_event.Radius();
+				if(std::isfinite(interpolated_radius) && interpolated_radius > 0.0)
+					boundary_event.position = maximum_distance / interpolated_radius * boundary_event.position;
+				// The crossing has already been bracketed and solved.  Recomputing
+				// the norm after radial projection can round one ULP below the
+				// target and incorrectly bypass the strict boundary branch.
+				r_boundary = maximum_distance;
 				v_boundary = boundary_event.Speed();
 			}
 
@@ -1083,12 +1730,24 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 					return TrajectoryTerminationReason::NumericalFailure;
 
 				Event inbound_boundary_event;
-				if(Bound_Kepler_Return_At_Same_Radius(boundary_event, inbound_boundary_event))
+				double kepler_return_time = 0.0;
+				double kepler_apoapsis_radius = 0.0;
+				if(Bound_Kepler_Return_At_Same_Radius(boundary_event, inbound_boundary_event,
+				                                      kepler_return_time, kepler_apoapsis_radius))
 				{
 					time_steps++;
 					optical_depth_retries = 0;
-						commit_accepted_event(boundary_event);
-						current_event = to_absolute_event(inbound_boundary_event);
+					commit_accepted_event(boundary_event);
+					current_event = to_absolute_event(inbound_boundary_event);
+					if(current_bincount.is_captured)
+					{
+						current_bincount.time_outside_sun_after_capture_sec += In_Units(kepler_return_time, sec);
+						const double apoapsis_km = In_Units(kepler_apoapsis_radius, km);
+						if(!std::isfinite(current_bincount.max_radius_after_capture_km)
+						   || apoapsis_km > current_bincount.max_radius_after_capture_km)
+							current_bincount.max_radius_after_capture_km = apoapsis_km;
+					}
+					Reset_Bincount_Anchor(current_event);
 						if(snapshot_recorder != nullptr)
 						{
 							const auto snapshot_operation_start = std::chrono::steady_clock::now();
@@ -1252,6 +1911,7 @@ void Trajectory_Simulator::Scatter(Event& current_event, obscura::DM_Particle& D
 	double v = current_event.Speed();
 	// 1. Find target properties.
 	int target_index = Sample_Target(DM, r, v);
+	last_scatter_target_index = target_index;
 
 	double target_mass;
 	if(target_index == -1)
@@ -1286,15 +1946,18 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
 
 	// Initialize per-trajectory bincount
 	current_bincount = TrajectoryBincount();
-	prev_time_sec = -1.0;
-	prev_r_km = 0.0;
-	prev_v2_km2s2 = 0.0;
-	prev_dt_sec = 0.0;
+	has_previous_bincount_event = false;
 	previous_capture_energy_eV = Capture_Energy_eV(current_event.Radius(), current_event.Speed(), DM);
 	free_flight_reference_energy_eV = std::numeric_limits<double>::quiet_NaN();
+	current_ballistic_energy_drift_eV = 0.0;
 	current_physical_bound_state = false;
 	current_mpi_rank = mpi_rank;
 	current_trajectory_id++;
+	diagnostic_event_index = 0;
+	diagnostic_scatter_index = 0;
+	diagnostic_step_index = 0;
+	last_scatter_target_index = -2;
+	current_diagnostic_events.clear();
 	trajectory_in_progress = true;
 	track_trajectory_wall_time = snapshot_recorder != nullptr || max_trajectory_wall_time_sec > 0.0;
 	if(track_trajectory_wall_time)
@@ -1313,6 +1976,12 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
 		TrajectoryTerminationReason propagation_reason = Propagate_Freely(current_event, DM);
 		if(propagation_reason == TrajectoryTerminationReason::Scatter && current_event.Radius() < rSun)
 		{
+			diagnostic_scatter_index = number_of_scatterings + 1;
+			const size_t scatter_pre_event_index = current_diagnostic_events.size();
+			Record_Diagnostic_Event(TrajectoryDiagnosticEventType::ScatterPre, current_event, DM);
+			const bool was_captured = current_bincount.is_captured;
+			const unsigned long int bound_to_unbound_before = current_bincount.number_of_bound_to_unbound;
+			const unsigned long int recaptures_before = current_bincount.number_of_recaptures;
 			try
 			{
 				Scatter(current_event, DM);
@@ -1325,6 +1994,17 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
 				break;
 			}
 			number_of_scatterings++;
+			std::string target_species = "unknown";
+			if(last_scatter_target_index == -1)
+				target_species = "electron";
+			else if(last_scatter_target_index >= 0
+			        && static_cast<size_t>(last_scatter_target_index) < solar_model.target_isotopes.size())
+				target_species = solar_model.target_isotopes[static_cast<size_t>(last_scatter_target_index)].name;
+			if(diagnostic_trace_enabled && scatter_pre_event_index < current_diagnostic_events.size())
+			{
+				std::strncpy(current_diagnostic_events[scatter_pre_event_index].target_species,
+				             target_species.c_str(), sizeof(current_diagnostic_events[scatter_pre_event_index].target_species) - 1);
+			}
 			if(snapshot_recorder != nullptr)
 			{
 				const auto snapshot_operation_start = std::chrono::steady_clock::now();
@@ -1332,6 +2012,13 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
 				Accumulate_Snapshot_Overhead(snapshot_operation_start);
 			}
 			bool captured_after_scatter = Update_Capture_State(current_event.Radius(), current_event.Speed(), current_event.time, DM, true);
+			Record_Diagnostic_Event(TrajectoryDiagnosticEventType::ScatterPost, current_event, DM, target_species.c_str());
+			if(!was_captured && current_bincount.is_captured)
+				Record_Diagnostic_Event(TrajectoryDiagnosticEventType::Capture, current_event, DM, target_species.c_str());
+			if(current_bincount.number_of_bound_to_unbound > bound_to_unbound_before)
+				Record_Diagnostic_Event(TrajectoryDiagnosticEventType::CandidateUnbinding, current_event, DM, target_species.c_str());
+			if(current_bincount.number_of_recaptures > recaptures_before)
+				Record_Diagnostic_Event(TrajectoryDiagnosticEventType::Recapture, current_event, DM, target_species.c_str());
 			Reset_Bincount_Anchor(current_event);
 			if(terminate_on_capture && captured_after_scatter)
 			{
@@ -1368,7 +2055,11 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
 			{
 				current_bincount.boundary_escape_observed = true;
 				current_bincount.t_boundary_escape = current_bincount.t_termination;
+				current_bincount.r_boundary_escape_km = In_Units(r_final, km);
+				current_bincount.vr_boundary_escape_km_s = In_Units(current_event.position.Dot(current_event.velocity) / r_final, km / sec);
+				current_bincount.E_boundary_escape_eV = E_final_eV;
 				current_bincount.event_observed = true;
+				Record_Diagnostic_Event(TrajectoryDiagnosticEventType::EscapeValidated, current_event, DM);
 			}
 			else
 			{
@@ -1385,6 +2076,18 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
 	if(TrajectoryTerminationInvalidatesSurvival(termination_reason))
 		current_bincount.survival_valid = false;
 
+	if(current_bincount.is_captured && !current_bincount.event_observed)
+	{
+		const bool numerical_failure = termination_reason == TrajectoryTerminationReason::NumericalFailure
+		                            || termination_reason == TrajectoryTerminationReason::NonFiniteState
+		                            || termination_reason == TrajectoryTerminationReason::SpeedLimit
+		                            || termination_reason == TrajectoryTerminationReason::EnergyDriftEscape
+		                            || termination_reason == TrajectoryTerminationReason::Unknown;
+		Record_Diagnostic_Event(numerical_failure ? TrajectoryDiagnosticEventType::NumericalFailure
+		                                          : TrajectoryDiagnosticEventType::Censored,
+		                        current_event, DM);
+	}
+
 	if(current_bincount.is_captured)
 	{
 		if(!current_bincount.event_observed)
@@ -1396,7 +2099,8 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
 		current_bincount.truncated = false;
 	}
 
-	return Trajectory_Result(initial_condition, current_event, number_of_scatterings, current_bincount);
+	return Trajectory_Result(initial_condition, current_event, number_of_scatterings, current_bincount,
+	                         std::move(current_diagnostic_events));
 }  
 
 // 3. Equation of motion solution with Runge-Kutta-Fehlberg

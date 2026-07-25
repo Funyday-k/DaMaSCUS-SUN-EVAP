@@ -1,5 +1,6 @@
 #include "gtest/gtest.h"
 
+#include <array>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -15,6 +16,45 @@
 
 using namespace DaMaSCUS_SUN;
 using namespace libphysica::natural_units;
+
+namespace
+{
+struct AggregatedBincount
+{
+	std::array<double, NUM_BINS> dt{};
+	std::array<double, NUM_BINS> v2dt{};
+};
+
+void AddContributions(
+	AggregatedBincount& aggregate,
+	const std::vector<BincountContribution>& contributions)
+{
+	for(const BincountContribution& contribution : contributions)
+	{
+		ASSERT_GE(contribution.bin, 0);
+		ASSERT_LT(contribution.bin, NUM_BINS);
+		aggregate.dt[contribution.bin] += contribution.dt_sec;
+		aggregate.v2dt[contribution.bin] += contribution.v2dt_km2_per_sec;
+	}
+}
+
+AggregatedBincount ComputeContributions(const Event& before, const Event& after)
+{
+	std::vector<BincountContribution> contributions;
+	Compute_Bincount_Interval_Contributions(before, after, contributions);
+	AggregatedBincount aggregate;
+	AddContributions(aggregate, contributions);
+	return aggregate;
+}
+
+double SumBins(const std::array<double, NUM_BINS>& values)
+{
+	double sum = 0.0;
+	for(double value : values)
+		sum += value;
+	return sum;
+}
+}
 
 // 1. Result of one trajectory
 TEST(TestSimulationTrajectory, TestTrajectoryResultConstructor)
@@ -147,12 +187,154 @@ TEST(TestSimulationTrajectory, TestTrajectoryBincountSurvivalDefaults)
 	EXPECT_DOUBLE_EQ(bincount.t_last_bound, -1.0);
 	EXPECT_DOUBLE_EQ(bincount.t_termination, -1.0);
 	EXPECT_TRUE(std::isnan(bincount.t_final_unbinding_scatter));
+	EXPECT_TRUE(std::isnan(bincount.t_first_unbinding_scatter));
 	EXPECT_TRUE(std::isnan(bincount.t_boundary_escape));
 	EXPECT_DOUBLE_EQ(bincount.max_free_energy_drift_eV, 0.0);
 	EXPECT_DOUBLE_EQ(bincount.max_free_energy_drift_rel, 0.0);
 	EXPECT_EQ(bincount.number_of_scatterings, 0UL);
+	EXPECT_EQ(bincount.number_of_bound_to_unbound, 0UL);
+	EXPECT_EQ(bincount.number_of_recaptures, 0UL);
+	EXPECT_EQ(bincount.number_of_integrator_steps_after_capture, 0UL);
+	EXPECT_TRUE(std::isnan(bincount.min_energy_after_capture_eV));
 	EXPECT_EQ(TRAJECTORY_TERMINATION_REASON_COUNT, 11);
 	EXPECT_EQ(static_cast<int>(TrajectoryTerminationReason::EnergyDriftEscape), 10);
+}
+
+TEST(TestSimulationTrajectory, TestBincountDepositsLinearRadialIntervalAcrossEveryBin)
+{
+	const int first_bin = 1500;
+	const double start_radius_km = (static_cast<double>(first_bin) + 0.25) * BIN_WIDTH_KM;
+	const double speed_km_s = BIN_WIDTH_KM;
+	const double duration_sec = 10.5;
+	Event before(
+	    0.0,
+	    libphysica::Vector({start_radius_km * km, 0.0, 0.0}),
+	    libphysica::Vector({speed_km_s * km / sec, 0.0, 0.0}));
+	Event after(
+	    duration_sec * sec,
+	    libphysica::Vector({
+	        (start_radius_km + speed_km_s * duration_sec) * km, 0.0, 0.0}),
+	    before.velocity);
+
+	const AggregatedBincount aggregate = ComputeContributions(before, after);
+	EXPECT_NEAR(aggregate.dt[first_bin], 0.75, 1.0e-11);
+	for(int bin = first_bin + 1; bin < first_bin + 10; bin++)
+		EXPECT_NEAR(aggregate.dt[bin], 1.0, 1.0e-11);
+	EXPECT_NEAR(aggregate.dt[first_bin + 10], 0.75, 1.0e-11);
+	EXPECT_NEAR(SumBins(aggregate.dt), duration_sec, 1.0e-10);
+	EXPECT_NEAR(
+	    SumBins(aggregate.v2dt),
+	    speed_km_s * speed_km_s * duration_sec,
+	    1.0e-9 * speed_km_s * speed_km_s * duration_sec);
+}
+
+TEST(TestSimulationTrajectory, TestBincountDepositsSingleBinIntervalConservatively)
+{
+	const int bin = 100;
+	const double duration_sec = 1.0;
+	const double start_radius_km = (static_cast<double>(bin) + 0.2) * BIN_WIDTH_KM;
+	const double speed_km_s = 0.6 * BIN_WIDTH_KM;
+	Event before(
+	    0.0,
+	    libphysica::Vector({start_radius_km * km, 0.0, 0.0}),
+	    libphysica::Vector({speed_km_s * km / sec, 0.0, 0.0}));
+	Event after(
+	    duration_sec * sec,
+	    libphysica::Vector({
+	        (start_radius_km + speed_km_s * duration_sec) * km, 0.0, 0.0}),
+	    before.velocity);
+
+	const AggregatedBincount aggregate = ComputeContributions(before, after);
+	EXPECT_NEAR(aggregate.dt[bin], duration_sec, 1.0e-12);
+	EXPECT_NEAR(SumBins(aggregate.dt), duration_sec, 1.0e-12);
+	EXPECT_NEAR(
+	    SumBins(aggregate.v2dt),
+	    speed_km_s * speed_km_s * duration_sec,
+	    1.0e-12 * speed_km_s * speed_km_s * duration_sec);
+}
+
+TEST(TestSimulationTrajectory, TestBincountSingleBinFastPathRejectsCurvedBoundaryCrossing)
+{
+	const int endpoint_bin = 100;
+	const double duration_sec = 1.0;
+	const double endpoint_radius_km =
+	    (static_cast<double>(endpoint_bin) + 0.5) * BIN_WIDTH_KM;
+	const double endpoint_speed_km_s = 4.0 * BIN_WIDTH_KM;
+	Event before(
+	    0.0,
+	    libphysica::Vector({endpoint_radius_km * km, 0.0, 0.0}),
+	    libphysica::Vector({endpoint_speed_km_s * km / sec, 0.0, 0.0}));
+	Event after(
+	    duration_sec * sec,
+	    before.position,
+	    libphysica::Vector({-endpoint_speed_km_s * km / sec, 0.0, 0.0}));
+
+	const AggregatedBincount aggregate = ComputeContributions(before, after);
+	const double expected_outer_fraction = std::sqrt(0.5);
+	EXPECT_NEAR(aggregate.dt[endpoint_bin], 1.0 - expected_outer_fraction, 1.0e-3);
+	EXPECT_NEAR(aggregate.dt[endpoint_bin + 1], expected_outer_fraction, 1.0e-3);
+	EXPECT_NEAR(SumBins(aggregate.dt), duration_sec, 1.0e-10);
+	EXPECT_NEAR(
+	    SumBins(aggregate.v2dt),
+	    endpoint_speed_km_s * endpoint_speed_km_s / 3.0,
+	    1.0e-9 * endpoint_speed_km_s * endpoint_speed_km_s);
+}
+
+TEST(TestSimulationTrajectory, TestBincountLinearDepositionIsStepPhaseInvariant)
+{
+	const double start_radius_km = 1300.37 * BIN_WIDTH_KM;
+	const double speed_km_s = 0.8 * BIN_WIDTH_KM;
+	const double duration_sec = 17.25;
+	const double split_sec = 4.137;
+	auto event_at = [&](double time_sec)
+	{
+		return Event(
+		    time_sec * sec,
+		    libphysica::Vector({
+		        (start_radius_km + speed_km_s * time_sec) * km, 0.0, 0.0}),
+		    libphysica::Vector({speed_km_s * km / sec, 0.0, 0.0}));
+	};
+
+	const AggregatedBincount one_step =
+	    ComputeContributions(event_at(0.0), event_at(duration_sec));
+	AggregatedBincount split_steps;
+	std::vector<BincountContribution> contributions;
+	Compute_Bincount_Interval_Contributions(
+	    event_at(0.0), event_at(split_sec), contributions);
+	AddContributions(split_steps, contributions);
+	Compute_Bincount_Interval_Contributions(
+	    event_at(split_sec), event_at(duration_sec), contributions);
+	AddContributions(split_steps, contributions);
+
+	for(int bin = 0; bin < NUM_BINS; bin++)
+	{
+		EXPECT_NEAR(one_step.dt[bin], split_steps.dt[bin], 1.0e-10);
+		EXPECT_NEAR(
+		    one_step.v2dt[bin],
+		    split_steps.v2dt[bin],
+		    1.0e-8 * std::max(1.0, one_step.v2dt[bin]));
+	}
+}
+
+TEST(TestSimulationTrajectory, TestBincountClipsOutwardIntervalAtTwoSolarRadii)
+{
+	const double speed_km_s = BIN_WIDTH_KM;
+	const double start_radius_km = 1998.5 * BIN_WIDTH_KM;
+	const double duration_sec = 3.0;
+	Event before(
+	    0.0,
+	    libphysica::Vector({start_radius_km * km, 0.0, 0.0}),
+	    libphysica::Vector({speed_km_s * km / sec, 0.0, 0.0}));
+	Event after(
+	    duration_sec * sec,
+	    libphysica::Vector({
+	        (start_radius_km + speed_km_s * duration_sec) * km, 0.0, 0.0}),
+	    before.velocity);
+
+	const AggregatedBincount aggregate = ComputeContributions(before, after);
+	EXPECT_NEAR(aggregate.dt[1998], 0.5, 1.0e-11);
+	EXPECT_NEAR(aggregate.dt[1999], 1.0, 1.0e-11);
+	EXPECT_NEAR(SumBins(aggregate.dt), 1.5, 1.0e-10);
 }
 
 TEST(TestSimulationTrajectory, TestSurvivalInvalidTerminationReasons)
@@ -274,9 +456,52 @@ TEST(TestSimulationTrajectory, TestSimulate)
 		ASSERT_TRUE(Hyperbolic_Kepler_Shift(IC, 1.5 * rSun));
 		Trajectory_Result result = simulator.Simulate(IC, DM, 0);
 		if(result.Particle_Reflected() || result.Particle_Free())
-			ASSERT_GE(result.final_event.Radius(), simulator.maximum_distance);
+			ASSERT_NEAR(result.final_event.Radius(), simulator.maximum_distance, 1.0e-10 * rSun);
 		else
 			ASSERT_GT(result.number_of_scatterings, 0);
+	}
+}
+
+TEST(TestSimulationTrajectory, TestSerializedPRNGStateReplaysTrajectoryExactly)
+{
+	obscura::DM_Particle_SI DM(0.5 * GeV);
+	DM.Set_Sigma_Proton(0.1 * pb);
+	Solar_Model SSM;
+	obscura::Standard_Halo_Model SHM;
+
+	Trajectory_Simulator original(SSM, 1000000, 1000, 2.0 * rSun);
+	original.Fix_PRNG_Seed(20260722);
+	Event IC = Initial_Conditions(SHM, SSM, original.PRNG);
+	ASSERT_TRUE(Hyperbolic_Kepler_Shift(IC, 1.5 * rSun));
+	const std::string state_before_simulation = original.Serialize_PRNG_State();
+	original.Enable_Diagnostic_Trace(true);
+	Trajectory_Result first = original.Simulate(IC, DM, 0);
+
+	Trajectory_Simulator replay(SSM, 1000000, 1000, 2.0 * rSun);
+	ASSERT_NO_THROW(replay.Restore_PRNG_State(state_before_simulation));
+	replay.Enable_Diagnostic_Trace(true);
+	Trajectory_Result second = replay.Simulate(IC, DM, 0);
+
+	EXPECT_EQ(first.number_of_scatterings, second.number_of_scatterings);
+	EXPECT_EQ(first.bincount.termination_reason, second.bincount.termination_reason);
+	EXPECT_DOUBLE_EQ(first.bincount.t_capture, second.bincount.t_capture);
+	if(std::isnan(first.bincount.t_final_unbinding_scatter))
+		EXPECT_TRUE(std::isnan(second.bincount.t_final_unbinding_scatter));
+	else
+		EXPECT_DOUBLE_EQ(first.bincount.t_final_unbinding_scatter, second.bincount.t_final_unbinding_scatter);
+	EXPECT_DOUBLE_EQ(first.final_event.time, second.final_event.time);
+	for(size_t component = 0; component < 3; component++)
+	{
+		EXPECT_DOUBLE_EQ(first.final_event.position[component], second.final_event.position[component]);
+		EXPECT_DOUBLE_EQ(first.final_event.velocity[component], second.final_event.velocity[component]);
+	}
+	ASSERT_EQ(first.diagnostic_events.size(), second.diagnostic_events.size());
+	for(size_t index = 0; index < first.diagnostic_events.size(); index++)
+	{
+		EXPECT_EQ(first.diagnostic_events[index].event_type, second.diagnostic_events[index].event_type);
+		EXPECT_DOUBLE_EQ(first.diagnostic_events[index].t_s, second.diagnostic_events[index].t_s);
+		EXPECT_EQ(first.diagnostic_events[index].scatter_index, second.diagnostic_events[index].scatter_index);
+		EXPECT_EQ(first.diagnostic_events[index].step_index, second.diagnostic_events[index].step_index);
 	}
 }
 

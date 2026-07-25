@@ -14,6 +14,7 @@
 #define GIT_BRANCH "@GIT_BRANCH@"
 #define GIT_COMMIT_HASH "@GIT_COMMIT_HASH@"
 #define PROJECT_DIR "@PROJECT_SOURCE_DIR@/"
+#define INSTALL_DATA_PATH_FROM_BINDIR "@INSTALL_DATA_PATH_FROM_BINDIR@"
 // #define TOP_LEVEL_DIR "/project/kennyng/backup_DM/Trajectoies/"  // 已移至config文件
 // #define TOP_LEVEL_DIR "@CMAKE_SOURCE_DIR@/"
 #define SEPARATOR "\n##############################################################\n"

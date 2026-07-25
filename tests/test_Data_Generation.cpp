@@ -53,6 +53,9 @@ void RemoveTestOutputDir(const std::string& directory)
 {
 	std::remove((directory + "bincount.txt").c_str());
 	std::remove((directory + "evaporation_times.txt").c_str());
+	std::remove((directory + "run_metadata.json").c_str());
+	std::remove((directory + "trajectory_summary.tsv").c_str());
+	std::remove((directory + "trajectory_events.tsv").c_str());
 	rmdir(directory.c_str());
 }
 
@@ -502,6 +505,9 @@ TEST(TestDataGeneration, TestDefaultOutputContract)
 	{
 		EXPECT_TRUE(FileExists(output_dir + "bincount.txt"));
 		EXPECT_TRUE(FileExists(output_dir + "evaporation_times.txt"));
+		EXPECT_TRUE(FileContains(
+		    output_dir + "bincount.txt",
+		    "# bincount_integration = conservative-hermite-radial-v1"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# normal_mode_mpi_sync_interval = 1048576"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# mpi_sync_rounds = 1"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# final_mpi_round_trajectories = 1"));
@@ -512,12 +518,88 @@ TEST(TestDataGeneration, TestDefaultOutputContract)
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# completed_outward_escapes = 1"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# unresolved_not_captured_trajectories = 0"));
 		EXPECT_FALSE(FileExists(output_dir + "evaporation_diagnostics.txt"));
+		EXPECT_FALSE(FileExists(output_dir + "run_metadata.json"));
+		EXPECT_FALSE(FileExists(output_dir + "trajectory_summary.tsv"));
+		EXPECT_FALSE(FileExists(output_dir + "trajectory_events.tsv"));
 		EXPECT_FALSE(FileExists(output_dir + std::string("evaporation_") + "summary.txt"));
 		EXPECT_FALSE(FileExists(output_dir + std::string("evaporation_") + "mode_summary.txt"));
 		EXPECT_FALSE(FileExists(output_dir + std::string("evaporation_") + "mode_" + "bincount.txt"));
 		EXPECT_FALSE(FileExists(output_dir + std::string("computation_") + "time_summary.txt"));
 		RemoveTestOutputDir(output_dir);
 	}
+}
+
+TEST(TestDataGeneration, TestTrajectoryDiagnosticOutputContract)
+{
+	Solar_Model SSM;
+	obscura::Standard_Halo_Model SHM;
+	obscura::DM_Particle_SI DM(0.01 * GeV);
+	DM.Set_Low_Mass_Mode(true);
+	DM.Set_Sigma_Proton(1.0e-32 * cm * cm);
+	DM.Set_Sigma_Electron(1.0e-100 * pb);
+	SSM.Interpolate_Total_DM_Scattering_Rate(DM, 20, 20);
+
+	Simulation_Data data_set(1, 64);
+	data_set.Configure(2.0 * rSun, 0, 100000);
+	TrajectoryDiagnosticConfig diagnostics;
+	diagnostics.summary_enabled = true;
+	diagnostics.events_enabled = true;
+	diagnostics.trace_rate = 1.0;
+	diagnostics.trace_seed = 2026072201ULL;
+	diagnostics.interpolation_points = 20;
+	EXPECT_NO_THROW(data_set.Configure_Trajectory_Diagnostics(diagnostics));
+	diagnostics.trace_rate = 1.01;
+	EXPECT_THROW(data_set.Configure_Trajectory_Diagnostics(diagnostics), std::invalid_argument);
+	data_set.Generate_Data(DM, SSM, SHM, SnapshotConfig(), 20260722);
+
+	int rank = 0;
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+	const std::string output_dir = TestOutputDir("trajectory_diagnostic_contract");
+	data_set.Write_Output_Files(output_dir, DM);
+	if(rank == 0)
+	{
+		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"schema_version\": \"trajectory-diagnostic-v2\""));
+		EXPECT_TRUE(FileContains(
+		    output_dir + "run_metadata.json",
+		    "\"bincount_integration\": \"conservative-hermite-radial-v1\""));
+		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"interpolation_points\": 20"));
+		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"legacy_evaporation_reconciliation\": true"));
+		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"escape_radius_invariant\": true"));
+		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"residence_time_invariant\": true"));
+		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"event_sequence_invariant\": true"));
+		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"event_count_invariant\": true"));
+		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"trace_selection_invariant\": true"));
+		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"replay_state_invariant\": true"));
+		EXPECT_TRUE(FileContains(output_dir + "trajectory_summary.tsv", "t_first_unbinding_s"));
+		EXPECT_TRUE(FileContains(output_dir + "trajectory_summary.tsv", "n_recapture"));
+		EXPECT_TRUE(FileContains(output_dir + "trajectory_summary.tsv", "rng_state_before_simulation"));
+		EXPECT_TRUE(FileContains(output_dir + "trajectory_events.tsv", "event_type"));
+		EXPECT_TRUE(FileContains(output_dir + "trajectory_events.tsv", "scatter_pre"));
+		EXPECT_TRUE(FileContains(output_dir + "trajectory_events.tsv", "scatter_post"));
+		EXPECT_TRUE(FileContains(output_dir + "trajectory_events.tsv", "candidate_unbinding"));
+		EXPECT_TRUE(FileContains(output_dir + "trajectory_events.tsv", "escape_validated"));
+		RemoveTestOutputDir(output_dir);
+	}
+}
+
+TEST(TestDataGeneration, TestTraceSelectionIsStableAcrossRunIds)
+{
+	std::vector<uint64_t> first_selection;
+	std::vector<uint64_t> repeated_selection;
+	std::vector<uint64_t> other_seed_selection;
+	for(uint64_t trajectory_id = 1; trajectory_id <= 1000; trajectory_id++)
+	{
+		if(TrajectoryTraceSelected(1234567ULL, 2, trajectory_id, 0.02))
+			first_selection.push_back(trajectory_id);
+		if(TrajectoryTraceSelected(1234567ULL, 2, trajectory_id, 0.02))
+			repeated_selection.push_back(trajectory_id);
+		if(TrajectoryTraceSelected(7654321ULL, 2, trajectory_id, 0.02))
+			other_seed_selection.push_back(trajectory_id);
+	}
+	EXPECT_EQ(first_selection, repeated_selection);
+	EXPECT_NE(first_selection, other_seed_selection);
+	EXPECT_FALSE(TrajectoryTraceSelected(123ULL, 0, 1, 0.0));
+	EXPECT_TRUE(TrajectoryTraceSelected(123ULL, 0, 1, 1.0));
 }
 
 TEST(TestDataGeneration, TestFinalOutputContainsOnlyRequestedReports)

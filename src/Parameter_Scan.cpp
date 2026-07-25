@@ -167,6 +167,27 @@ void Configuration::Import_Parameter_Scan_Parameter()
 	{
 		interpolation_points = 0;
 	}
+	escape_radius_rsun = 2.0;
+	try
+	{
+		try
+		{
+			escape_radius_rsun = config.lookup("R_escape_Rsun");
+		}
+		catch(const SettingTypeException& type_error)
+		{
+			const int integer_radius = config.lookup("R_escape_Rsun");
+			escape_radius_rsun = static_cast<double>(integer_radius);
+		}
+		if(!std::isfinite(escape_radius_rsun) || escape_radius_rsun <= 1.0)
+		{
+			std::cerr << "Error in Configuration::Import_Parameter_Scan_Parameter(): 'R_escape_Rsun' must be finite and greater than 1." << std::endl;
+			std::exit(EXIT_FAILURE);
+		}
+	}
+	catch(const SettingNotFoundException& nfex)
+	{
+	}
 	try
 	{
 		cross_section_min = config.lookup("cross_section_min");
@@ -256,6 +277,10 @@ void Configuration::Import_Parameter_Scan_Parameter()
 	{
 		g_top_level_dir = "./";
 	}
+	if(g_top_level_dir.empty())
+		g_top_level_dir = "./";
+	else if(g_top_level_dir[g_top_level_dir.size() - 1] != '/')
+		g_top_level_dir += "/";
 	try
 	{
 		int mt = config.lookup("max_trajectories");
@@ -360,6 +385,54 @@ void Configuration::Import_Parameter_Scan_Parameter()
 	{
 		snapshot_config.max_trajectory_wall_time_sec = 0.0;  // default: unlimited
 	}
+
+	trajectory_diagnostic_config = TrajectoryDiagnosticConfig();
+	trajectory_diagnostic_config.interpolation_points = interpolation_points;
+	try
+	{
+		trajectory_diagnostic_config.summary_enabled = config.lookup("trajectory_summary_enabled");
+	}
+	catch(const SettingNotFoundException& nfex)
+	{
+	}
+	try
+	{
+		trajectory_diagnostic_config.events_enabled = config.lookup("trajectory_events_enabled");
+	}
+	catch(const SettingNotFoundException& nfex)
+	{
+	}
+	try
+	{
+		trajectory_diagnostic_config.trace_rate = config.lookup("trajectory_trace_rate");
+	}
+	catch(const SettingNotFoundException& nfex)
+	{
+		trajectory_diagnostic_config.trace_rate = trajectory_diagnostic_config.events_enabled ? 0.02 : 0.0;
+	}
+	try
+	{
+		const long long trace_seed = config.lookup("trajectory_trace_seed");
+		if(trace_seed < 0)
+		{
+			std::cerr << "Error in Configuration::Import_Parameter_Scan_Parameter(): 'trajectory_trace_seed' must be a non-negative integer." << std::endl;
+			std::exit(EXIT_FAILURE);
+		}
+		trajectory_diagnostic_config.trace_seed = static_cast<uint64_t>(trace_seed);
+	}
+	catch(const SettingNotFoundException& nfex)
+	{
+		trajectory_diagnostic_config.trace_seed = static_cast<uint64_t>(fixed_seed);
+	}
+	if(!std::isfinite(trajectory_diagnostic_config.trace_rate)
+	   || trajectory_diagnostic_config.trace_rate < 0.0
+	   || trajectory_diagnostic_config.trace_rate > 1.0)
+	{
+		std::cerr << "Error in Configuration::Import_Parameter_Scan_Parameter(): 'trajectory_trace_rate' must lie in [0, 1]." << std::endl;
+		std::exit(EXIT_FAILURE);
+	}
+	if(trajectory_diagnostic_config.events_enabled)
+		trajectory_diagnostic_config.summary_enabled = true;
 
 	if(run_mode != "Parameter point" && run_mode != "Parameter scan" && run_mode != "Custom" && run_mode != "Capture")
 	{
@@ -531,6 +604,7 @@ void Configuration::Print_Summary(int mpi_rank)
 				  << "\tSample size:\t\t\t" << sample_size << std::endl
 				  << "\tFixed PRNG seed:\t\t" << (fixed_seed == 0 ? "random" : std::to_string(fixed_seed)) << std::endl
 				  << "\tMax scatterings/traj:\t\t" << maximum_number_of_scatterings << std::endl
+				  << "\tEscape radius [Rsun]:\t\t" << escape_radius_rsun << std::endl
 				  << "\tSc. rate interpolation:\t\t" << ((interpolation_points > 0) ? "[x] (Grid: " + std::to_string(interpolation_points) + "×" + std::to_string(interpolation_points) + ")" : "[ ]") << std::endl;
 		if(run_mode == "Parameter point" && isoreflection_rings > 1)
 			std::cout << "\tIsoreflection rings:\t\t" << isoreflection_rings << std::endl;

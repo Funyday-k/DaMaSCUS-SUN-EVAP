@@ -16,7 +16,9 @@ class SnapshotSharedState
   public:
 	void Initialize(uint64_t run_id, int rank);
 	void BeginTrajectory(uint64_t trajectory_id, double initial_simulated_time_sec = 0.0);
-	void AddCurrentBincountStep(int bin, double dt_sec, double v2dt, double simulated_time_sec);
+	void AddCurrentBincountInterval(
+		const std::vector<BincountContribution>& contributions,
+		double simulated_time_sec);
 	void UpdateCurrentSimulationTime(double simulated_time_sec);
 	void UpdateCurrentScatterings(uint64_t scatterings);
 	void MarkCurrentCaptured(bool captured);
@@ -79,7 +81,9 @@ class SnapshotRecorder
 	explicit SnapshotRecorder(SnapshotSharedState& state);
 
 	void BeginTrajectory(uint64_t trajectory_id, double initial_simulated_time_sec = 0.0);
-	void AddCurrentBincountStep(int bin, double dt_sec, double v2dt, double simulated_time_sec);
+	void AddCurrentBincountInterval(
+		const std::vector<BincountContribution>& contributions,
+		double simulated_time_sec);
 	void UpdateCurrentSimulationTime(double simulated_time_sec);
 	void UpdateCurrentScatterings(uint64_t scatterings);
 	void MarkCurrentCaptured(bool captured);

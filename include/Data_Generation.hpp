@@ -16,6 +16,8 @@
 namespace DaMaSCUS_SUN
 {
 
+bool TrajectoryTraceSelected(uint64_t trace_seed, int rank, uint64_t trajectory_id, double rate);
+
 // Survival-analysis record for every captured trajectory.
 struct EvaporationRecord
 {
@@ -24,6 +26,7 @@ struct EvaporationRecord
 	double completion_wall_time_sec = 0.0; // rank-local wall time when the trajectory finished [seconds]
 	double t_evap = 0.0;    // finite only for observed unbinding events [seconds]
 	double t_capture = -1.0;
+	double t_first_unbinding_scatter = -1.0;
 	double t_final_unbinding_scatter = -1.0;
 	double t_boundary_escape = -1.0;
 	double t_termination = -1.0;
@@ -33,6 +36,13 @@ struct EvaporationRecord
 	double r_first_negative_km = -1.0;
 	double E_first_negative_eV = 0.0;
 	double dE_first_negative_from_prev_eV = 0.0;
+	double r_first_unbinding_km = -1.0;
+	double E_first_unbinding_eV = 0.0;
+	double r_final_unbinding_km = -1.0;
+	double E_final_unbinding_eV = 0.0;
+	double r_boundary_escape_km = -1.0;
+	double vr_boundary_escape_km_s = 0.0;
+	double E_boundary_escape_eV = 0.0;
 	bool event_observed = false;
 	bool boundary_escape_observed = false;
 	bool survival_valid = true;
@@ -43,6 +53,13 @@ struct EvaporationRecord
 	double max_free_energy_drift_eV = 0.0;
 	double max_free_energy_drift_rel = 0.0;
 	unsigned long int number_of_scatterings = 0;
+	unsigned long int number_of_bound_to_unbound = 0;
+	unsigned long int number_of_recaptures = 0;
+	unsigned long int number_of_integrator_steps_after_capture = 0;
+	double min_energy_after_capture_eV = 0.0;
+	double max_radius_after_capture_km = 0.0;
+	double time_inside_sun_after_capture_sec = 0.0;
+	double time_outside_sun_after_capture_sec = 0.0;
 };
 
 struct CompactEvaporationEvent
@@ -51,6 +68,17 @@ struct CompactEvaporationEvent
 	uint64_t trajectory_id = 0;
 	double completion_wall_time_sec = 0.0;
 	double lifetime_unbinding = -1.0;
+};
+
+struct TrajectoryReplayRecord
+{
+	int rank = -1;
+	uint64_t trajectory_id = 0;
+	double initial_time_s = 0.0;
+	std::array<double, 3> initial_position_km{{0.0, 0.0, 0.0}};
+	std::array<double, 3> initial_velocity_km_s{{0.0, 0.0, 0.0}};
+	std::string rng_state_before_initial_conditions;
+	std::string rng_state_before_simulation;
 };
 
 enum class SimulationStopReason
@@ -112,7 +140,12 @@ class Simulation_Data
 	// Evaporation records
 	std::vector<EvaporationRecord> evaporation_records;
 	std::vector<CompactEvaporationEvent> compact_evaporation_events;
+	std::vector<TrajectoryDiagnosticEvent> trajectory_diagnostic_events;
+	std::vector<TrajectoryReplayRecord> trajectory_replay_records;
 	bool evaporation_diagnostics_enabled = false;
+	TrajectoryDiagnosticConfig trajectory_diagnostic_config;
+	unsigned int diagnostic_base_seed = 0;
+	uint64_t diagnostic_run_id = 0;
 
 	// MPI
 	int mpi_rank, mpi_processes;
@@ -130,6 +163,7 @@ class Simulation_Data
 	Simulation_Data(unsigned int sample_size, unsigned int max_trajectories, double u_min = 0.0, unsigned int iso_rings = 1);
 
 	void Configure(double initial_radius, unsigned int min_scattering, unsigned long int max_scattering, unsigned long int max_free_steps = DEFAULT_MAXIMUM_FREE_TIME_STEPS);
+	void Configure_Trajectory_Diagnostics(const TrajectoryDiagnosticConfig& config);
 
 	void Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, SnapshotConfig snapshot_cfg = SnapshotConfig(), unsigned int fixed_seed = 0, bool capture_mode = false);
 

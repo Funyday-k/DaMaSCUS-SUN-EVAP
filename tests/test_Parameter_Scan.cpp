@@ -40,7 +40,9 @@ TEST(TestParameterScan, TestConfiguration)
 	EXPECT_DOUBLE_EQ(cfg.cross_section_max, 1.0e-32 * cm * cm);
 	EXPECT_EQ(cfg.cross_sections, 5);
 	EXPECT_EQ(cfg.interpolation_points, 150);
+	EXPECT_DOUBLE_EQ(cfg.escape_radius_rsun, 3.0);
 	EXPECT_EQ(cfg.isoreflection_rings, 3);
+	EXPECT_EQ(g_top_level_dir, "./unit_test_output/");
 	EXPECT_TRUE(cfg.snapshot_config.enabled);
 	EXPECT_DOUBLE_EQ(cfg.snapshot_config.interval_seconds, 10.0);
 }
@@ -53,6 +55,7 @@ TEST(TestParameterScan, TestMinimalCaptureConfigurationDefaults)
 	EXPECT_TRUE(cfg.capture_mode);
 	EXPECT_EQ(cfg.isoreflection_rings, 1);
 	EXPECT_EQ(cfg.interpolation_points, 0);
+	EXPECT_DOUBLE_EQ(cfg.escape_radius_rsun, 2.0);
 	EXPECT_DOUBLE_EQ(cfg.cross_section_min, 0.0);
 	EXPECT_DOUBLE_EQ(cfg.cross_section_max, 0.0);
 	EXPECT_EQ(cfg.cross_sections, 0);

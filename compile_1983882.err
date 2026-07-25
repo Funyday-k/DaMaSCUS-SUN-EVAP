@@ -1,0 +1,35 @@
+Loading gcc/10.3.0
+  ERROR: Conflicting gcc is loaded
+Loading boost/1.67.0
+  ERROR: Module cannot be loaded due to a conflict.
+    HINT: Might try "module unload boost" first.
+CMake Error at /storage01/users/s1155234222/cmake-3.12.4-Linux-x86_64/share/cmake-3.12/Modules/CMakeTestCCompiler.cmake:52 (message):
+  The C compiler
+
+    "/opt/share/gcc/10.2.0/bin/gcc"
+
+  is not able to compile a simple test program.
+
+  It fails with the following output:
+
+    Change Dir: /lustre/project/kennyng/damascus-earth/DaMaSCUS-NewEarth-EVAP/build/CMakeFiles/CMakeTmp
+    
+    Run Build Command:"/usr/bin/gmake" "cmTC_5c32b/fast"
+    /usr/bin/gmake -f CMakeFiles/cmTC_5c32b.dir/build.make CMakeFiles/cmTC_5c32b.dir/build
+    gmake[1]: Entering directory '/lustre/project/kennyng/damascus-earth/DaMaSCUS-NewEarth-EVAP/build/CMakeFiles/CMakeTmp'
+    Building C object CMakeFiles/cmTC_5c32b.dir/testCCompiler.c.o
+    /opt/share/gcc/10.2.0/bin/gcc    -o CMakeFiles/cmTC_5c32b.dir/testCCompiler.c.o   -c /lustre/project/kennyng/damascus-earth/DaMaSCUS-NewEarth-EVAP/build/CMakeFiles/CMakeTmp/testCCompiler.c
+    /storage01/chpc-optshare/gcc/10.2.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/10.2.0/cc1: error while loading shared libraries: libmpfr.so.4: cannot open shared object file: No such file or directory
+    gmake[1]: *** [CMakeFiles/cmTC_5c32b.dir/build.make:66: CMakeFiles/cmTC_5c32b.dir/testCCompiler.c.o] Error 1
+    gmake[1]: Leaving directory '/lustre/project/kennyng/damascus-earth/DaMaSCUS-NewEarth-EVAP/build/CMakeFiles/CMakeTmp'
+    gmake: *** [Makefile:121: cmTC_5c32b/fast] Error 2
+    
+
+  
+
+  CMake will not be able to correctly generate this project.
+Call Stack (most recent call first):
+  CMakeLists.txt:3 (project)
+
+
+make: *** No targets specified and no makefile found.  Stop.

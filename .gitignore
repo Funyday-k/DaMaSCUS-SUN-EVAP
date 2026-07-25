@@ -126,3 +126,8 @@ coverage.info
 # Generic generated tables from runs
 *.dat
 !/data/model_agss09.dat
+
+# 编译产物与作业日志
+build/
+*.err
+*.log

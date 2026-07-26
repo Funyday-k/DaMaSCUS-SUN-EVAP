@@ -2,6 +2,7 @@
 #define __Snapshot_IO_hpp_
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -71,6 +72,52 @@ struct SnapshotMergeResult
 	std::vector<int> missing_ranks;
 };
 
+struct SnapshotReportState
+{
+	struct RankProgress
+	{
+		int rank = -1;
+		int done = 0;
+		int trajectory_in_progress = 0;
+		int current_trajectory_captured = 0;
+		uint64_t current_trajectory_id = 0;
+		uint64_t current_trajectory_scatterings = 0;
+		double rank_elapsed_wall_sec = 0.0;
+		double current_trajectory_wall_sec = 0.0;
+		double current_trajectory_simulated_elapsed_sec = 0.0;
+	};
+
+	int snapshot_index = 0;
+	long long snapshot_time_label = 0;
+	double snapshot_interval_seconds = 0.0;
+	uint64_t total_trajectories = 0;
+	uint64_t captured_particles = 0;
+	uint64_t classified_trajectories = 0;
+	uint64_t numerical_failures = 0;
+	uint64_t snapshot_bincount_captured_samples = 0;
+	uint64_t snapshot_bincount_not_captured_samples = 0;
+	std::array<double, NUM_BINS> captured_dt_hist{};
+	std::array<double, NUM_BINS> captured_v2dt_hist{};
+	std::array<double, NUM_BINS> captured_dt_sq_hist{};
+	std::array<double, NUM_BINS> captured_v2dt_sq_hist{};
+	std::array<double, NUM_BINS> not_captured_dt_hist{};
+	std::array<double, NUM_BINS> not_captured_v2dt_hist{};
+	std::array<double, NUM_BINS> not_captured_dt_sq_hist{};
+	std::array<double, NUM_BINS> not_captured_v2dt_sq_hist{};
+	std::vector<SnapshotRankedEvaporationEntry> new_evaporation_events;
+	std::vector<RankProgress> rank_progress;
+};
+
+// Rank checkpoint and final files are immutable once atomically renamed, so a
+// rank already folded into the report never has to be read again across the
+// retries of one snapshot index.
+struct SnapshotMergeCache
+{
+	SnapshotReportState report;
+	std::vector<char> rank_accumulated;
+	bool initialized = false;
+};
+
 long long SnapshotTimeLabelSeconds(int snapshot_index, double interval_seconds);
 std::string SnapshotTextFilePath(const std::string& snapshot_root, int snapshot_index, double interval_seconds);
 std::string SnapshotEvaporationTimeFilePath(const std::string& snapshot_root, int snapshot_index, double interval_seconds);
@@ -78,6 +125,10 @@ std::string SnapshotRankCheckpointPath(const std::string& rank_snapshot_dir, int
 std::string SnapshotRankFinalPath(const std::string& rank_snapshot_dir, int rank);
 
 SnapshotEvaporationProgressEntry MakeSnapshotEvaporationProgressEntry(const CompactEvaporationEvent& event);
+
+// Upper bound on the completed evaporation events a single rank checkpoint may
+// publish. A larger backlog is drained over consecutive checkpoints.
+size_t SnapshotEvaporationEventsPerCheckpoint();
 
 bool WriteSnapshotRankState(const std::string& path, const SnapshotRankState& state);
 bool ReadSnapshotRankState(const std::string& path, uint64_t expected_run_id, SnapshotRankState& state);
@@ -93,6 +144,18 @@ SnapshotMergeResult TryWriteSnapshot(
 	uint64_t run_id,
 	double mass_gev,
 	double sigma_cm2,
+	bool allow_partial);
+
+SnapshotMergeResult TryWriteSnapshotCached(
+	const std::string& snapshot_root,
+	const std::string& rank_snapshot_dir,
+	int snapshot_index,
+	double interval_seconds,
+	int mpi_processes,
+	uint64_t run_id,
+	double mass_gev,
+	double sigma_cm2,
+	SnapshotMergeCache& cache,
 	bool allow_partial);
 
 bool WriteMissedSnapshotMarker(

@@ -107,6 +107,28 @@ void SnapshotSharedState::MarkCurrentCaptured(bool captured)
 		current_trajectory_captured_ = captured;
 }
 
+void SnapshotSharedState::PublishCurrentTrajectoryProgress(
+	const std::array<double, NUM_BINS>& dt_hist,
+	const std::array<double, NUM_BINS>& v2dt_hist,
+	double simulated_time_sec)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	if(!trajectory_in_progress_)
+		return;
+	if(std::isfinite(simulated_time_sec))
+		current_trajectory_simulated_elapsed_sec_ =
+			std::max(0.0, simulated_time_sec - current_trajectory_simulation_start_sec_);
+	// Published snapshots must satisfy the rank-state validity invariants, so a
+	// non-finite or negative bin is dropped exactly as the per-step path did.
+	for(int bin = 0; bin < NUM_BINS; bin++)
+	{
+		const double dt = dt_hist[bin];
+		const double v2dt = v2dt_hist[bin];
+		current_dt_hist_[bin] = (std::isfinite(dt) && dt > 0.0) ? dt : 0.0;
+		current_v2dt_hist_[bin] = (std::isfinite(v2dt) && v2dt >= 0.0) ? v2dt : 0.0;
+	}
+}
+
 void SnapshotSharedState::RecordCompletedTrajectory(
 	const TrajectoryBincount& bincount,
 	bool count_as_captured_bincount_sample,
@@ -155,13 +177,20 @@ SnapshotRankState SnapshotSharedState::CopyForSnapshot(
 	double rank_elapsed_wall_sec,
 	double target_wall_sec,
 	size_t evaporation_begin,
-	size_t& evaporation_end) const
+	size_t& evaporation_end,
+	size_t max_new_evaporation_events) const
 {
 	std::lock_guard<std::mutex> lock(mutex_);
+	evaporation_begin = std::min(evaporation_begin, evaporation_events_.size());
 	evaporation_end = evaporation_begin;
 	while(evaporation_end < evaporation_events_.size()
 	      && evaporation_events_[evaporation_end].completion_wall_time_sec <= target_wall_sec)
 		evaporation_end++;
+	// Events are appended in completion order, so a prefix is also a
+	// wall-time-ordered prefix. Whatever is left over is picked up by a later
+	// checkpoint, whose window filter admits earlier completion times as well.
+	if(evaporation_end - evaporation_begin > max_new_evaporation_events)
+		evaporation_end = evaporation_begin + max_new_evaporation_events;
 	return CopyLocked(snapshot_index, false, rank_elapsed_wall_sec, evaporation_begin, evaporation_end);
 }
 
@@ -252,6 +281,14 @@ void SnapshotRecorder::AddCurrentBincountInterval(
 void SnapshotRecorder::UpdateCurrentSimulationTime(double simulated_time_sec)
 {
 	state_.UpdateCurrentSimulationTime(simulated_time_sec);
+}
+
+void SnapshotRecorder::PublishCurrentTrajectoryProgress(
+	const std::array<double, NUM_BINS>& dt_hist,
+	const std::array<double, NUM_BINS>& v2dt_hist,
+	double simulated_time_sec)
+{
+	state_.PublishCurrentTrajectoryProgress(dt_hist, v2dt_hist, simulated_time_sec);
 }
 
 void SnapshotRecorder::UpdateCurrentScatterings(uint64_t scatterings)

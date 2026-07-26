@@ -22,7 +22,12 @@ namespace
 constexpr uint64_t SNAPSHOT_RANK_STATE_MAGIC = 0x4453534e41503031ULL;
 constexpr uint32_t SNAPSHOT_RANK_STATE_VERSION = 4;
 constexpr uint32_t SNAPSHOT_RANK_STATE_HEADER_BYTES = sizeof(uint64_t) + 2 * sizeof(uint32_t);
-constexpr uint64_t MAX_SNAPSHOT_EVAPORATION_EVENTS = 10000000ULL;
+constexpr uint64_t SNAPSHOT_EVAPORATION_EVENTS_PER_CHECKPOINT = 10000000ULL;
+// Only an absurd declared event count is rejected here: ReadSnapshotRankState
+// cross-checks the count against the real file size and guards the resize with
+// try/catch, so a small cap would be redundant defense that instead turns an
+// oversized backlog into a permanent write failure.
+constexpr uint64_t MAX_SNAPSHOT_EVAPORATION_EVENTS = 1000000000ULL;
 
 uint64_t SnapshotRankStateFixedBytes()
 {
@@ -321,42 +326,6 @@ bool SnapshotTextFileIsMerged(const std::string& path, uint64_t expected_run_id)
 	return merged && run_id_matches;
 }
 
-struct SnapshotReportState
-{
-	struct RankProgress
-	{
-		int rank = -1;
-		int done = 0;
-		int trajectory_in_progress = 0;
-		int current_trajectory_captured = 0;
-		uint64_t current_trajectory_id = 0;
-		uint64_t current_trajectory_scatterings = 0;
-		double rank_elapsed_wall_sec = 0.0;
-		double current_trajectory_wall_sec = 0.0;
-		double current_trajectory_simulated_elapsed_sec = 0.0;
-	};
-
-	int snapshot_index = 0;
-	long long snapshot_time_label = 0;
-	double snapshot_interval_seconds = 0.0;
-	uint64_t total_trajectories = 0;
-	uint64_t captured_particles = 0;
-	uint64_t classified_trajectories = 0;
-	uint64_t numerical_failures = 0;
-	uint64_t snapshot_bincount_captured_samples = 0;
-	uint64_t snapshot_bincount_not_captured_samples = 0;
-	std::array<double, NUM_BINS> captured_dt_hist{};
-	std::array<double, NUM_BINS> captured_v2dt_hist{};
-	std::array<double, NUM_BINS> captured_dt_sq_hist{};
-	std::array<double, NUM_BINS> captured_v2dt_sq_hist{};
-	std::array<double, NUM_BINS> not_captured_dt_hist{};
-	std::array<double, NUM_BINS> not_captured_v2dt_hist{};
-	std::array<double, NUM_BINS> not_captured_dt_sq_hist{};
-	std::array<double, NUM_BINS> not_captured_v2dt_sq_hist{};
-	std::vector<SnapshotRankedEvaporationEntry> new_evaporation_events;
-	std::vector<RankProgress> rank_progress;
-};
-
 const char* SnapshotRankActivityLabel(const SnapshotReportState::RankProgress& progress)
 {
 	if(progress.done)
@@ -458,16 +427,32 @@ SnapshotMergeResult LoadSnapshotReportState(
 	double interval_seconds,
 	int mpi_processes,
 	uint64_t run_id,
-	SnapshotReportState& report)
+	SnapshotMergeCache& cache)
 {
-	SnapshotMergeResult result;
-	report = SnapshotReportState();
-	report.snapshot_index = snapshot_index;
-	report.snapshot_time_label = SnapshotTimeLabelSeconds(snapshot_index, interval_seconds);
-	report.snapshot_interval_seconds = interval_seconds;
+	const size_t rank_count = static_cast<size_t>(std::max(0, mpi_processes));
+	if(!cache.initialized
+	   || cache.report.snapshot_index != snapshot_index
+	   || cache.rank_accumulated.size() != rank_count)
+	{
+		cache.report = SnapshotReportState();
+		cache.report.snapshot_index = snapshot_index;
+		cache.report.snapshot_time_label = SnapshotTimeLabelSeconds(snapshot_index, interval_seconds);
+		cache.report.snapshot_interval_seconds = interval_seconds;
+		cache.rank_accumulated.assign(rank_count, 0);
+		cache.initialized = true;
+	}
 
+	SnapshotReportState& report = cache.report;
+	SnapshotMergeResult result;
+	bool accumulated_any = false;
 	for(int rank = 0; rank < mpi_processes; rank++)
 	{
+		if(cache.rank_accumulated[static_cast<size_t>(rank)] != 0)
+		{
+			result.ready_ranks.push_back(rank);
+			continue;
+		}
+
 		SnapshotRankState state;
 		const std::string checkpoint_path = SnapshotRankCheckpointPath(rank_snapshot_dir, rank, snapshot_index, interval_seconds);
 		if(ReadSnapshotRankState(checkpoint_path, run_id, state)
@@ -476,6 +461,8 @@ SnapshotMergeResult LoadSnapshotReportState(
 		   && !state.done)
 		{
 			AccumulateSnapshotReportState(report, state);
+			cache.rank_accumulated[static_cast<size_t>(rank)] = 1;
+			accumulated_any = true;
 			result.ready_ranks.push_back(rank);
 			continue;
 		}
@@ -488,11 +475,26 @@ SnapshotMergeResult LoadSnapshotReportState(
 		   && state.rank_elapsed_wall_sec <= report.snapshot_time_label)
 		{
 			AccumulateSnapshotReportState(report, state);
+			cache.rank_accumulated[static_cast<size_t>(rank)] = 1;
+			accumulated_any = true;
 			result.ready_ranks.push_back(rank);
 			continue;
 		}
 
+		// A rank missing now can still show up later through its final state, so
+		// only already accumulated ranks may skip the file reads.
 		result.missing_ranks.push_back(rank);
+	}
+
+	// Ranks are folded in whenever they first become readable, so restore the
+	// ascending rank order the report file has always been written in.
+	if(accumulated_any)
+	{
+		std::sort(report.rank_progress.begin(), report.rank_progress.end(),
+			[](const SnapshotReportState::RankProgress& lhs, const SnapshotReportState::RankProgress& rhs)
+			{
+				return lhs.rank < rhs.rank;
+			});
 	}
 
 	if(result.ready_ranks.empty())
@@ -702,6 +704,11 @@ SnapshotEvaporationProgressEntry MakeSnapshotEvaporationProgressEntry(const Comp
 	return entry;
 }
 
+size_t SnapshotEvaporationEventsPerCheckpoint()
+{
+	return static_cast<size_t>(SNAPSHOT_EVAPORATION_EVENTS_PER_CHECKPOINT);
+}
+
 bool WriteSnapshotRankState(const std::string& path, const SnapshotRankState& state)
 {
 	if(!IsValidRankState(state)
@@ -899,6 +906,32 @@ SnapshotMergeResult TryWriteSnapshot(
 	double sigma_cm2,
 	bool allow_partial)
 {
+	SnapshotMergeCache cache;
+	return TryWriteSnapshotCached(
+		snapshot_root,
+		rank_snapshot_dir,
+		snapshot_index,
+		interval_seconds,
+		mpi_processes,
+		run_id,
+		mass_gev,
+		sigma_cm2,
+		cache,
+		allow_partial);
+}
+
+SnapshotMergeResult TryWriteSnapshotCached(
+	const std::string& snapshot_root,
+	const std::string& rank_snapshot_dir,
+	int snapshot_index,
+	double interval_seconds,
+	int mpi_processes,
+	uint64_t run_id,
+	double mass_gev,
+	double sigma_cm2,
+	SnapshotMergeCache& cache,
+	bool allow_partial)
+{
 	SnapshotMergeResult merged_result;
 	merged_result.status = SnapshotMergeStatus::Merged;
 	if(SnapshotTextFileIsMerged(SnapshotTextFilePath(snapshot_root, snapshot_index, interval_seconds), run_id)
@@ -909,14 +942,13 @@ SnapshotMergeResult TryWriteSnapshot(
 		return merged_result;
 	}
 
-	SnapshotReportState report;
-	SnapshotMergeResult result = LoadSnapshotReportState(rank_snapshot_dir, snapshot_index, interval_seconds, mpi_processes, run_id, report);
+	SnapshotMergeResult result = LoadSnapshotReportState(rank_snapshot_dir, snapshot_index, interval_seconds, mpi_processes, run_id, cache);
 	if(result.status == SnapshotMergeStatus::NoRanksReady)
 		return result;
 	if(result.status == SnapshotMergeStatus::Partial && !allow_partial)
 		return result;
 
-	if(!WriteSnapshotReportFile(snapshot_root, snapshot_index, interval_seconds, run_id, mass_gev, sigma_cm2, report, result))
+	if(!WriteSnapshotReportFile(snapshot_root, snapshot_index, interval_seconds, run_id, mass_gev, sigma_cm2, cache.report, result))
 	{
 		result.status = SnapshotMergeStatus::NoRanksReady;
 		return result;

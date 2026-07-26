@@ -43,6 +43,11 @@ constexpr unsigned int MAX_OPTICAL_DEPTH_RETRIES = 100;
 constexpr std::size_t MAX_OPTICAL_DEPTH_PIECES = 4;
 constexpr std::size_t CAPTURE_MODE_OPTICAL_DEPTH_PIECES = 2;
 constexpr unsigned long int TARGET_VELOCITY_MAX_REJECTION_ATTEMPTS = 10000UL;
+// Accepted integrator steps between two publications of the in-progress
+// trajectory histogram to the snapshot shared state. Snapshots are written on a
+// wall-clock cadence of at least one second, so this only bounds how stale the
+// in-progress part of a progress report can be.
+constexpr unsigned long int SNAPSHOT_PUBLISH_STEP_INTERVAL = 512UL;
 constexpr double BINCOUNT_DENSE_POSITION_TOLERANCE_KM = 2.0e-3 * BIN_WIDTH_KM;
 constexpr int BINCOUNT_DENSE_MAX_RECURSION = 20;
 constexpr double BINCOUNT_GAUSS_LEGENDRE_OFFSET = 0.77459666924148337704;
@@ -207,6 +212,23 @@ bool Bound_Kepler_Return_At_Same_Radius(const Event& outward_event, Event& inbou
 	inbound_event.time += return_time;
 	inbound_event.velocity = outward_event.velocity - 2.0 * radial_velocity * radial_unit;
 	return inbound_event.time > outward_event.time && std::isfinite(inbound_event.Speed());
+}
+
+// Overwrite an Event in place. Assigning a libphysica::Vector allocates twice
+// (its assignment operator takes and returns by value), so the propagation loop
+// copies components into buffers it already owns.
+void Copy_Event_Into(Event& destination, const Event& source)
+{
+	if(destination.position.Size() != 3)
+		destination.position = libphysica::Vector(3);
+	if(destination.velocity.Size() != 3)
+		destination.velocity = libphysica::Vector(3);
+	destination.time = source.time;
+	for(unsigned int component = 0; component < 3; component++)
+	{
+		destination.position[component] = source.position[component];
+		destination.velocity[component] = source.velocity[component];
+	}
 }
 
 Event Interpolate_Event(const Event& before, const Event& after, double fraction)
@@ -1115,6 +1137,7 @@ Trajectory_Simulator::Trajectory_Simulator(const Solar_Model& model, unsigned lo
   current_physical_bound_state(false), terminate_on_capture(false), diagnostic_trace_enabled(false),
   diagnostic_event_index(0), diagnostic_scatter_index(0), diagnostic_step_index(0), last_scatter_target_index(-2),
   snapshot_recorder(nullptr), trajectory_in_progress(false), track_trajectory_wall_time(false), accumulated_snapshot_overhead_sec(0.0),
+  steps_since_snapshot_publish(0),
   maximum_time_steps(max_time_steps), maximum_scatterings(max_scatterings), maximum_distance(max_distance), current_mpi_rank(0), current_trajectory_id(0)
 {
 	if(!std::isfinite(maximum_distance) || maximum_distance <= 0.0)
@@ -1204,13 +1227,6 @@ void Trajectory_Simulator::Accumulate_Bincount_Interval(
 		current_bincount.dt_hist[contribution.bin] += contribution.dt_sec;
 		current_bincount.v2dt_hist[contribution.bin] += contribution.v2dt_km2_per_sec;
 	}
-	if(snapshot_recorder != nullptr)
-	{
-		const auto snapshot_operation_start = std::chrono::steady_clock::now();
-		snapshot_recorder->AddCurrentBincountInterval(
-		    bincount_contribution_cache, simulated_time_sec);
-		Accumulate_Snapshot_Overhead(snapshot_operation_start);
-	}
 
 	const double r_before_km = In_Units(before.Radius(), km);
 	if(!current_bincount.is_captured)
@@ -1228,11 +1244,27 @@ void Trajectory_Simulator::Accumulate_Bincount_Interval(
 		current_bincount.max_radius_after_capture_km = max_radius_km;
 }
 
+void Trajectory_Simulator::Maybe_Publish_Snapshot_Progress(double simulated_time_sec, bool force)
+{
+	if(snapshot_recorder == nullptr)
+		return;
+	steps_since_snapshot_publish++;
+	if(!force && steps_since_snapshot_publish < SNAPSHOT_PUBLISH_STEP_INTERVAL)
+		return;
+	steps_since_snapshot_publish = 0;
+	// current_bincount already holds exactly the accumulation the shared state
+	// used to build step by step, so publishing it wholesale is equivalent.
+	const auto snapshot_operation_start = std::chrono::steady_clock::now();
+	snapshot_recorder->PublishCurrentTrajectoryProgress(
+	    current_bincount.dt_hist, current_bincount.v2dt_hist, simulated_time_sec);
+	Accumulate_Snapshot_Overhead(snapshot_operation_start);
+}
+
 void Trajectory_Simulator::Reset_Bincount_Anchor(const Event& event)
 {
 	if(terminate_on_capture)
 		return;
-	previous_bincount_event = event;
+	Copy_Event_Into(previous_bincount_event, event);
 	has_previous_bincount_event = true;
 }
 
@@ -1447,6 +1479,15 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 	const double optical_depth_step_limit = fast_capture_mode ? CAPTURE_MODE_MAX_OPTICAL_DEPTH_STEP : MAX_OPTICAL_DEPTH_STEP;
 	const std::size_t optical_depth_piece_target = fast_capture_mode ? CAPTURE_MODE_OPTICAL_DEPTH_PIECES : MAX_OPTICAL_DEPTH_PIECES;
 
+	// Reused per-step Event buffers. Constructing or assigning an Event allocates,
+	// because libphysica::Vector owns a std::vector and its assignment operator
+	// takes and returns by value, so the loop below fills these in place.
+	Event event_before;
+	Event event_after;
+	Event accepted_event;
+	Event boundary_event;
+	Event commit_absolute_event;
+
 	auto to_absolute_event = [&](const Event& local_event)
 	{
 		Event absolute_event = local_event;
@@ -1482,29 +1523,23 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 
 	auto commit_accepted_event = [&](const Event& local_accepted_event)
 	{
-		const Event absolute_accepted_event = to_absolute_event(local_accepted_event);
+		Event& absolute_accepted_event = commit_absolute_event;
+		Copy_Event_Into(absolute_accepted_event, local_accepted_event);
+		absolute_accepted_event.time += time_origin;
 		const double simulated_time_sec = In_Units(absolute_accepted_event.time, sec);
-		bool snapshot_progress_updated = false;
 		diagnostic_step_index++;
 		if(!terminate_on_capture)
 		{
 			if(has_previous_bincount_event)
 			{
-				const double dt_sec = In_Units(absolute_accepted_event.time - previous_bincount_event.time, sec);
 				Accumulate_Bincount_Interval(previous_bincount_event, absolute_accepted_event, simulated_time_sec);
 				Record_Surface_Crossing_Events(previous_bincount_event, absolute_accepted_event, DM);
-				snapshot_progress_updated = std::isfinite(dt_sec) && dt_sec > 0.0;
 			}
-			previous_bincount_event = absolute_accepted_event;
+			Copy_Event_Into(previous_bincount_event, absolute_accepted_event);
 			has_previous_bincount_event = true;
 		}
 
-		if(snapshot_recorder != nullptr && !snapshot_progress_updated)
-		{
-			const auto snapshot_operation_start = std::chrono::steady_clock::now();
-			snapshot_recorder->UpdateCurrentSimulationTime(In_Units(absolute_accepted_event.time, sec));
-			Accumulate_Snapshot_Overhead(snapshot_operation_start);
-		}
+		Maybe_Publish_Snapshot_Progress(simulated_time_sec, false);
 		if(current_bincount.is_captured)
 			current_bincount.number_of_integrator_steps_after_capture++;
 		return Update_Capture_State(absolute_accepted_event.Radius(), absolute_accepted_event.Speed(), absolute_accepted_event.time, DM, false);
@@ -1516,7 +1551,7 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 		if(abort_if_wall_time_exceeded("before_step"))
 			return TrajectoryTerminationReason::WallTimeLimit;
 
-		Event event_before = particle_propagator.Event_In_3D();
+		particle_propagator.Fill_Event_In_3D(event_before);
 		double r_before = particle_propagator.Current_Radius();
 		double v_before = particle_propagator.Current_Speed();
 		double rate_before = 0.0;
@@ -1552,13 +1587,13 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 			}
 		}
 
-		const Free_Particle_Propagator propagator_before = particle_propagator;
+		const Free_Particle_Propagator::Scalar_State propagator_state_before = particle_propagator.Save_Scalar_State();
 		double t_before = particle_propagator.Current_Time();
 		bool rk_step_ok = particle_propagator.Runge_Kutta_45_Step(solar_model);
 		double actual_dt = particle_propagator.Current_Time() - t_before;
 		double r_after = particle_propagator.Current_Radius();
 		double v_after = particle_propagator.Current_Speed();
-		Event event_after = particle_propagator.Event_In_3D();
+		particle_propagator.Fill_Event_In_3D(event_after);
 
 		if(!rk_step_ok)
 			{
@@ -1597,7 +1632,7 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 		// Check for scatterings and reflection
 		bool scattering = false;
 		bool reflection = false;
-		Event accepted_event = event_after;
+		Copy_Event_Into(accepted_event, event_after);
 		double interior_start = 0.0;
 		double interior_end = 0.0;
 		if(Solar_Interior_Fraction_Interval(event_before, event_after, r_before, r_after, interior_start, interior_end))
@@ -1656,7 +1691,7 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 							return TrajectoryTerminationReason::NumericalFailure;
 						}
 
-					particle_propagator = propagator_before;
+					particle_propagator.Restore_Scalar_State(propagator_state_before);
 					double factor = RK45_MAX_STEP_FACTOR;
 					if(delta_tau > optical_depth_step_limit && delta_tau > 0.0)
 						factor = std::min(factor, 0.8 * optical_depth_step_limit / delta_tau);
@@ -1700,7 +1735,7 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 
 		if(!scattering)
 		{
-			Event boundary_event = event_after;
+			Copy_Event_Into(boundary_event, event_after);
 			double r_boundary = r_after;
 			double v_boundary = v_after;
 			if(r_before < maximum_distance && r_after >= maximum_distance && r_after > r_before)
@@ -1748,12 +1783,9 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 							current_bincount.max_radius_after_capture_km = apoapsis_km;
 					}
 					Reset_Bincount_Anchor(current_event);
-						if(snapshot_recorder != nullptr)
-						{
-							const auto snapshot_operation_start = std::chrono::steady_clock::now();
-							snapshot_recorder->UpdateCurrentSimulationTime(In_Units(current_event.time, sec));
-							Accumulate_Snapshot_Overhead(snapshot_operation_start);
-						}
+						// A bound exterior arc skips a large amount of simulated time at
+						// once, so publish it immediately rather than at the next batch.
+						Maybe_Publish_Snapshot_Progress(In_Units(current_event.time, sec), true);
 						reset_propagator_at_absolute_event(current_event);
 						continue;
 					}
@@ -1763,7 +1795,8 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 		time_steps++;
 			optical_depth_retries = 0;
 			const bool captured_now = commit_accepted_event(accepted_event);
-			current_event = to_absolute_event(accepted_event);
+			Copy_Event_Into(current_event, accepted_event);
+			current_event.time += time_origin;
 			if(abort_if_uncaptured_bound(current_event))
 				return TrajectoryTerminationReason::NumericalFailure;
 			if(terminate_on_capture && captured_now)
@@ -1959,6 +1992,7 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
 	last_scatter_target_index = -2;
 	current_diagnostic_events.clear();
 	trajectory_in_progress = true;
+	steps_since_snapshot_publish = 0;
 	track_trajectory_wall_time = snapshot_recorder != nullptr || max_trajectory_wall_time_sec > 0.0;
 	if(track_trajectory_wall_time)
 		current_trajectory_wall_start = std::chrono::steady_clock::now();
@@ -2416,19 +2450,43 @@ double Free_Particle_Propagator::Current_Speed()
 		return sqrt(v_radial * v_radial + angular_momentum * angular_momentum / r / r);
 }
 
-Event Free_Particle_Propagator::Event_In_3D()
+Free_Particle_Propagator::Scalar_State Free_Particle_Propagator::Save_Scalar_State() const
 {
+	Scalar_State state;
+	state.time		= time;
+	state.radius	= radius;
+	state.phi		= phi;
+	state.v_radial	= v_radial;
+	state.time_step = time_step;
+	return state;
+}
+
+void Free_Particle_Propagator::Restore_Scalar_State(const Scalar_State& state)
+{
+	time	  = state.time;
+	radius	  = state.radius;
+	phi		  = state.phi;
+	v_radial  = state.v_radial;
+	time_step = state.time_step;
+}
+
+void Free_Particle_Propagator::Fill_Event_In_3D(Event& event) const
+{
+	if(event.position.Size() != 3)
+		event.position = libphysica::Vector(3);
+	if(event.velocity.Size() != 3)
+		event.velocity = libphysica::Vector(3);
+
 	const double safe_radius = (std::isfinite(radius) && radius > 0.0) ? radius : 0.0;
-	libphysica::Vector position(3);
-	libphysica::Vector velocity(3);
+	event.time				 = time;
 	if(radial_mode || angular_momentum == 0.0 || safe_radius == 0.0)
 	{
 		for(unsigned int component = 0; component < 3; component++)
 		{
-			position[component] = safe_radius * axis_x[component];
-			velocity[component] = v_radial * axis_x[component];
+			event.position[component] = safe_radius * axis_x[component];
+			event.velocity[component] = v_radial * axis_x[component];
 		}
-		return Event(time, position, velocity);
+		return;
 	}
 
 	const double cos_phi = cos(phi);
@@ -2438,11 +2496,16 @@ Event Free_Particle_Propagator::Event_In_3D()
 	const double velocity_y = v_radial * sin_phi + tangential_speed * cos_phi;
 	for(unsigned int component = 0; component < 3; component++)
 	{
-		position[component] = safe_radius * (cos_phi * axis_x[component] + sin_phi * axis_y[component]);
-		velocity[component] = velocity_x * axis_x[component] + velocity_y * axis_y[component];
+		event.position[component] = safe_radius * (cos_phi * axis_x[component] + sin_phi * axis_y[component]);
+		event.velocity[component] = velocity_x * axis_x[component] + velocity_y * axis_y[component];
 	}
+}
 
-	return Event(time, position, velocity);
+Event Free_Particle_Propagator::Event_In_3D()
+{
+	Event event;
+	Fill_Event_In_3D(event);
+	return event;
 }
 
 }	// namespace DaMaSCUS_SUN

@@ -241,6 +241,12 @@ class Trajectory_Simulator
 	double accumulated_snapshot_overhead_sec;
 	void Accumulate_Snapshot_Overhead(const std::chrono::steady_clock::time_point& operation_start);
 
+	// Snapshots are wall-clock progress reports on a multi-second cadence, so the
+	// in-progress histogram is published in batches instead of pushing every
+	// integrator step through the shared state's mutex.
+	unsigned long int steps_since_snapshot_publish;
+	void Maybe_Publish_Snapshot_Progress(double simulated_time_sec, bool force);
+
 	TrajectoryTerminationReason Propagate_Freely(Event& current_event, obscura::DM_Particle& DM);
 
 	int Sample_Target(obscura::DM_Particle& DM, double r, double DM_speed);
@@ -297,16 +303,35 @@ class Free_Particle_Propagator
   public:
 	double time_step = 0.1 * libphysica::natural_units::sec;
 
+	// A Runge-Kutta step mutates only these scalars; the orbital basis, angular
+	// momentum, and error tolerances are fixed at construction. Rolling a
+	// rejected step back therefore needs no copy of the whole propagator.
+	struct Scalar_State
+	{
+		double time;
+		double radius;
+		double phi;
+		double v_radial;
+		double time_step;
+	};
+
 	explicit Free_Particle_Propagator(const Event& event);
 
 	bool Runge_Kutta_45_Step(Solar_Model& solar_model);
 	bool Runge_Kutta_45_Step(double constant_mass);
+
+	Scalar_State Save_Scalar_State() const;
+	void Restore_Scalar_State(const Scalar_State& state);
 
 	double Current_Time();
 	double Current_Radius();
 	double Current_Speed();
 
 	Event Event_In_3D();
+	// Overwrite an existing Event in place. libphysica::Vector allocates on every
+	// construction and assignment, so the per-step propagation loop reuses one
+	// Event buffer instead of building a fresh one.
+	void Fill_Event_In_3D(Event& event) const;
 };
 }	// namespace DaMaSCUS_SUN
 

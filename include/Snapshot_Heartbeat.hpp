@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <mutex>
 #include <set>
 #include <string>
@@ -43,6 +44,7 @@ class SnapshotHeartbeat
 		double target_wall_sec,
 		double actual_elapsed_sec,
 		bool& deadline_missed);
+	SnapshotMergeCache& AcquireMergeCache(int snapshot_index);
 	SnapshotMergeResult TryMergeIndex(int snapshot_index, bool allow_partial);
 	void ProcessMergeTick(int snapshot_index, bool local_checkpoint_missed);
 	double ElapsedSinceStart() const;
@@ -72,6 +74,7 @@ class SnapshotHeartbeat
 	int highest_snapshot_index_seen_ = 0;
 	std::set<int> retry_merge_indices_;
 	std::set<int> unresolved_merge_indices_;
+	std::map<int, SnapshotMergeCache> merge_caches_;
 };
 
 }	// namespace DaMaSCUS_SUN

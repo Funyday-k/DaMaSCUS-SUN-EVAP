@@ -31,6 +31,45 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Don't use e.g. GNU extension (like -std=gnu++11) for portability
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# The Monte Carlo hot path crosses static-library boundaries on every integrator
+# step (this project -> libphysica interpolation and linear algebra), so without
+# link-time optimization none of it can be inlined across translation units.
+# Runtime dominates build time for production runs, so this defaults to on.
+# Set these before the dependencies are added so their targets inherit them.
+option(DAMASCUS_ENABLE_LTO "Enable link-time optimization for optimized builds" ON)
+option(DAMASCUS_ENABLE_NATIVE_ARCH "Tune the build for the building machine's CPU" OFF)
+
+if(DAMASCUS_ENABLE_LTO AND NOT CODE_COVERAGE)
+  include(CheckIPOSupported)
+  check_ipo_supported(RESULT DAMASCUS_IPO_SUPPORTED OUTPUT DAMASCUS_IPO_OUTPUT)
+  if(DAMASCUS_IPO_SUPPORTED)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO ON)
+    message(STATUS "Link-time optimization enabled for optimized builds")
+  else()
+    message(STATUS "Link-time optimization unavailable: ${DAMASCUS_IPO_OUTPUT}")
+  endif()
+endif()
+
+# Opt-in only: a native build must run on the machine that compiled it. This is
+# safe for the Slurm workflow in bin/, which compiles on the target node.
+if(DAMASCUS_ENABLE_NATIVE_ARCH)
+  include(CheckCXXCompilerFlag)
+  check_cxx_compiler_flag(-march=native DAMASCUS_HAS_MARCH_NATIVE)
+  if(DAMASCUS_HAS_MARCH_NATIVE)
+    add_compile_options(-march=native)
+  else()
+    check_cxx_compiler_flag(-mcpu=native DAMASCUS_HAS_MCPU_NATIVE)
+    if(DAMASCUS_HAS_MCPU_NATIVE)
+      add_compile_options(-mcpu=native)
+    else()
+      message(WARNING
+        "DAMASCUS_ENABLE_NATIVE_ARCH is ON, but this compiler supports neither "
+        "-march=native nor -mcpu=native; building without CPU tuning.")
+    endif()
+  endif()
+endif()
+
 set(GENERATED_DIR ${PROJECT_BINARY_DIR}/generated)
 set(INCLUDE_DIR   ${PROJECT_SOURCE_DIR}/include)
 set(SRC_DIR       ${PROJECT_SOURCE_DIR}/src)
@@ -119,6 +158,31 @@ if(NOT obscura_POPULATED)
     # The dependency is linked into our executable, but its own executables,
     # tests, and source-tree install rules are not part of this deployment.
     add_subdirectory(${obscura_SOURCE_DIR} ${obscura_BINARY_DIR} EXCLUDE_FROM_ALL)
+    # libphysica is populated by obscura's own FetchContent call inside the
+    # add_subdirectory() above, so its source directory is only known here.
+    # Configure always completes before anything is compiled, so patching now
+    # still reaches the build; the patch script is a no-op once applied.
+    # Turning this off keeps the dependency pristine, at the cost of one libm
+    # pow() call per interpolation lookup. Results differ at the ulp level
+    # between the two forms, so a bit-for-bit comparison against an older run
+    # needs the same setting.
+    option(DAMASCUS_PATCH_LIBPHYSICA_INTERPOLATION
+      "Rewrite libphysica's cubic interpolation in Horner form" ON)
+    if(DAMASCUS_PATCH_LIBPHYSICA_INTERPOLATION)
+      FetchContent_GetProperties(libphysica)
+      if(NOT libphysica_SOURCE_DIR)
+        get_target_property(LIBPHYSICA_TARGET_DIR libphysica SOURCE_DIR)
+        get_filename_component(libphysica_SOURCE_DIR "${LIBPHYSICA_TARGET_DIR}" DIRECTORY)
+      endif()
+      execute_process(
+        COMMAND ${CMAKE_COMMAND}
+          -DLIBPHYSICA_SOURCE_DIR=${libphysica_SOURCE_DIR}
+          -P ${PROJECT_SOURCE_DIR}/cmake/PatchLibphysicaInterpolation.cmake
+        RESULT_VARIABLE LIBPHYSICA_PATCH_RESULT)
+      if(NOT LIBPHYSICA_PATCH_RESULT EQUAL 0)
+        message(FATAL_ERROR "Failed to patch libphysica cubic interpolation")
+      endif()
+    endif()
     # Both pinned dependencies declare C++11 internally. Override their target
     # properties because current Boost.Math headers require C++14.
     set_target_properties(libphysica libobscura PROPERTIES

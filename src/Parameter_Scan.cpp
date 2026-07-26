@@ -3,12 +3,16 @@
 #include <algorithm>
 #include <cstddef>
 #include <cmath>
+#include <cstdio>
+#include <iostream>
 #include <libconfig.h++>
 #include <limits>
 #include <mpi.h>
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <unistd.h>
+#include <vector>
 
 #include "libphysica/Natural_Units.hpp"
 #include "libphysica/Special_Functions.hpp"
@@ -35,6 +39,22 @@ double Checked_Probability(double p, const std::string& context)
 	if(!std::isfinite(p) || p < 0.0 || p > 1.0)
 		throw std::runtime_error(context + ": p-value must be finite and lie in [0, 1].");
 	return p;
+}
+
+// P_Values_Grid.txt is the scan's only resume record, so it must be written by a
+// single rank and must never be observable half-written: Import_P_Values() would
+// either reject a torn grid and discard the whole scan, or import wrong values.
+// Callers are responsible for restricting this to rank 0.
+void Export_P_Value_Grid(const std::string& results_path, const std::vector<std::vector<double>>& p_value_grid)
+{
+	const std::string path	   = results_path + "P_Values_Grid.txt";
+	const std::string tmp_path = path + ".tmp." + std::to_string(getpid());
+	libphysica::Export_Table(tmp_path, p_value_grid);
+	if(std::rename(tmp_path.c_str(), path.c_str()) != 0)
+	{
+		std::remove(tmp_path.c_str());
+		std::cerr << "Warning in Export_P_Value_Grid(): failed to update " << path << std::endl;
+	}
 }
 
 double Log10_Probability(double p, const std::string& context)
@@ -916,9 +936,9 @@ void Parameter_Scan::Perform_STA_Scan(obscura::DM_Particle& DM, obscura::DM_Dete
 			p = Compute_p_Value(sample_size, DM, detector, solar_model, halo_model, scattering_rate_interpolation_points, mpi_rank, maximum_number_of_scatterings, snapshot_config, fixed_seed);
 
 			p_value_grid[row][column] = p;
-			libphysica::Export_Table(results_path + "P_Values_Grid.txt", p_value_grid);
 			if(mpi_rank == 0)
 			{
+				Export_P_Value_Grid(results_path, p_value_grid);
 				std::cout << std::endl
 						  << std::endl;
 				libphysica::Print_Box("p = " + std::to_string(libphysica::Round(p)), 1);
@@ -944,7 +964,8 @@ void Parameter_Scan::Perform_STA_Scan(obscura::DM_Particle& DM, obscura::DM_Dete
 	}
 	STA_Fill_Gaps();
 	Print_Grid(mpi_rank);
-	libphysica::Export_Table(results_path + "P_Values_Grid.txt", p_value_grid);
+	if(mpi_rank == 0)
+		Export_P_Value_Grid(results_path, p_value_grid);
 	DM.Set_Mass(mDM_original);
 	DM.Set_Interaction_Parameter(coupling_original, detector.Target_Particles());
 }
@@ -987,9 +1008,9 @@ void Parameter_Scan::Perform_Full_Scan(obscura::DM_Particle& DM, obscura::DM_Det
 				p = Compute_p_Value(sample_size, DM, detector, solar_model, halo_model, scattering_rate_interpolation_points, mpi_rank, maximum_number_of_scatterings, snapshot_config, fixed_seed);
 
 				p_value_grid[row][column] = p;
-				libphysica::Export_Table(results_path + "P_Values_Grid.txt", p_value_grid);
 				if(mpi_rank == 0)
 				{
+					Export_P_Value_Grid(results_path, p_value_grid);
 					std::cout << std::endl
 							  << std::endl;
 					libphysica::Print_Box("p = " + std::to_string(libphysica::Round(p)), 1);
@@ -1008,7 +1029,8 @@ void Parameter_Scan::Perform_Full_Scan(obscura::DM_Particle& DM, obscura::DM_Det
 			break;
 		}
 	}
-	libphysica::Export_Table(results_path + "P_Values_Grid.txt", p_value_grid);
+	if(mpi_rank == 0)
+		Export_P_Value_Grid(results_path, p_value_grid);
 
 	DM.Set_Mass(mDM_original);
 	DM.Set_Interaction_Parameter(coupling_original, detector.Target_Particles());

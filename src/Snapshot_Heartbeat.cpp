@@ -2,13 +2,19 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <stdexcept>
 #include <vector>
 
 namespace DaMaSCUS_SUN
 {
+namespace
+{
+constexpr size_t MAX_SNAPSHOT_MERGE_CACHE_ENTRIES = 32;
+}
 
 SnapshotHeartbeat::SnapshotHeartbeat(
 	SnapshotSharedState& shared_state,
@@ -51,6 +57,7 @@ bool SnapshotHeartbeat::Start(const std::chrono::steady_clock::time_point& epoch
 	worker_failed_ = false;
 	retry_merge_indices_.clear();
 	unresolved_merge_indices_.clear();
+	merge_caches_.clear();
 	highest_snapshot_index_seen_ = 0;
 	first_uncommitted_evaporation_entry_ = 0;
 	last_rank_snapshot_written_ = 0;
@@ -280,12 +287,17 @@ bool SnapshotHeartbeat::WriteRankCheckpoint(
 {
 	deadline_missed = false;
 	size_t evaporation_entry_end = first_uncommitted_evaporation_entry_;
+	// Publish at most one budget worth of completed events per checkpoint. The
+	// remainder is published by a later checkpoint, whose window filter admits
+	// earlier completion times, so a backlog drains instead of ratcheting up
+	// until every write exceeds the size the reader accepts.
 	SnapshotRankState state = shared_state_.CopyForSnapshot(
 		snapshot_index,
 		actual_elapsed_sec,
 		target_wall_sec,
 		first_uncommitted_evaporation_entry_,
-		evaporation_entry_end);
+		evaporation_entry_end,
+		SnapshotEvaporationEventsPerCheckpoint());
 	state.snapshot_index = snapshot_index;
 	state.rank_elapsed_wall_sec = ElapsedSinceStart();
 	if(state.rank_elapsed_wall_sec > target_wall_sec + missed_tolerance_sec_)
@@ -307,9 +319,26 @@ bool SnapshotHeartbeat::WriteRankCheckpoint(
 	return false;
 }
 
+SnapshotMergeCache& SnapshotHeartbeat::AcquireMergeCache(int snapshot_index)
+{
+	SnapshotMergeCache& cache = merge_caches_[snapshot_index];
+	// Dropping an accumulation only costs a full reload of that index later, so
+	// the map may be bounded without affecting the merged result.
+	while(merge_caches_.size() > MAX_SNAPSHOT_MERGE_CACHE_ENTRIES)
+	{
+		auto lowest = merge_caches_.begin();
+		if(lowest->first == snapshot_index)
+			lowest = std::next(lowest);
+		if(lowest == merge_caches_.end())
+			break;
+		merge_caches_.erase(lowest);
+	}
+	return cache;
+}
+
 SnapshotMergeResult SnapshotHeartbeat::TryMergeIndex(int snapshot_index, bool allow_partial)
 {
-	return TryWriteSnapshot(
+	SnapshotMergeResult result = TryWriteSnapshotCached(
 		snapshot_root_,
 		rank_snapshot_dir_,
 		snapshot_index,
@@ -318,7 +347,11 @@ SnapshotMergeResult SnapshotHeartbeat::TryMergeIndex(int snapshot_index, bool al
 		run_id_,
 		mass_gev_,
 		sigma_cm2_,
+		AcquireMergeCache(snapshot_index),
 		allow_partial);
+	if(result.status == SnapshotMergeStatus::Merged)
+		merge_caches_.erase(snapshot_index);
+	return result;
 }
 
 void SnapshotHeartbeat::ProcessMergeTick(int snapshot_index, bool local_checkpoint_missed)

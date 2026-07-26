@@ -126,3 +126,4 @@ coverage.info
 # Generic generated tables from runs
 *.dat
 !/data/model_agss09.dat
+ctest_smoke_results/

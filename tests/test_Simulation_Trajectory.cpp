@@ -3,6 +3,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <numeric>
 #include <stdexcept>
 #include <vector>
 
@@ -208,14 +209,22 @@ TEST(TestSimulationTrajectory, TestTrajectoryBincountSurvivalDefaults)
 	EXPECT_EQ(bincount.number_of_bound_to_unbound, 0UL);
 	EXPECT_EQ(bincount.number_of_recaptures, 0UL);
 	EXPECT_EQ(bincount.number_of_integrator_steps_after_capture, 0UL);
+	EXPECT_EQ(bincount.number_of_bound_exterior_arcs, 0UL);
+	EXPECT_TRUE(std::isnan(bincount.first_bound_exit_kepler_period_sec));
+	EXPECT_TRUE(std::isnan(bincount.last_bound_exit_kepler_period_sec));
+	EXPECT_TRUE(std::isnan(bincount.max_bound_exit_kepler_period_sec));
+	EXPECT_TRUE(std::isnan(bincount.first_bound_exit_exterior_time_sec));
+	EXPECT_TRUE(std::isnan(bincount.last_bound_exit_exterior_time_sec));
+	EXPECT_TRUE(std::isnan(bincount.max_bound_exit_exterior_time_sec));
 	EXPECT_TRUE(std::isnan(bincount.min_energy_after_capture_eV));
-	EXPECT_EQ(TRAJECTORY_TERMINATION_REASON_COUNT, 11);
+	EXPECT_EQ(TRAJECTORY_TERMINATION_REASON_COUNT, 12);
 	EXPECT_EQ(static_cast<int>(TrajectoryTerminationReason::EnergyDriftEscape), 10);
+	EXPECT_EQ(static_cast<int>(TrajectoryTerminationReason::RadialDomainExceeded), 11);
 }
 
 TEST(TestSimulationTrajectory, TestBincountDepositsLinearRadialIntervalAcrossEveryBin)
 {
-	const int first_bin = 1500;
+	const int first_bin = 750;
 	const double start_radius_km = (static_cast<double>(first_bin) + 0.25) * BIN_WIDTH_KM;
 	const double speed_km_s = BIN_WIDTH_KM;
 	const double duration_sec = 10.5;
@@ -295,7 +304,7 @@ TEST(TestSimulationTrajectory, TestBincountSingleBinFastPathRejectsCurvedBoundar
 
 TEST(TestSimulationTrajectory, TestBincountLinearDepositionIsStepPhaseInvariant)
 {
-	const double start_radius_km = 1300.37 * BIN_WIDTH_KM;
+	const double start_radius_km = 800.37 * BIN_WIDTH_KM;
 	const double speed_km_s = 0.8 * BIN_WIDTH_KM;
 	const double duration_sec = 17.25;
 	const double split_sec = 4.137;
@@ -329,10 +338,10 @@ TEST(TestSimulationTrajectory, TestBincountLinearDepositionIsStepPhaseInvariant)
 	}
 }
 
-TEST(TestSimulationTrajectory, TestBincountClipsOutwardIntervalAtTwoSolarRadii)
+TEST(TestSimulationTrajectory, TestNumericalBincountClipsAtKeplerBoundary)
 {
 	const double speed_km_s = BIN_WIDTH_KM;
-	const double start_radius_km = 1998.5 * BIN_WIDTH_KM;
+	const double start_radius_km = 1098.5 * BIN_WIDTH_KM;
 	const double duration_sec = 3.0;
 	Event before(
 	    0.0,
@@ -345,9 +354,116 @@ TEST(TestSimulationTrajectory, TestBincountClipsOutwardIntervalAtTwoSolarRadii)
 	    before.velocity);
 
 	const AggregatedBincount aggregate = ComputeContributions(before, after);
-	EXPECT_NEAR(aggregate.dt[1998], 0.5, 1.0e-11);
-	EXPECT_NEAR(aggregate.dt[1999], 1.0, 1.0e-11);
+	EXPECT_NEAR(aggregate.dt[1098], 0.5, 1.0e-11);
+	EXPECT_NEAR(aggregate.dt[1099], 1.0, 1.0e-11);
 	EXPECT_NEAR(SumBins(aggregate.dt), 1.5, 1.0e-10);
+}
+
+TEST(TestSimulationTrajectory, CompactRadialGridReachesJupiterCutoff)
+{
+	EXPECT_EQ(TOTAL_BINS, static_cast<std::size_t>(NUM_BINS) + EXTERIOR_LOG_BINS);
+	EXPECT_DOUBLE_EQ(BincountBinLowerKm(0), 0.0);
+	EXPECT_DOUBLE_EQ(BincountBinLowerKm(NUM_BINS), BIN_MAX_KM);
+	EXPECT_NEAR(
+	    BincountBinUpperKm(TOTAL_BINS - 1),
+	    RADIAL_DOMAIN_MAX_KM,
+	    1.0e-12 * RADIAL_DOMAIN_MAX_KM);
+	EXPECT_EQ(BincountBinIndexKm(BIN_MAX_KM), NUM_BINS);
+	EXPECT_EQ(BincountBinIndexKm(std::nextafter(RADIAL_DOMAIN_MAX_KM, 0.0)),
+	          static_cast<int>(TOTAL_BINS - 1));
+	EXPECT_EQ(BincountBinIndexKm(RADIAL_DOMAIN_MAX_KM), -1);
+	for(std::size_t bin = 0; bin < TOTAL_BINS; bin++)
+		EXPECT_LT(BincountBinLowerKm(bin), BincountBinUpperKm(bin));
+}
+
+TEST(TestSimulationTrajectory, BoundKeplerExteriorArcUsesCompactLogGrid)
+{
+	const double semi_major_axis = 1.5 * rSun;
+	const double eccentricity = 1.0 / 3.0;
+	const double boundary_radius = TRAJECTORY_BOUNDARY_RSUN * rSun;
+	const double mu = G_Newton * mSun;
+	const double angular_momentum =
+	    std::sqrt(mu * semi_major_axis * (1.0 - eccentricity * eccentricity));
+	const double tangential_speed = angular_momentum / boundary_radius;
+	const double total_speed =
+	    std::sqrt(mu * (2.0 / boundary_radius - 1.0 / semi_major_axis));
+	const double radial_speed =
+	    std::sqrt(total_speed * total_speed - tangential_speed * tangential_speed);
+	Event outward(
+	    3.0 * sec,
+	    libphysica::Vector({boundary_radius, 0.0, 0.0}),
+	    libphysica::Vector({radial_speed, tangential_speed, 0.0}));
+
+	BoundKeplerExteriorArc arc;
+	ASSERT_TRUE(Compute_Bound_Kepler_Exterior_Arc(outward, arc));
+	EXPECT_FALSE(arc.radial_domain_exceeded);
+	EXPECT_NEAR(arc.apoapsis_km, 2.0 * R_SUN_KM, 1.0e-10 * R_SUN_KM);
+	EXPECT_EQ(arc.dt_hist.size(), TOTAL_BINS);
+	EXPECT_EQ(arc.v2dt_hist.size(), arc.dt_hist.size());
+	EXPECT_NEAR(
+	    In_Units(arc.inbound_event.Radius(), rSun),
+	    TRAJECTORY_BOUNDARY_RSUN,
+	    1.0e-12);
+	EXPECT_LT(
+	    arc.inbound_event.position.Dot(arc.inbound_event.velocity),
+	    0.0);
+	EXPECT_NEAR(
+	    In_Units(arc.inbound_event.Speed(), km / sec),
+	    In_Units(outward.Speed(), km / sec),
+	    1.0e-10);
+	EXPECT_NEAR(
+	    std::accumulate(arc.dt_hist.begin(), arc.dt_hist.end(), 0.0),
+	    arc.return_time_sec,
+	    1.0e-10 * arc.return_time_sec);
+	const double expected_period_sec = In_Units(
+	    2.0 * M_PI * std::sqrt(
+	        semi_major_axis * semi_major_axis * semi_major_axis / mu),
+	    sec);
+	EXPECT_NEAR(
+	    arc.kepler_period_sec,
+	    expected_period_sec,
+	    1.0e-12 * expected_period_sec);
+	EXPECT_GT(arc.kepler_period_sec, arc.return_time_sec);
+	EXPECT_EQ(
+	    std::accumulate(arc.dt_hist.begin(), arc.dt_hist.begin() + NUM_BINS, 0.0),
+	    0.0);
+	EXPECT_GT(
+	    std::accumulate(arc.dt_hist.begin() + NUM_BINS, arc.dt_hist.end(), 0.0),
+	    0.0);
+	EXPECT_GT(
+	    std::accumulate(arc.v2dt_hist.begin(), arc.v2dt_hist.end(), 0.0),
+	    0.0);
+}
+
+TEST(TestSimulationTrajectory, BoundKeplerExteriorArcFlagsApoapsisBeyondJupiter)
+{
+	const double periapsis = 0.5 * rSun;
+	const double apoapsis = 6.0 * AU;
+	const double semi_major_axis = 0.5 * (periapsis + apoapsis);
+	const double eccentricity = (apoapsis - periapsis) / (apoapsis + periapsis);
+	const double boundary_radius = TRAJECTORY_BOUNDARY_RSUN * rSun;
+	const double mu = G_Newton * mSun;
+	const double angular_momentum =
+	    std::sqrt(mu * semi_major_axis * (1.0 - eccentricity * eccentricity));
+	const double tangential_speed = angular_momentum / boundary_radius;
+	const double total_speed =
+	    std::sqrt(mu * (2.0 / boundary_radius - 1.0 / semi_major_axis));
+	const double radial_speed =
+	    std::sqrt(total_speed * total_speed - tangential_speed * tangential_speed);
+	Event outward(
+	    3.0 * sec,
+	    libphysica::Vector({boundary_radius, 0.0, 0.0}),
+	    libphysica::Vector({radial_speed, tangential_speed, 0.0}));
+
+	BoundKeplerExteriorArc arc;
+	ASSERT_TRUE(Compute_Bound_Kepler_Exterior_Arc(outward, arc));
+	EXPECT_TRUE(arc.radial_domain_exceeded);
+	EXPECT_GT(arc.apoapsis_km, RADIAL_DOMAIN_MAX_KM);
+	EXPECT_GT(arc.kepler_period_sec, arc.return_time_sec);
+	EXPECT_EQ(arc.dt_hist.size(), TOTAL_BINS);
+	EXPECT_DOUBLE_EQ(
+	    std::accumulate(arc.dt_hist.begin(), arc.dt_hist.end(), 0.0),
+	    0.0);
 }
 
 TEST(TestSimulationTrajectory, TestSurvivalInvalidTerminationReasons)
@@ -362,6 +478,7 @@ TEST(TestSimulationTrajectory, TestSurvivalInvalidTerminationReasons)
 	EXPECT_TRUE(TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason::MaxFreeSteps));
 	EXPECT_TRUE(TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason::MaxScatterings));
 	EXPECT_FALSE(TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason::OutwardEscape));
+	EXPECT_TRUE(TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason::RadialDomainExceeded));
 }
 
 TEST(TestSimulationTrajectory, TestScatter)

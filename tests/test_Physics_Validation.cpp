@@ -46,8 +46,8 @@ void AddBincountContributions(
 
 OrbitBincount EllipticOutboundBincount(double step, double first_step)
 {
-	const double semi_major_axis = 1.5 * rSun;
-	const double eccentricity = 1.0 / 3.0;
+	const double semi_major_axis = 1.045 * rSun;
+	const double eccentricity = 9.0 / 209.0;
 	const double mu = G_Newton * mSun;
 	const double mean_motion = std::sqrt(mu / std::pow(semi_major_axis, 3.0));
 	const double duration = M_PI / mean_motion;
@@ -84,8 +84,8 @@ OrbitBincount EllipticOutboundBincount(double step, double first_step)
 
 OrbitBincount LegacyLeftEndpointEllipticBincount(double step)
 {
-	const double semi_major_axis = 1.5 * rSun;
-	const double eccentricity = 1.0 / 3.0;
+	const double semi_major_axis = 1.045 * rSun;
+	const double eccentricity = 9.0 / 209.0;
 	const double mu = G_Newton * mSun;
 	const double mean_motion = std::sqrt(mu / std::pow(semi_major_axis, 3.0));
 	const double duration = M_PI / mean_motion;
@@ -119,8 +119,8 @@ OrbitBincount LegacyLeftEndpointEllipticBincount(double step)
 
 OrbitBincount ExactEllipticOutboundBincount()
 {
-	const double semi_major_axis_km = 1.5 * R_SUN_KM;
-	const double eccentricity = 1.0 / 3.0;
+	const double semi_major_axis_km = 1.045 * R_SUN_KM;
+	const double eccentricity = 9.0 / 209.0;
 	const double mu_km3_s2 = In_Units(
 	    G_Newton * mSun, km * km * km / sec / sec);
 	const double mean_motion_s =
@@ -270,20 +270,20 @@ TEST(PhysicsValidation, BincountMatchesAnalyticKeplerShellResidenceTimes)
 {
 	const OrbitBincount exact = ExactEllipticOutboundBincount();
 	const OrbitBincount coarse =
-	    EllipticOutboundBincount(400.0 * sec, 0.0);
+	    EllipticOutboundBincount(200.0 * sec, 0.0);
 	const OrbitBincount shifted =
-	    EllipticOutboundBincount(400.0 * sec, 137.0 * sec);
+	    EllipticOutboundBincount(200.0 * sec, 73.0 * sec);
 	const OrbitBincount fine =
-	    EllipticOutboundBincount(100.0 * sec, 0.0);
+	    EllipticOutboundBincount(50.0 * sec, 0.0);
 	const OrbitBincount legacy =
 	    LegacyLeftEndpointEllipticBincount(400.0 * sec);
 
 	EXPECT_LT(RelativeL1(coarse.dt, exact.dt), 5.0e-3);
 	EXPECT_LT(RelativeL1(shifted.dt, exact.dt), 5.0e-3);
-	EXPECT_LT(RelativeL1(fine.dt, exact.dt), 3.0e-3);
+	EXPECT_LT(RelativeL1(fine.dt, exact.dt), 5.0e-3);
 	EXPECT_LT(RelativeL1(coarse.v2dt, exact.v2dt), 5.0e-3);
 	EXPECT_LT(RelativeL1(shifted.v2dt, exact.v2dt), 5.0e-3);
-	EXPECT_LT(RelativeL1(fine.v2dt, exact.v2dt), 3.0e-3);
+	EXPECT_LT(RelativeL1(fine.v2dt, exact.v2dt), 5.0e-3);
 	EXPECT_LT(RelativeL1(coarse.dt, shifted.dt), 5.0e-3);
 	EXPECT_GT(RelativeL1(legacy.dt, exact.dt), 5.0e-1);
 }

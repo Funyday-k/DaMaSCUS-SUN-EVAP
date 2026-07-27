@@ -157,11 +157,11 @@ Configuration files use libconfig syntax. The most important controls are:
 | --- | --- |
 | `run_mode` | `"Parameter point"` for the main evaporation workflow, `"Capture"` for capture-rate runs, or `"Parameter scan"` for the older scan path. |
 | `capture_mode` | Boolean override for capture-only behavior. `run_mode = "Capture"` also enables capture mode. |
-| `sample_size` | Target number of captured particles. Normal-mode MPI runs batch trajectories between reductions, so the final captured count may slightly exceed this target. |
+| `sample_size` | In normal mode, the exact target number of complete, valid evaporation events whose bound exterior orbit stays within 5.2 AU. Invalid and radial-domain-excluded captures are replaced. In capture mode, it remains the exact target number of captures. |
 | `fixed_seed` | Optional non-negative PRNG seed. `0` or an omitted setting uses nondeterministic seeding; a nonzero value is expanded independently by MPI rank. |
 | `max_trajectories` | Optional hard cap on generated trajectories. `0` or unset means no trajectory-count cap. |
 | `interpolation_points` | Scattering-rate interpolation grid size. `0` disables interpolation; production runs should compare representative values before fixing this. |
-| `R_escape_Rsun` | Optional trajectory escape boundary in solar radii. Defaults to `2.0` and must be greater than `1.0`. |
+| `R_escape_Rsun` | Deprecated compatibility setting. Injection, numerical escape, and exterior Kepler matching all use the fixed `1.1 R_sun` boundary. |
 | `output_dir` | Root directory for generated result folders; a trailing `/` is optional. A relative path is resolved from the process working directory, so production batch jobs should normally use an absolute path. |
 | `DM_mass` | Dark matter mass in GeV. |
 | `DM_cross_section_nucleon` | DM-nucleon cross section in cm^2. |
@@ -172,12 +172,11 @@ Normal-mode MPI synchronization uses an automatic batch size selected from the
 DM-nucleon cross section. The selected value is written to output headers as
 `normal_mode_mpi_sync_interval`.
 
-At the end of each normal-mode batch, ranks rendezvous with a nonblocking MPI
-barrier. A rank that arrives early continues simulating independent trajectories
-until every rank reaches the rendezvous (or its local trajectory budget is
-exhausted), so a single long trajectory no longer leaves the other ranks idle.
-The number of trajectories completed in this tail-work window is reported as
-`mpi_tail_trajectories`. Capture mode keeps its exact bounded batch behavior.
+Every normal-mode batch is globally capped by the number of accepted
+evaporation samples still required. The exterior Kepler fast-forward removes
+the dominant long scatter-free tails, so ranks proceed directly to the
+collective progress reduction without speculative tail trajectories.
+`capture_target_overshoot` is therefore guaranteed to remain zero.
 
 | `DM_cross_section_nucleon` range [cm^2] | MPI sync interval per rank |
 | --- | ---: |
@@ -207,11 +206,20 @@ For non-capture parameter-point runs, the final files are written after MPI
 reduction:
 
 - `bincount.txt`: captured and not-captured time-weighted radial histograms with
-  error estimates. Accepted RK intervals are conservatively split across every
-  crossed radial bin using adaptive Hermite dense output; the header records the
-  integration scheme and dense-output tolerance.
+  error estimates. The grid is uniform at `0.001 R_sun` through `1.1 R_sun`
+  and uses 512 fixed logarithmic shells from there to 5.2 AU. Negative-energy
+  exterior Kepler arcs contribute exact shell integrals. A captured orbit whose
+  apoapsis exceeds 5.2 AU is marked `radial_domain_exceeded`, excluded from the
+  evaporation sample and bincount, and replaced so normal mode still reaches
+  the requested valid-event count. Numerical failures are excluded in the same
+  way. Accepted numerical RK intervals are conservatively split using adaptive
+  Hermite dense output.
 - `evaporation_times.txt`: compact complete-event table with
-  `rank trajectory_id lifetime_unbinding_sec`, sorted by
+  `rank trajectory_id lifetime_unbinding_sec r_capture_Rsun E_capture_eV
+  dE_capture_eV`, followed by the number of negative-energy exterior arcs,
+  the first/last/maximum osculating Kepler periods at outward `1.1 R_sun`
+  crossings, and the corresponding first/last/maximum analytic exterior
+  return times. It is sorted by
   `lifetime_unbinding_sec` with `rank trajectory_id` tie-breakers.
 
 Optional trajectory diagnostics are enabled with `trajectory_summary_enabled = true`.
@@ -224,6 +232,14 @@ selection does not consume the physics RNG. Traced trajectories include the
 complete pre-initial-condition `std::mt19937` state and shifted initial
 condition, plus real-time scatter, state-transition, solar-crossing, escape,
 censoring, and numerical-failure events.
+
+The bound-exit period is the point-mass osculating Kepler period inferred from
+the negative-energy state at the outward `1.1 R_sun` matching surface. The
+exterior return time is the physically used analytic travel time from that
+crossing through apoapsis to the inbound crossing of the same surface. These
+are kept separate because the osculating full period includes a point-mass
+continuation through the solar interior, whereas the simulation uses the
+extended solar potential there.
 
 The `bincount.txt` and snapshot report headers expose both `capture_rate_raw`
 (captured / all attempted) and `capture_rate_valid` (captured / physically

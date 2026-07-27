@@ -19,7 +19,6 @@ install(TARGETS DaMaSCUS-SUN
 add_library(lib_damascus_sun STATIC
 	Dark_Photon.cpp
 	Data_Generation.cpp
-	MPI_Tail_Work.cpp
 	Parameter_Scan.cpp
 	Reflection_Spectrum.cpp
 	Snapshot_Heartbeat.cpp

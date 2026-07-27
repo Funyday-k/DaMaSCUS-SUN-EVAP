@@ -76,7 +76,7 @@ double Free_Propagation_Time_Step_Cap(double radius, double speed, double maximu
 	double cap = RK45_Absolute_Max_Time_Step();
 	const double safe_speed = std::max(std::fabs(speed), 1.0e-12 * km / sec);
 
-	// 避免单步跨越过大的径向距离，否则可能直接跳过 2R_sun 边界并把 r 推到非物理值。
+	// 避免单步跨越过大的径向距离，否则可能直接跳过 1.1R_sun 边界并把 r 推到非物理值。
 	const double crossing_scale = std::max(0.25 * maximum_distance, 10.0 * km);
 	cap = std::min(cap, crossing_scale / safe_speed);
 
@@ -1019,6 +1019,135 @@ void Compute_Bincount_Interval_Contributions(
 	HermiteBincountDepositor(before, after, contributions).Deposit();
 }
 
+double BincountBinLowerKm(std::size_t bin)
+{
+	if(bin <= static_cast<std::size_t>(NUM_BINS))
+		return static_cast<double>(bin) * BIN_WIDTH_KM;
+	if(bin > TOTAL_BINS)
+		return std::numeric_limits<double>::quiet_NaN();
+	const std::size_t exterior_edge = bin - static_cast<std::size_t>(NUM_BINS);
+	const double log_span = log(RADIAL_DOMAIN_MAX_KM / BIN_MAX_KM);
+	return BIN_MAX_KM
+	     * exp(log_span * static_cast<double>(exterior_edge)
+	           / static_cast<double>(EXTERIOR_LOG_BINS));
+}
+
+double BincountBinUpperKm(std::size_t bin)
+{
+	return BincountBinLowerKm(bin + 1);
+}
+
+int BincountBinIndexKm(double radius_km)
+{
+	if(!std::isfinite(radius_km) || radius_km < 0.0
+	   || radius_km >= RADIAL_DOMAIN_MAX_KM)
+		return -1;
+	if(radius_km < BIN_MAX_KM)
+		return std::min(
+		    NUM_BINS - 1,
+		    std::max(0, static_cast<int>(floor(radius_km / BIN_WIDTH_KM))));
+
+	const double log_span = log(RADIAL_DOMAIN_MAX_KM / BIN_MAX_KM);
+	const double coordinate =
+	    log(radius_km / BIN_MAX_KM) / log_span
+	    * static_cast<double>(EXTERIOR_LOG_BINS);
+	const std::size_t exterior_bin = std::min<std::size_t>(
+	    EXTERIOR_LOG_BINS - 1,
+	    static_cast<std::size_t>(std::max(0.0, floor(coordinate))));
+	return NUM_BINS + static_cast<int>(exterior_bin);
+}
+
+bool Compute_Bound_Kepler_Exterior_Arc(
+	const Event& outward_event,
+	BoundKeplerExteriorArc& arc)
+{
+	Event inbound_event;
+	double return_time = 0.0;
+	double apoapsis_radius = 0.0;
+	if(!Bound_Kepler_Return_At_Same_Radius(
+	       outward_event, inbound_event, return_time, apoapsis_radius))
+		return false;
+
+	const double radius_km = In_Units(outward_event.Radius(), km);
+	const double speed_km_s = In_Units(outward_event.Speed(), km / sec);
+	const double angular_momentum_km2_s =
+	    In_Units(outward_event.Angular_Momentum(), km * km / sec);
+	const double mu_km3_s2 =
+	    In_Units(G_Newton * mSun, km * km * km / (sec * sec));
+	const double specific_energy_km2_s2 =
+	    0.5 * speed_km_s * speed_km_s - mu_km3_s2 / radius_km;
+	const double semi_major_axis_km =
+	    -mu_km3_s2 / (2.0 * specific_energy_km2_s2);
+	double eccentricity_squared =
+	    1.0 + 2.0 * specific_energy_km2_s2
+	        * angular_momentum_km2_s * angular_momentum_km2_s
+	        / (mu_km3_s2 * mu_km3_s2);
+	if(!std::isfinite(radius_km) || !std::isfinite(semi_major_axis_km)
+	   || !std::isfinite(eccentricity_squared) || eccentricity_squared < 0.0)
+		return false;
+	const double eccentricity = sqrt(std::max(0.0, eccentricity_squared));
+	const double mean_motion_s_inv = sqrt(
+	    mu_km3_s2
+	    / (semi_major_axis_km * semi_major_axis_km * semi_major_axis_km));
+	if(!(eccentricity > 1.0e-14 && eccentricity < 1.0)
+	   || !std::isfinite(mean_motion_s_inv) || mean_motion_s_inv <= 0.0)
+		return false;
+
+	const double apoapsis_km = In_Units(apoapsis_radius, km);
+	if(!std::isfinite(apoapsis_km) || apoapsis_km < radius_km)
+		return false;
+	arc = BoundKeplerExteriorArc();
+	arc.inbound_event = inbound_event;
+	arc.return_time_sec = In_Units(return_time, sec);
+	arc.kepler_period_sec = 2.0 * M_PI / mean_motion_s_inv;
+	arc.apoapsis_km = apoapsis_km;
+	if(apoapsis_km > RADIAL_DOMAIN_MAX_KM
+	                     * (1.0 + 1.0e-12))
+	{
+		arc.radial_domain_exceeded = true;
+		return std::isfinite(arc.return_time_sec) && arc.return_time_sec > 0.0
+		    && std::isfinite(arc.kepler_period_sec) && arc.kepler_period_sec > 0.0;
+	}
+
+	const int first_bin_index = BincountBinIndexKm(radius_km);
+	if(first_bin_index < NUM_BINS)
+		return false;
+	for(std::size_t bin = static_cast<std::size_t>(first_bin_index);
+	    bin < TOTAL_BINS; bin++)
+	{
+		const double lower_radius_km =
+		    std::max(radius_km, BincountBinLowerKm(bin));
+		const double upper_radius_km =
+		    std::min(apoapsis_km, BincountBinUpperKm(bin));
+		if(!(upper_radius_km > lower_radius_km))
+			break;
+
+		const double cos_e_lower = Clamp_Cosine(
+		    (1.0 - lower_radius_km / semi_major_axis_km) / eccentricity);
+		const double cos_e_upper = Clamp_Cosine(
+		    (1.0 - upper_radius_km / semi_major_axis_km) / eccentricity);
+		const double e_lower = acos(cos_e_lower);
+		const double e_upper = acos(cos_e_upper);
+		const double sin_e_lower = sqrt(std::max(0.0, 1.0 - cos_e_lower * cos_e_lower));
+		const double sin_e_upper = sqrt(std::max(0.0, 1.0 - cos_e_upper * cos_e_upper));
+		const double delta_mean_anomaly =
+		    (e_upper - eccentricity * sin_e_upper)
+		    - (e_lower - eccentricity * sin_e_lower);
+		const double delta_v2_primitive =
+		    (e_upper - e_lower)
+		    + eccentricity * (sin_e_upper - sin_e_lower);
+		arc.dt_hist[bin] = 2.0 * delta_mean_anomaly / mean_motion_s_inv;
+		arc.v2dt_hist[bin] =
+		    2.0 * mu_km3_s2 / (semi_major_axis_km * mean_motion_s_inv)
+		    * delta_v2_primitive;
+		if(!std::isfinite(arc.dt_hist[bin]) || arc.dt_hist[bin] < 0.0
+		   || !std::isfinite(arc.v2dt_hist[bin]) || arc.v2dt_hist[bin] < 0.0)
+			return false;
+	}
+	return std::isfinite(arc.return_time_sec) && arc.return_time_sec > 0.0
+	    && std::isfinite(arc.kepler_period_sec) && arc.kepler_period_sec > 0.0;
+}
+
 const char* TrajectoryDiagnosticEventTypeKey(TrajectoryDiagnosticEventType type)
 {
 	switch(type)
@@ -1043,7 +1172,7 @@ double RK45PhaseTolerance() { return 1.0e-7; }
 double RK45AbsoluteMaxStepSec() { return In_Units(RK45_Absolute_Max_Time_Step(), sec); }
 double NormalModeMaxOpticalDepthStep() { return MAX_OPTICAL_DEPTH_STEP; }
 double OpticalDepthRelativeTolerance() { return OPTICAL_DEPTH_RELATIVE_TOLERANCE; }
-const char* BincountIntegrationScheme() { return "conservative-hermite-radial-v1"; }
+const char* BincountIntegrationScheme() { return "conservative-hermite-kepler-jupiter-log-v3"; }
 double BincountDensePositionToleranceKm() { return BINCOUNT_DENSE_POSITION_TOLERANCE_KM; }
 double SnapshotProgressPublishWallIntervalSeconds() { return SNAPSHOT_PUBLISH_WALL_INTERVAL_SEC; }
 bool SnapshotProgressPublishDue(
@@ -1066,6 +1195,7 @@ bool TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason reason
 		case TrajectoryTerminationReason::WallTimeLimit:
 		case TrajectoryTerminationReason::MaxFreeSteps:
 		case TrajectoryTerminationReason::MaxScatterings:
+		case TrajectoryTerminationReason::RadialDomainExceeded:
 		case TrajectoryTerminationReason::Unknown:
 			return true;
 		default:
@@ -1229,7 +1359,8 @@ void Trajectory_Simulator::Accumulate_Bincount_Interval(
 	Compute_Bincount_Interval_Contributions(before, after, bincount_contribution_cache);
 	for(const BincountContribution& contribution : bincount_contribution_cache)
 	{
-		if(contribution.bin < 0 || contribution.bin >= NUM_BINS)
+		if(contribution.bin < 0
+		   || static_cast<std::size_t>(contribution.bin) >= current_bincount.dt_hist.size())
 			continue;
 		current_bincount.dt_hist[contribution.bin] += contribution.dt_sec;
 		current_bincount.v2dt_hist[contribution.bin] += contribution.v2dt_km2_per_sec;
@@ -1764,7 +1895,8 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 				v_boundary = boundary_event.Speed();
 			}
 
-			if(r_boundary >= maximum_distance && r_boundary >= r_before && v_boundary > solar_model.Local_Escape_Speed(r_boundary))
+			if(r_boundary >= maximum_distance && r_boundary >= r_before
+			   && v_boundary >= solar_model.Local_Escape_Speed(r_boundary))
 			{
 				accepted_event = boundary_event;
 				reflection = true;
@@ -1776,43 +1908,91 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 				if(abort_if_uncaptured_bound(absolute_boundary_event))
 					return TrajectoryTerminationReason::NumericalFailure;
 
-				Event inbound_boundary_event;
-				double kepler_return_time = 0.0;
-				double kepler_apoapsis_radius = 0.0;
-				if(Bound_Kepler_Return_At_Same_Radius(boundary_event, inbound_boundary_event,
-				                                      kepler_return_time, kepler_apoapsis_radius))
+				BoundKeplerExteriorArc kepler_arc;
+				if(Compute_Bound_Kepler_Exterior_Arc(boundary_event, kepler_arc))
 				{
 					time_steps++;
 					optical_depth_retries = 0;
 					commit_accepted_event(boundary_event);
-					current_event = to_absolute_event(inbound_boundary_event);
 					if(current_bincount.is_captured)
 					{
-						current_bincount.time_outside_sun_after_capture_sec += In_Units(kepler_return_time, sec);
-						const double apoapsis_km = In_Units(kepler_apoapsis_radius, km);
+						current_bincount.number_of_bound_exterior_arcs++;
+						if(current_bincount.number_of_bound_exterior_arcs == 1)
+						{
+							current_bincount.first_bound_exit_kepler_period_sec =
+							    kepler_arc.kepler_period_sec;
+							current_bincount.first_bound_exit_exterior_time_sec =
+							    kepler_arc.return_time_sec;
+						}
+						current_bincount.last_bound_exit_kepler_period_sec =
+						    kepler_arc.kepler_period_sec;
+						current_bincount.last_bound_exit_exterior_time_sec =
+						    kepler_arc.return_time_sec;
+						if(!std::isfinite(current_bincount.max_bound_exit_kepler_period_sec)
+						   || kepler_arc.kepler_period_sec
+						      > current_bincount.max_bound_exit_kepler_period_sec)
+							current_bincount.max_bound_exit_kepler_period_sec =
+							    kepler_arc.kepler_period_sec;
+						if(!std::isfinite(current_bincount.max_bound_exit_exterior_time_sec)
+						   || kepler_arc.return_time_sec
+						      > current_bincount.max_bound_exit_exterior_time_sec)
+							current_bincount.max_bound_exit_exterior_time_sec =
+							    kepler_arc.return_time_sec;
+					}
+					if(kepler_arc.radial_domain_exceeded)
+					{
+						current_event = absolute_boundary_event;
+						if(current_bincount.is_captured)
+						{
+							if(!std::isfinite(current_bincount.max_radius_after_capture_km)
+							   || kepler_arc.apoapsis_km
+							      > current_bincount.max_radius_after_capture_km)
+								current_bincount.max_radius_after_capture_km =
+								    kepler_arc.apoapsis_km;
+							current_bincount.t_last_bound =
+							    In_Units(current_event.time, sec);
+							current_bincount.t_last_negative =
+							    current_bincount.t_last_bound;
+						}
+						return TrajectoryTerminationReason::RadialDomainExceeded;
+					}
+					for(std::size_t bin = NUM_BINS; bin < TOTAL_BINS; bin++)
+					{
+						current_bincount.dt_hist[bin] += kepler_arc.dt_hist[bin];
+						current_bincount.v2dt_hist[bin] += kepler_arc.v2dt_hist[bin];
+					}
+					current_event = to_absolute_event(kepler_arc.inbound_event);
+					if(current_bincount.is_captured)
+					{
+						current_bincount.time_outside_sun_after_capture_sec += kepler_arc.return_time_sec;
+						const double apoapsis_km = kepler_arc.apoapsis_km;
 						if(!std::isfinite(current_bincount.max_radius_after_capture_km)
 						   || apoapsis_km > current_bincount.max_radius_after_capture_km)
 							current_bincount.max_radius_after_capture_km = apoapsis_km;
+						current_bincount.t_last_bound = In_Units(current_event.time, sec);
+						current_bincount.t_last_negative = current_bincount.t_last_bound;
 					}
 					Reset_Bincount_Anchor(current_event);
-						// A bound exterior arc skips a large amount of simulated time at
-						// once, so publish it immediately rather than at the next batch.
-						Maybe_Publish_Snapshot_Progress(In_Units(current_event.time, sec), true);
-						reset_propagator_at_absolute_event(current_event);
-						continue;
-					}
+					// Synchronize the in-progress state after the large analytic
+					// jump. Snapshot files themselves remain on fixed wall cadence.
+					Maybe_Publish_Snapshot_Progress(In_Units(current_event.time, sec), true);
+					reset_propagator_at_absolute_event(current_event);
+					continue;
 				}
+				current_event = absolute_boundary_event;
+				return TrajectoryTerminationReason::NumericalFailure;
+			}
 		}
 
 		time_steps++;
-			optical_depth_retries = 0;
-			const bool captured_now = commit_accepted_event(accepted_event);
-			Copy_Event_Into(current_event, accepted_event);
-			current_event.time += time_origin;
-			if(abort_if_uncaptured_bound(current_event))
-				return TrajectoryTerminationReason::NumericalFailure;
-			if(terminate_on_capture && captured_now)
-				return TrajectoryTerminationReason::CaptureMode;
+		optical_depth_retries = 0;
+		const bool captured_now = commit_accepted_event(accepted_event);
+		Copy_Event_Into(current_event, accepted_event);
+		current_event.time += time_origin;
+		if(abort_if_uncaptured_bound(current_event))
+			return TrajectoryTerminationReason::NumericalFailure;
+		if(terminate_on_capture && captured_now)
+			return TrajectoryTerminationReason::CaptureMode;
 
 		if(reflection || scattering)
 			break;
@@ -1991,7 +2171,7 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
 
 	// Initialize per-trajectory bincount
 	current_bincount = TrajectoryBincount();
-	has_previous_bincount_event = false;
+	Reset_Bincount_Anchor(current_event);
 	previous_capture_energy_eV = Capture_Energy_eV(current_event.Radius(), current_event.Speed(), DM);
 	free_flight_reference_energy_eV = std::numeric_limits<double>::quiet_NaN();
 	current_ballistic_energy_drift_eV = 0.0;
@@ -2143,7 +2323,8 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
 			if(termination_reason != TrajectoryTerminationReason::CaptureMode)
 				current_bincount.survival_valid = false;
 		}
-		current_bincount.truncated = false;
+		current_bincount.truncated =
+		    termination_reason == TrajectoryTerminationReason::RadialDomainExceeded;
 	}
 
 	return Trajectory_Result(initial_condition, current_event, number_of_scatterings, current_bincount,

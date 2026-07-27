@@ -143,7 +143,7 @@ TEST(TestDataGeneration, TestDataSetConstructor)
 TEST(TestDataGeneration, TestCompactEvaporationEventStaysCompact)
 {
 	EXPECT_LT(sizeof(CompactEvaporationEvent), sizeof(EvaporationRecord) / 2);
-	EXPECT_LE(sizeof(CompactEvaporationEvent), static_cast<size_t>(40));
+	EXPECT_LE(sizeof(CompactEvaporationEvent), static_cast<size_t>(64));
 }
 
 TEST(TestDataGeneration, TestRecoverEvaporationTimeFileFromBlocksFiltersRunAndDeduplicates)
@@ -505,13 +505,16 @@ TEST(TestDataGeneration, TestDefaultOutputContract)
 	{
 		EXPECT_TRUE(FileExists(output_dir + "bincount.txt"));
 		EXPECT_TRUE(FileExists(output_dir + "evaporation_times.txt"));
+		EXPECT_TRUE(FileContains(output_dir + "evaporation_times.txt", "# format_version = 5"));
+		EXPECT_TRUE(FileContains(output_dir + "evaporation_times.txt", "P_kepler_first_bound_exit_sec"));
 		EXPECT_TRUE(FileContains(
 		    output_dir + "bincount.txt",
-		    "# bincount_integration = conservative-hermite-radial-v1"));
+		    "# bincount_integration = conservative-hermite-kepler-jupiter-log-v3"));
+		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# radial_domain_max_AU = 5.2000000000e+00"));
+		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# total_radial_bins = 1612"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# normal_mode_mpi_sync_interval = 1048576"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# mpi_sync_rounds = 1"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# final_mpi_round_trajectories = 1"));
-		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# mpi_tail_trajectories = 0"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# capture_target_overshoot = 0"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# total_scatterings = 0"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# simulation_time_seconds = "));
@@ -558,10 +561,10 @@ TEST(TestDataGeneration, TestTrajectoryDiagnosticOutputContract)
 	data_set.Write_Output_Files(output_dir, DM);
 	if(rank == 0)
 	{
-		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"schema_version\": \"trajectory-diagnostic-v2\""));
+		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"schema_version\": \"trajectory-diagnostic-v3\""));
 		EXPECT_TRUE(FileContains(
 		    output_dir + "run_metadata.json",
-		    "\"bincount_integration\": \"conservative-hermite-radial-v1\""));
+		    "\"bincount_integration\": \"conservative-hermite-kepler-jupiter-log-v3\""));
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"interpolation_points\": 20"));
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"legacy_evaporation_reconciliation\": true"));
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"escape_radius_invariant\": true"));
@@ -570,8 +573,10 @@ TEST(TestDataGeneration, TestTrajectoryDiagnosticOutputContract)
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"event_count_invariant\": true"));
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"trace_selection_invariant\": true"));
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"replay_state_invariant\": true"));
+		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"bound_exit_orbit_invariant\": true"));
 		EXPECT_TRUE(FileContains(output_dir + "trajectory_summary.tsv", "t_first_unbinding_s"));
 		EXPECT_TRUE(FileContains(output_dir + "trajectory_summary.tsv", "n_recapture"));
+		EXPECT_TRUE(FileContains(output_dir + "trajectory_summary.tsv", "P_kepler_max_bound_exit_s"));
 		EXPECT_TRUE(FileContains(output_dir + "trajectory_summary.tsv", "rng_state_before_simulation"));
 		EXPECT_TRUE(FileContains(output_dir + "trajectory_events.tsv", "event_type"));
 		EXPECT_TRUE(FileContains(output_dir + "trajectory_events.tsv", "scatter_pre"));

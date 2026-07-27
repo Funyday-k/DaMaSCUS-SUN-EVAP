@@ -74,10 +74,12 @@ void SnapshotSharedState::AddCurrentBincountInterval(
 			std::max(0.0, simulated_time_sec - current_trajectory_simulation_start_sec_);
 	for(const BincountContribution& contribution : contributions)
 	{
-		if(contribution.bin < 0 || contribution.bin >= NUM_BINS
+		if(contribution.bin < 0
 		   || !std::isfinite(contribution.dt_sec) || contribution.dt_sec <= 0.0
 		   || !std::isfinite(contribution.v2dt_km2_per_sec)
 		   || contribution.v2dt_km2_per_sec < 0.0)
+			continue;
+		if(static_cast<std::size_t>(contribution.bin) >= TOTAL_BINS)
 			continue;
 		current_dt_hist_[contribution.bin] += contribution.dt_sec;
 		current_v2dt_hist_[contribution.bin] += contribution.v2dt_km2_per_sec;
@@ -108,8 +110,8 @@ void SnapshotSharedState::MarkCurrentCaptured(bool captured)
 }
 
 void SnapshotSharedState::PublishCurrentTrajectoryProgress(
-	const std::array<double, NUM_BINS>& dt_hist,
-	const std::array<double, NUM_BINS>& v2dt_hist,
+	const std::array<double, TOTAL_BINS>& dt_hist,
+	const std::array<double, TOTAL_BINS>& v2dt_hist,
 	double simulated_time_sec)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
@@ -120,7 +122,7 @@ void SnapshotSharedState::PublishCurrentTrajectoryProgress(
 			std::max(0.0, simulated_time_sec - current_trajectory_simulation_start_sec_);
 	// Published snapshots must satisfy the rank-state validity invariants, so a
 	// non-finite or negative bin is dropped exactly as the per-step path did.
-	for(int bin = 0; bin < NUM_BINS; bin++)
+	for(std::size_t bin = 0; bin < TOTAL_BINS; bin++)
 	{
 		const double dt = dt_hist[bin];
 		const double v2dt = v2dt_hist[bin];
@@ -147,7 +149,7 @@ void SnapshotSharedState::RecordCompletedTrajectory(
 	if(count_as_captured_bincount_sample)
 	{
 		bincount_captured_samples_++;
-		for(int bin = 0; bin < NUM_BINS; bin++)
+		for(std::size_t bin = 0; bin < TOTAL_BINS; bin++)
 		{
 			captured_dt_hist_[bin] += bincount.dt_hist[bin];
 			captured_v2dt_hist_[bin] += bincount.v2dt_hist[bin];
@@ -159,7 +161,7 @@ void SnapshotSharedState::RecordCompletedTrajectory(
 	if(count_as_not_captured_bincount_sample)
 	{
 		bincount_not_captured_samples_++;
-		for(int bin = 0; bin < NUM_BINS; bin++)
+		for(std::size_t bin = 0; bin < TOTAL_BINS; bin++)
 		{
 			not_captured_dt_hist_[bin] += bincount.dt_hist[bin];
 			not_captured_v2dt_hist_[bin] += bincount.v2dt_hist[bin];
@@ -284,8 +286,8 @@ void SnapshotRecorder::UpdateCurrentSimulationTime(double simulated_time_sec)
 }
 
 void SnapshotRecorder::PublishCurrentTrajectoryProgress(
-	const std::array<double, NUM_BINS>& dt_hist,
-	const std::array<double, NUM_BINS>& v2dt_hist,
+	const std::array<double, TOTAL_BINS>& dt_hist,
+	const std::array<double, TOTAL_BINS>& v2dt_hist,
 	double simulated_time_sec)
 {
 	state_.PublishCurrentTrajectoryProgress(dt_hist, v2dt_hist, simulated_time_sec);

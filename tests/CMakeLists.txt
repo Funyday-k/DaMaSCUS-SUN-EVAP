@@ -189,35 +189,6 @@ else()
 	message(STATUS "Skipping four-rank snapshot heartbeat test: MPI launcher or explicit four-rank capacity is unavailable (MPIEXEC_EXECUTABLE='${MPIEXEC_EXECUTABLE}', MPIEXEC_MAX_NUMPROCS='${MPIEXEC_MAX_NUMPROCS}')")
 endif()
 
-# 10b. MPI straggler regression: early ranks keep doing useful tail work.
-add_executable(test_MPI_Tail_Work
-	test_MPI_Tail_Work.cpp)
-target_include_directories(test_MPI_Tail_Work PRIVATE ${GENERATED_DIR})
-target_link_libraries(test_MPI_Tail_Work
-	PRIVATE
-		lib_damascus_sun
-		MPI::MPI_CXX)
-target_compile_options(test_MPI_Tail_Work PUBLIC -Wall -pedantic)
-if(MPIEXEC_EXECUTABLE
-	AND MPIEXEC_NUMPROC_FLAG
-	AND DEFINED MPIEXEC_MAX_NUMPROCS
-	AND MPIEXEC_MAX_NUMPROCS GREATER_EQUAL 2)
-	add_test(NAME test_MPI_Tail_Work_2Ranks
-		COMMAND
-			${MPIEXEC_EXECUTABLE}
-			${MPIEXEC_NUMPROC_FLAG} 2
-			${MPIEXEC_PREFLAGS}
-			$<TARGET_FILE:test_MPI_Tail_Work>
-			${MPIEXEC_POSTFLAGS}
-		WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
-	set_tests_properties(test_MPI_Tail_Work_2Ranks PROPERTIES
-		PROCESSORS 2
-		RUN_SERIAL TRUE
-		TIMEOUT 10
-		LABELS "mpi;performance")
-else()
-	message(STATUS "Skipping two-rank MPI tail-work test: MPI launcher or explicit two-rank capacity is unavailable (MPIEXEC_EXECUTABLE='${MPIEXEC_EXECUTABLE}', MPIEXEC_MAX_NUMPROCS='${MPIEXEC_MAX_NUMPROCS}')")
-endif()
 
 # 11. Python workflow tests.
 find_package(Python3 COMPONENTS Interpreter QUIET)

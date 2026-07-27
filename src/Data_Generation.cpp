@@ -30,7 +30,6 @@
 #include "libphysica/Utilities.hpp"
 
 #include "obscura/Astronomy.hpp"
-#include "MPI_Tail_Work.hpp"
 #include "Snapshot_Heartbeat.hpp"
 #include "Snapshot_Shared_State.hpp"
 #include "version.hpp"
@@ -162,11 +161,11 @@ bool Build_Evaporation_Record(const TrajectoryBincount& bincount, int mpi_rank, 
 	rec.boundary_escape_observed = survival_valid && bincount.boundary_escape_observed;
 	rec.survival_valid = survival_valid;
 	rec.numerically_invalid_escape = numerically_invalid_escape;
-	// Normal evaporation output only accepts completed unbinding events. A
-	// captured trajectory that has not completed is invalid for this estimator,
-	// not a right-censored observation.
+	// The 5.2-AU rule defines the selected physical domain. Such a trajectory
+	// is excluded, not treated as a right-censored member of the sample.
 	rec.censored = false;
-	rec.truncated = false;
+	rec.truncated =
+	    bincount.termination_reason == TrajectoryTerminationReason::RadialDomainExceeded;
 	rec.termination_reason = bincount.termination_reason;
 	rec.max_free_energy_drift_eV = bincount.max_free_energy_drift_eV;
 	rec.max_free_energy_drift_rel = bincount.max_free_energy_drift_rel;
@@ -178,6 +177,13 @@ bool Build_Evaporation_Record(const TrajectoryBincount& bincount, int mpi_rank, 
 	rec.max_radius_after_capture_km = bincount.max_radius_after_capture_km;
 	rec.time_inside_sun_after_capture_sec = bincount.time_inside_sun_after_capture_sec;
 	rec.time_outside_sun_after_capture_sec = bincount.time_outside_sun_after_capture_sec;
+	rec.number_of_bound_exterior_arcs = bincount.number_of_bound_exterior_arcs;
+	rec.first_bound_exit_kepler_period_sec = bincount.first_bound_exit_kepler_period_sec;
+	rec.last_bound_exit_kepler_period_sec = bincount.last_bound_exit_kepler_period_sec;
+	rec.max_bound_exit_kepler_period_sec = bincount.max_bound_exit_kepler_period_sec;
+	rec.first_bound_exit_exterior_time_sec = bincount.first_bound_exit_exterior_time_sec;
+	rec.last_bound_exit_exterior_time_sec = bincount.last_bound_exit_exterior_time_sec;
+	rec.max_bound_exit_exterior_time_sec = bincount.max_bound_exit_exterior_time_sec;
 	return true;
 }
 
@@ -195,6 +201,7 @@ const char* Termination_Reason_Key(TrajectoryTerminationReason reason)
 		case TrajectoryTerminationReason::NumericalFailure: return "numerical_failure";
 		case TrajectoryTerminationReason::CaptureMode: return "capture_mode";
 		case TrajectoryTerminationReason::EnergyDriftEscape: return "energy_drift_escape";
+		case TrajectoryTerminationReason::RadialDomainExceeded: return "radial_domain_exceeded";
 		case TrajectoryTerminationReason::Unknown:
 		default: return "unknown";
 	}
@@ -219,6 +226,8 @@ const char* Diagnostic_Status(const EvaporationRecord& rec)
 {
 	if(rec.event_observed)
 		return "escaped";
+	if(rec.termination_reason == TrajectoryTerminationReason::RadialDomainExceeded)
+		return "radial_domain_excluded";
 	if(Is_Numerical_Termination(rec.termination_reason))
 		return "numerical_failure";
 	return "censored";
@@ -233,6 +242,16 @@ bool Make_Compact_Evaporation_Event(const EvaporationRecord& rec, CompactEvapora
 	event.trajectory_id = rec.trajectory_id;
 	event.completion_wall_time_sec = rec.completion_wall_time_sec;
 	event.lifetime_unbinding = rec.lifetime_unbinding;
+	event.r_capture_rsun = rec.r_first_negative_km / R_SUN_KM;
+	event.E_capture_eV = rec.E_first_negative_eV;
+	event.dE_capture_eV = rec.dE_first_negative_from_prev_eV;
+	event.number_of_bound_exterior_arcs = rec.number_of_bound_exterior_arcs;
+	event.first_bound_exit_kepler_period_sec = rec.first_bound_exit_kepler_period_sec;
+	event.last_bound_exit_kepler_period_sec = rec.last_bound_exit_kepler_period_sec;
+	event.max_bound_exit_kepler_period_sec = rec.max_bound_exit_kepler_period_sec;
+	event.first_bound_exit_exterior_time_sec = rec.first_bound_exit_exterior_time_sec;
+	event.last_bound_exit_exterior_time_sec = rec.last_bound_exit_exterior_time_sec;
+	event.max_bound_exit_exterior_time_sec = rec.max_bound_exit_exterior_time_sec;
 	return true;
 }
 
@@ -357,17 +376,29 @@ std::string Evaporation_Log_Path_From_Output_Dir(const std::string& output_dir)
 void Write_Evaporation_Log_File_Header(std::ofstream& file, double mass_gev, double sigma_cm2)
 {
 	file << "# DaMaSCUS-SUN evaporation times\n";
-	file << "# format_version = 3\n";
+	file << "# format_version = 5\n";
 	file << "# DM_mass_GeV = " << std::scientific << std::setprecision(6) << mass_gev << "\n";
 	file << "# DM_sigma_cm2 = " << std::scientific << std::setprecision(6) << sigma_cm2 << "\n";
 	file << "# sorted_by = lifetime_unbinding_sec rank trajectory_id\n";
-	file << "# rank trajectory_id lifetime_unbinding_sec\n";
+	file << "# rank trajectory_id lifetime_unbinding_sec r_capture_Rsun E_capture_eV dE_capture_eV"
+	     << " n_bound_exterior_arcs P_kepler_first_bound_exit_sec"
+	     << " P_kepler_last_bound_exit_sec P_kepler_max_bound_exit_sec"
+	     << " t_exterior_first_bound_exit_sec t_exterior_last_bound_exit_sec"
+	     << " t_exterior_max_bound_exit_sec\n";
 }
 
 void Write_Evaporation_Log_Event(std::ostream& file, const CompactEvaporationEvent& event)
 {
 	file << event.rank << "\t" << event.trajectory_id << "\t" << std::scientific << std::setprecision(10)
-	     << event.lifetime_unbinding << "\n";
+	     << event.lifetime_unbinding << "\t" << event.r_capture_rsun
+	     << "\t" << event.E_capture_eV << "\t" << event.dE_capture_eV
+	     << "\t" << event.number_of_bound_exterior_arcs
+	     << "\t" << event.first_bound_exit_kepler_period_sec
+	     << "\t" << event.last_bound_exit_kepler_period_sec
+	     << "\t" << event.max_bound_exit_kepler_period_sec
+	     << "\t" << event.first_bound_exit_exterior_time_sec
+	     << "\t" << event.last_bound_exit_exterior_time_sec
+	     << "\t" << event.max_bound_exit_exterior_time_sec << "\n";
 }
 
 bool Evaporation_Event_Order(const CompactEvaporationEvent& lhs, const CompactEvaporationEvent& rhs)
@@ -519,11 +550,12 @@ Simulation_Data::Simulation_Data(unsigned int sample_size, unsigned int max_traj
   number_of_trajectories(0), number_of_free_particles(0), number_of_reflected_particles(0), number_of_captured_particles(0),
   number_of_completed_outward_escapes(0),
   number_of_complete_evaporation_particles(0), number_of_censored_captured_particles(0),
+  number_of_radial_domain_excluded_particles(0),
   number_of_invalid_survival_captured_particles(0),
   number_of_initial_shift_failures(0), number_of_final_reflection_shift_failures(0), number_of_numerical_failures(0),
   number_of_computational_truncations(0),
   total_number_of_scatterings(0), average_number_of_scatterings(0.0),
-  mpi_sync_rounds(0), final_mpi_round_trajectories(0), mpi_tail_trajectories(0), capture_target_overshoot(0),
+  mpi_sync_rounds(0), final_mpi_round_trajectories(0), capture_target_overshoot(0),
   computing_time(0.0), early_stopped(false), early_stop_reason(SimulationStopReason::None),
   mpi_rank(0), mpi_processes(1), isoreflection_rings(iso_rings), minimum_speed_threshold(u_min),
   number_of_data_points(std::vector<unsigned long int>(iso_rings, 0)),
@@ -532,19 +564,11 @@ Simulation_Data::Simulation_Data(unsigned int sample_size, unsigned int max_traj
     MPI_Comm_size(MPI_COMM_WORLD, &mpi_processes);
     MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
 
-    if(max_trajectories == 0)
-        max_trajectories_per_rank = std::numeric_limits<unsigned long int>::max();  // no limit
-    else
-        max_trajectories_per_rank = (max_trajectories + mpi_processes - 1) / mpi_processes;
+	if(max_trajectories == 0)
+		max_trajectories_per_rank = std::numeric_limits<unsigned long int>::max();  // no limit
+	else
+		max_trajectories_per_rank = (max_trajectories + mpi_processes - 1) / mpi_processes;
 
-    captured_dt_hist.fill(0.0);
-    captured_v2dt_hist.fill(0.0);
-    not_captured_dt_hist.fill(0.0);
-    not_captured_v2dt_hist.fill(0.0);
-	captured_dt_sq_hist.fill(0.0);
-	captured_v2dt_sq_hist.fill(0.0);
-	not_captured_dt_sq_hist.fill(0.0);
-	not_captured_v2dt_sq_hist.fill(0.0);
 }
 
 void Simulation_Data::Configure(double initial_radius, unsigned int min_scattering, unsigned long int max_scattering, unsigned long int max_free_steps)
@@ -593,7 +617,6 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 		MPI_Bcast(&diagnostic_run_id, 1, MPI_UINT64_T, 0, MPI_COMM_WORLD);
 
 	auto time_start = std::chrono::steady_clock::now();
-	unsigned long int local_captured = 0;
 	unsigned long int local_total = 0;
 	bool initial_shift_failure_warning_emitted = false;
 
@@ -747,20 +770,21 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 	early_stopped = false;
 	early_stop_reason = SimulationStopReason::None;
 
-	unsigned long int global_captured = 0;
+	unsigned long int local_target_samples = 0;
+	unsigned long int global_target_samples = 0;
 	const bool unlimited_trajectory_budget =
 	    max_trajectories_per_rank == std::numeric_limits<unsigned long int>::max();
 	const std::vector<double> progress_milestones = {0.0, 0.01, 0.05, 0.10, 0.20, 0.40, 0.60, 0.80, 1.0};
 	size_t next_progress_milestone = 0;
 	bool progress_line_printed = false;
-	unsigned long int last_progress_line_captured = 0;
-	auto print_progress_update = [&](unsigned long int captured_particles, bool force)
+	unsigned long int last_progress_line_samples = 0;
+	auto print_progress_update = [&](unsigned long int accepted_samples, bool force)
 	{
 		if(mpi_rank != 0)
 			return;
 
 		const double denominator = static_cast<double>(std::max(1u, requested_captured_particles));
-		const double progress = std::min(1.0, static_cast<double>(captured_particles) / denominator);
+		const double progress = std::min(1.0, static_cast<double>(accepted_samples) / denominator);
 
 		bool should_print = force;
 		while(next_progress_milestone < progress_milestones.size()
@@ -771,22 +795,24 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 		}
 		if(!should_print)
 			return;
-		if(force && progress_line_printed && captured_particles == last_progress_line_captured)
+		if(force && progress_line_printed && accepted_samples == last_progress_line_samples)
 			return;
 
 		const double time_elapsed = elapsed_since_start();
-		const double captured_particle_rate = (time_elapsed > 0.0) ? static_cast<double>(captured_particles) / time_elapsed : 0.0;
+		const double sample_rate = (time_elapsed > 0.0) ? static_cast<double>(accepted_samples) / time_elapsed : 0.0;
 		libphysica::Print_Progress_Bar(progress, 0, 44, time_elapsed);
-		std::cout << " captured_particles=" << captured_particles << "/" << requested_captured_particles
-		          << " captured_particle_rate[1/s]=" << libphysica::Round(captured_particle_rate)
+		std::cout << (capture_mode ? " captured_particles=" : " valid_evaporation_samples=")
+		          << accepted_samples << "/" << requested_captured_particles
+		          << (capture_mode ? " captured_particle_rate[1/s]=" : " valid_evaporation_sample_rate[1/s]=")
+		          << libphysica::Round(sample_rate)
 		          << std::endl;
 		progress_line_printed = true;
-		last_progress_line_captured = captured_particles;
+		last_progress_line_samples = accepted_samples;
 	};
-	print_progress_update(global_captured, true);
+	print_progress_update(global_target_samples, true);
 
 	const unsigned long int mpi_sync_interval = capture_mode ? CAPTURE_MODE_MPI_SYNC_INTERVAL : normal_mode_mpi_sync_interval;
-	auto select_trajectory_batch = [&](unsigned long int remaining_captures, unsigned long int& total_assigned)
+	auto select_trajectory_batch = [&](unsigned long int remaining_samples, unsigned long int& total_assigned)
 	{
 		total_assigned = 0;
 		unsigned long int local_round_capacity = 0;
@@ -805,7 +831,12 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 		if(total_round_capacity == 0)
 			return 0UL;
 
-		const unsigned long int attempt_budget = capture_mode ? std::min(remaining_captures, total_round_capacity) : total_round_capacity;
+		// A trajectory can contribute at most one accepted target sample.
+		// Limiting every round to the remaining target guarantees that the final
+		// global batch cannot overshoot even when invalid or radial-domain
+		// exclusions require replacement trajectories.
+		const unsigned long int attempt_budget =
+		    std::min(remaining_samples, total_round_capacity);
 		unsigned long int local_batch = 0;
 		for(int rank = 0; rank < mpi_processes; rank++)
 		{
@@ -819,12 +850,13 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 		return local_batch;
 	};
 
-	while(global_captured < requested_captured_particles)
+	while(global_target_samples < requested_captured_particles)
 	{
-		const unsigned long int remaining_captures = requested_captured_particles - global_captured;
+		const unsigned long int remaining_samples =
+		    requested_captured_particles - global_target_samples;
 		unsigned long int assigned_trajectories = 0;
 		const unsigned long int local_trajectories_this_round =
-		    select_trajectory_batch(remaining_captures, assigned_trajectories);
+		    select_trajectory_batch(remaining_samples, assigned_trajectories);
 		if(assigned_trajectories == 0)
 		{
 			early_stopped = true;
@@ -881,14 +913,26 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 			if(trajectory.bincount.is_captured)
 			{
 				number_of_captured_particles++;
-				local_captured++;
-				if(!capture_mode)
+				const bool accepted_evaporation_sample =
+				    !capture_mode
+				    && trajectory.bincount.survival_valid
+				    && trajectory.bincount.event_observed
+				    && trajectory.bincount.termination_reason
+				       == TrajectoryTerminationReason::OutwardEscape;
+				if(capture_mode)
+					local_target_samples++;
+				else if(accepted_evaporation_sample)
 				{
-					if(trajectory.bincount.event_observed)
-						number_of_complete_evaporation_particles++;
-					else
-						number_of_invalid_survival_captured_particles++;
+					number_of_complete_evaporation_particles++;
+					local_target_samples++;
 				}
+				else if(trajectory.bincount.termination_reason
+				        == TrajectoryTerminationReason::RadialDomainExceeded)
+				{
+					number_of_radial_domain_excluded_particles++;
+				}
+				else
+					number_of_invalid_survival_captured_particles++;
 
 				if(!capture_mode)
 				{
@@ -910,12 +954,15 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 						replay.rng_state_before_simulation = rng_state_before_simulation;
 						trajectory_replay_records.push_back(std::move(replay));
 					}
-					for(int b = 0; b < NUM_BINS; b++)
+					if(accepted_evaporation_sample)
 					{
-						captured_dt_hist[b]   += trajectory.bincount.dt_hist[b];
-						captured_v2dt_hist[b] += trajectory.bincount.v2dt_hist[b];
-						captured_dt_sq_hist[b]   += trajectory.bincount.dt_hist[b] * trajectory.bincount.dt_hist[b];
-						captured_v2dt_sq_hist[b] += trajectory.bincount.v2dt_hist[b] * trajectory.bincount.v2dt_hist[b];
+						for(std::size_t b = 0; b < TOTAL_BINS; b++)
+						{
+							captured_dt_hist[b]   += trajectory.bincount.dt_hist[b];
+							captured_v2dt_hist[b] += trajectory.bincount.v2dt_hist[b];
+							captured_dt_sq_hist[b]   += trajectory.bincount.dt_hist[b] * trajectory.bincount.dt_hist[b];
+							captured_v2dt_sq_hist[b] += trajectory.bincount.v2dt_hist[b] * trajectory.bincount.v2dt_hist[b];
+						}
 					}
 
 					EvaporationRecord rec;
@@ -937,7 +984,7 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 				number_of_completed_outward_escapes++;
 				if(!capture_mode)
 				{
-					for(int b = 0; b < NUM_BINS; b++)
+					for(std::size_t b = 0; b < TOTAL_BINS; b++)
 					{
 						not_captured_dt_hist[b]   += trajectory.bincount.dt_hist[b];
 						not_captured_v2dt_hist[b] += trajectory.bincount.v2dt_hist[b];
@@ -974,7 +1021,13 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 
 			if(snapshot_state)
 			{
-				const bool count_as_captured_bincount_sample = (!capture_mode && trajectory.bincount.is_captured);
+				const bool count_as_captured_bincount_sample =
+				    (!capture_mode
+				     && trajectory.bincount.is_captured
+				     && trajectory.bincount.survival_valid
+				     && trajectory.bincount.event_observed
+				     && trajectory.bincount.termination_reason
+				        == TrajectoryTerminationReason::OutwardEscape);
 				const bool count_as_not_captured_bincount_sample = (!capture_mode && completed_outward_escape && !trajectory.bincount.is_captured);
 				snapshot_state->RecordCompletedTrajectory(
 					trajectory.bincount,
@@ -987,28 +1040,12 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 		for(unsigned long int trajectory_in_round = 0; trajectory_in_round < local_trajectories_this_round; trajectory_in_round++)
 			simulate_one_trajectory();
 
-		// A blocking reduction here makes every early rank idle behind the rank
-		// whose final scheduled trajectory has the longest tail. In normal mode,
-		// rendezvous nonblockingly and use that tail time for more independent
-		// trajectories. All extra results are included in the reduction below.
-		if(!capture_mode)
-		{
-			const unsigned long int extra_capacity =
-			    (local_total < max_trajectories_per_rank)
-			    ? (max_trajectories_per_rank - local_total)
-			    : 0UL;
-			mpi_tail_trajectories += Perform_MPI_Tail_Work(
-				MPI_COMM_WORLD,
-				extra_capacity,
-				simulate_one_trajectory);
-		}
-
 		const std::array<unsigned long int, 5> local_progress = {
-		    local_captured, number_of_trajectories, number_of_initial_shift_failures,
+		    local_target_samples, number_of_trajectories, number_of_initial_shift_failures,
 		    number_of_numerical_failures, number_of_computational_truncations};
 		std::array<unsigned long int, 5> global_progress = {{0, 0, 0, 0, 0}};
 		MPI_Allreduce(local_progress.data(), global_progress.data(), static_cast<int>(global_progress.size()), MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
-		global_captured = global_progress[0];
+		global_target_samples = global_progress[0];
 		const unsigned long int global_attempted_trajectories = global_progress[1];
 		const unsigned long int global_initial_shift_failures = global_progress[2];
 		const unsigned long int global_numerical_failures = global_progress[3];
@@ -1061,13 +1098,13 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 			}
 		}
 
-		print_progress_update(global_captured, false);
+		print_progress_update(global_target_samples, false);
 	}
-	capture_target_overshoot = (global_captured > requested_captured_particles)
-	                         ? global_captured - requested_captured_particles
+	capture_target_overshoot = (global_target_samples > requested_captured_particles)
+	                         ? global_target_samples - requested_captured_particles
 	                         : 0UL;
 
-	if(global_captured < requested_captured_particles)
+	if(global_target_samples < requested_captured_particles)
 	{
 		early_stopped = true;
 		if(early_stop_reason == SimulationStopReason::None)
@@ -1088,7 +1125,7 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 			snapshot_heartbeat->FinalizeAfterAllRanksDone(final_snapshot_elapsed);
 	}
 
-	print_progress_update(global_captured, global_captured > 0 || !early_stopped);
+	print_progress_update(global_target_samples, global_target_samples > 0 || !early_stopped);
 	if(mpi_rank == 0)
 		std::cout << std::endl;
 	MPI_Barrier(MPI_COMM_WORLD);
@@ -1098,15 +1135,14 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 {
 	MPI_Trace_Point(mpi_rank, "enter Perform_MPI_Reductions");
-	std::array<unsigned long int, 8> primary_counters = {{
+	std::array<unsigned long int, 7> primary_counters = {{
 	    number_of_trajectories,
 	    number_of_captured_particles,
 	    number_of_completed_outward_escapes,
 	    number_of_initial_shift_failures,
 	    number_of_final_reflection_shift_failures,
 	    number_of_numerical_failures,
-	    number_of_computational_truncations,
-	    mpi_tail_trajectories}};
+	    number_of_computational_truncations}};
 	MPI_Trace_Point(mpi_rank, "before allreduce primary counters");
 	MPI_Allreduce(MPI_IN_PLACE, primary_counters.data(), static_cast<int>(primary_counters.size()), MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
 	number_of_trajectories = primary_counters[0];
@@ -1116,7 +1152,6 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 	number_of_final_reflection_shift_failures = primary_counters[4];
 	number_of_numerical_failures = primary_counters[5];
 	number_of_computational_truncations = primary_counters[6];
-	mpi_tail_trajectories = primary_counters[7];
 	MPI_Trace_Point(mpi_rank, "before allreduce total scatterings");
 	MPI_Allreduce(MPI_IN_PLACE, &total_number_of_scatterings, 1, MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
 	average_number_of_scatterings = (number_of_trajectories > 0)
@@ -1137,11 +1172,12 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 		return;
 	}
 
-	std::array<unsigned long int, 5> result_counters = {{
+	std::array<unsigned long int, 6> result_counters = {{
 	    number_of_free_particles,
 	    number_of_reflected_particles,
 	    number_of_complete_evaporation_particles,
 	    number_of_censored_captured_particles,
+	    number_of_radial_domain_excluded_particles,
 	    number_of_invalid_survival_captured_particles}};
 	MPI_Trace_Point(mpi_rank, "before allreduce result counters");
 	MPI_Allreduce(MPI_IN_PLACE, result_counters.data(), static_cast<int>(result_counters.size()), MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
@@ -1149,25 +1185,26 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 	number_of_reflected_particles = result_counters[1];
 	number_of_complete_evaporation_particles = result_counters[2];
 	number_of_censored_captured_particles = result_counters[3];
-	number_of_invalid_survival_captured_particles = result_counters[4];
+	number_of_radial_domain_excluded_particles = result_counters[4];
+	number_of_invalid_survival_captured_particles = result_counters[5];
 
-	// Reduce bincount histograms across all ranks
+	const int histogram_count = static_cast<int>(TOTAL_BINS);
 	MPI_Trace_Point(mpi_rank, "before allreduce captured_dt_hist");
-	MPI_Allreduce(MPI_IN_PLACE, captured_dt_hist.data(), NUM_BINS, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+	MPI_Allreduce(MPI_IN_PLACE, captured_dt_hist.data(), histogram_count, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 	MPI_Trace_Point(mpi_rank, "before allreduce captured_v2dt_hist");
-	MPI_Allreduce(MPI_IN_PLACE, captured_v2dt_hist.data(), NUM_BINS, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+	MPI_Allreduce(MPI_IN_PLACE, captured_v2dt_hist.data(), histogram_count, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 	MPI_Trace_Point(mpi_rank, "before allreduce not_captured_dt_hist");
-	MPI_Allreduce(MPI_IN_PLACE, not_captured_dt_hist.data(), NUM_BINS, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+	MPI_Allreduce(MPI_IN_PLACE, not_captured_dt_hist.data(), histogram_count, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 	MPI_Trace_Point(mpi_rank, "before allreduce not_captured_v2dt_hist");
-	MPI_Allreduce(MPI_IN_PLACE, not_captured_v2dt_hist.data(), NUM_BINS, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+	MPI_Allreduce(MPI_IN_PLACE, not_captured_v2dt_hist.data(), histogram_count, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 	MPI_Trace_Point(mpi_rank, "before allreduce captured_dt_sq_hist");
-	MPI_Allreduce(MPI_IN_PLACE, captured_dt_sq_hist.data(), NUM_BINS, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+	MPI_Allreduce(MPI_IN_PLACE, captured_dt_sq_hist.data(), histogram_count, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 	MPI_Trace_Point(mpi_rank, "before allreduce captured_v2dt_sq_hist");
-	MPI_Allreduce(MPI_IN_PLACE, captured_v2dt_sq_hist.data(), NUM_BINS, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+	MPI_Allreduce(MPI_IN_PLACE, captured_v2dt_sq_hist.data(), histogram_count, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 	MPI_Trace_Point(mpi_rank, "before allreduce not_captured_dt_sq_hist");
-	MPI_Allreduce(MPI_IN_PLACE, not_captured_dt_sq_hist.data(), NUM_BINS, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+	MPI_Allreduce(MPI_IN_PLACE, not_captured_dt_sq_hist.data(), histogram_count, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 	MPI_Trace_Point(mpi_rank, "before allreduce not_captured_v2dt_sq_hist");
-	MPI_Allreduce(MPI_IN_PLACE, not_captured_v2dt_sq_hist.data(), NUM_BINS, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+	MPI_Allreduce(MPI_IN_PLACE, not_captured_v2dt_sq_hist.data(), histogram_count, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 	MPI_Trace_Point(mpi_rank, "after histogram allreduces");
 	if(evaporation_diagnostics_enabled)
 	{
@@ -1177,8 +1214,8 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 		MPI_Gather(&local_evap_count, 1, MPI_INT, mpi_rank == 0 ? evap_counts.data() : nullptr, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
 		constexpr int EVAPORATION_MPI_INT_FIELDS = 8;
-		constexpr int EVAPORATION_MPI_UINT_FIELDS = 5;
-		constexpr int EVAPORATION_MPI_DOUBLE_FIELDS = 26;
+		constexpr int EVAPORATION_MPI_UINT_FIELDS = 6;
+		constexpr int EVAPORATION_MPI_DOUBLE_FIELDS = 32;
 		std::vector<int> local_evap_ints(local_evap_count * EVAPORATION_MPI_INT_FIELDS);
 		std::vector<unsigned long long> local_evap_uints(local_evap_count * EVAPORATION_MPI_UINT_FIELDS);
 		std::vector<double> local_evap_doubles(local_evap_count * EVAPORATION_MPI_DOUBLE_FIELDS);
@@ -1198,6 +1235,7 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 			local_evap_uints[EVAPORATION_MPI_UINT_FIELDS*i + 2] = static_cast<unsigned long long>(evaporation_records[i].number_of_bound_to_unbound);
 			local_evap_uints[EVAPORATION_MPI_UINT_FIELDS*i + 3] = static_cast<unsigned long long>(evaporation_records[i].number_of_recaptures);
 			local_evap_uints[EVAPORATION_MPI_UINT_FIELDS*i + 4] = static_cast<unsigned long long>(evaporation_records[i].number_of_integrator_steps_after_capture);
+			local_evap_uints[EVAPORATION_MPI_UINT_FIELDS*i + 5] = static_cast<unsigned long long>(evaporation_records[i].number_of_bound_exterior_arcs);
 
 			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i] = evaporation_records[i].completion_wall_time_sec;
 			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 1] = evaporation_records[i].t_evap;
@@ -1225,6 +1263,12 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 23] = evaporation_records[i].max_radius_after_capture_km;
 			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 24] = evaporation_records[i].time_inside_sun_after_capture_sec;
 			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 25] = evaporation_records[i].time_outside_sun_after_capture_sec;
+			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 26] = evaporation_records[i].first_bound_exit_kepler_period_sec;
+			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 27] = evaporation_records[i].last_bound_exit_kepler_period_sec;
+			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 28] = evaporation_records[i].max_bound_exit_kepler_period_sec;
+			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 29] = evaporation_records[i].first_bound_exit_exterior_time_sec;
+			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 30] = evaporation_records[i].last_bound_exit_exterior_time_sec;
+			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 31] = evaporation_records[i].max_bound_exit_exterior_time_sec;
 		}
 
 		std::vector<int> recv_counts, displacements;
@@ -1302,6 +1346,7 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 				evaporation_records[i].number_of_bound_to_unbound = static_cast<unsigned long int>(global_evap_uints[EVAPORATION_MPI_UINT_FIELDS*i + 2]);
 				evaporation_records[i].number_of_recaptures = static_cast<unsigned long int>(global_evap_uints[EVAPORATION_MPI_UINT_FIELDS*i + 3]);
 				evaporation_records[i].number_of_integrator_steps_after_capture = static_cast<unsigned long int>(global_evap_uints[EVAPORATION_MPI_UINT_FIELDS*i + 4]);
+				evaporation_records[i].number_of_bound_exterior_arcs = static_cast<unsigned long int>(global_evap_uints[EVAPORATION_MPI_UINT_FIELDS*i + 5]);
 				evaporation_records[i].t_first_unbinding_scatter = global_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 14];
 				evaporation_records[i].r_first_unbinding_km = global_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 15];
 				evaporation_records[i].E_first_unbinding_eV = global_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 16];
@@ -1314,6 +1359,12 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 				evaporation_records[i].max_radius_after_capture_km = global_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 23];
 				evaporation_records[i].time_inside_sun_after_capture_sec = global_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 24];
 				evaporation_records[i].time_outside_sun_after_capture_sec = global_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 25];
+				evaporation_records[i].first_bound_exit_kepler_period_sec = global_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 26];
+				evaporation_records[i].last_bound_exit_kepler_period_sec = global_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 27];
+				evaporation_records[i].max_bound_exit_kepler_period_sec = global_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 28];
+				evaporation_records[i].first_bound_exit_exterior_time_sec = global_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 29];
+				evaporation_records[i].last_bound_exit_exterior_time_sec = global_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 30];
+				evaporation_records[i].max_bound_exit_exterior_time_sec = global_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 31];
 			}
 			compact_evaporation_events.reserve(evaporation_records.size());
 			for(const auto& record : evaporation_records)
@@ -1492,13 +1543,16 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 		f << "# unresolved_not_captured_trajectories = " << unresolved_not_captured_trajectories() << "\n";
 		f << "# numerical_failures = " << number_of_numerical_failures << "\n";
 		f << "# computational_truncations = " << number_of_computational_truncations << "\n";
+		f << "# accepted_evaporation_samples = " << number_of_complete_evaporation_particles << "\n";
+		f << "# radial_domain_excluded_captured = " << number_of_radial_domain_excluded_particles << "\n";
+		f << "# invalid_survival_captured = " << number_of_invalid_survival_captured_particles << "\n";
 		f << "# initial_shift_failures = " << number_of_initial_shift_failures << "\n";
 		f << "# final_reflection_shift_failures = " << number_of_final_reflection_shift_failures << "\n";
 		f << "# normal_mode_mpi_sync_interval = " << normal_mode_mpi_sync_interval << "\n";
 		f << "# mpi_sync_rounds = " << mpi_sync_rounds << "\n";
 		f << "# final_mpi_round_trajectories = " << final_mpi_round_trajectories << "\n";
-		f << "# mpi_tail_trajectories = " << mpi_tail_trajectories << "\n";
 		f << "# capture_target_overshoot = " << capture_target_overshoot << "\n";
+		f << "# sample_target_type = valid_complete_evaporation_within_5p2_AU\n";
 		f << "# total_scatterings = " << total_number_of_scatterings << "\n";
 		f << "# average_scatterings = " << std::setprecision(12) << average_number_of_scatterings << "\n";
 		f << "# simulation_time_seconds = " << std::setprecision(12) << computing_time << "\n";
@@ -1527,13 +1581,23 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 		write_header(f);
 		const unsigned long int physical_not_captured_particles = number_of_completed_outward_escapes;
 		const unsigned long int excluded_not_captured_particles = unresolved_not_captured_trajectories();
+		f << "# captured_bincount_samples = " << number_of_complete_evaporation_particles << "\n";
 		f << "# not_captured_bincount_samples = " << physical_not_captured_particles << "\n";
 		if(excluded_not_captured_particles > 0)
 			f << "# excluded_incomplete_not_captured = " << excluded_not_captured_particles << "\n";
-		f << "# bin_index  cap_dt[s]  cap_v2dt[km2/s]  cap_err_dt[s]  cap_err_v2dt[km2/s]  not_cap_dt[s]  not_cap_v2dt[km2/s]  not_cap_err_dt[s]  not_cap_err_v2dt[km2/s]\n";
-		double N_cap = static_cast<double>(number_of_captured_particles);
+		f << "# base_grid_bins = " << NUM_BINS << "\n";
+		f << "# exterior_log_bins = " << EXTERIOR_LOG_BINS << "\n";
+		f << "# total_radial_bins = " << TOTAL_BINS << "\n";
+		f << "# radial_grid = uniform_inner_log_exterior_v1\n";
+		f << "# radial_bin_width_Rsun = " << std::scientific << std::setprecision(10)
+		  << BIN_WIDTH_KM / R_SUN_KM << "\n";
+		f << "# radial_inner_extent_Rsun = " << BIN_MAX_KM / R_SUN_KM << "\n";
+		f << "# radial_domain_max_AU = " << RADIAL_DOMAIN_MAX_AU << "\n";
+		f << "# radial_extent_Rsun = " << RADIAL_DOMAIN_MAX_RSUN << "\n";
+		f << "# bin_index  r_lower_Rsun  r_upper_Rsun  cap_dt[s]  cap_v2dt[km2/s]  cap_err_dt[s]  cap_err_v2dt[km2/s]  not_cap_dt[s]  not_cap_v2dt[km2/s]  not_cap_err_dt[s]  not_cap_err_v2dt[km2/s]\n";
+		double N_cap = static_cast<double>(number_of_complete_evaporation_particles);
 		double N_nc = static_cast<double>(physical_not_captured_particles);
-		for(int b = 0; b < NUM_BINS; b++)
+		for(std::size_t b = 0; b < TOTAL_BINS; b++)
 		{
 			double cap_err_dt = Snapshot_Bin_Error(captured_dt_hist[b], captured_dt_sq_hist[b], N_cap);
 			double cap_err_v2dt = Snapshot_Bin_Error(captured_v2dt_hist[b], captured_v2dt_sq_hist[b], N_cap);
@@ -1541,6 +1605,8 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 			double not_cap_err_v2dt = Snapshot_Bin_Error(not_captured_v2dt_hist[b], not_captured_v2dt_sq_hist[b], N_nc);
 
 			f << b << "\t" << std::scientific << std::setprecision(10)
+			  << BincountBinLowerKm(b) / R_SUN_KM << "\t"
+			  << BincountBinUpperKm(b) / R_SUN_KM << "\t"
 			  << captured_dt_hist[b] << "\t" << captured_v2dt_hist[b]
 			  << "\t" << cap_err_dt << "\t" << cap_err_v2dt
 			  << "\t" << not_captured_dt_hist[b] << "\t" << not_captured_v2dt_hist[b]
@@ -1573,6 +1639,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 		bool event_count_invariant = true;
 		bool trace_selection_invariant = true;
 		bool replay_state_invariant = true;
+		bool bound_exit_orbit_invariant = true;
 		std::sort(trajectory_diagnostic_events.begin(), trajectory_diagnostic_events.end(),
 		          [](const TrajectoryDiagnosticEvent& lhs, const TrajectoryDiagnosticEvent& rhs) {
 			          if(lhs.rank != rhs.rank) return lhs.rank < rhs.rank;
@@ -1625,15 +1692,21 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 				   || std::fabs(escape_radius_rsun - In_Units(initial_and_final_radius, rSun)) > 1.0e-10)
 					escape_radius_invariant = false;
 			}
-			const double observation_end = rec.event_observed ? rec.t_boundary_escape : rec.t_termination;
-			const double observed_duration = observation_end - rec.t_capture;
-			const double residence_duration = rec.time_inside_sun_after_capture_sec
-			                                + rec.time_outside_sun_after_capture_sec;
-			const double residence_tolerance = std::max(1.0e-6, 1.0e-10 * std::fabs(observed_duration));
-			if(!std::isfinite(observed_duration) || observed_duration < 0.0
-			   || !std::isfinite(residence_duration)
-			   || std::fabs(residence_duration - observed_duration) > residence_tolerance)
-				residence_time_invariant = false;
+			// Excluded/numerically invalid trajectories intentionally stop
+			// before a complete observation window exists. The residence-time
+			// invariant describes only records eligible for survival analysis.
+			if(rec.survival_valid)
+			{
+				const double observation_end = rec.event_observed ? rec.t_boundary_escape : rec.t_termination;
+				const double observed_duration = observation_end - rec.t_capture;
+				const double residence_duration = rec.time_inside_sun_after_capture_sec
+				                                + rec.time_outside_sun_after_capture_sec;
+				const double residence_tolerance = std::max(1.0e-6, 1.0e-10 * std::fabs(observed_duration));
+				if(!std::isfinite(observed_duration) || observed_duration < 0.0
+				   || !std::isfinite(residence_duration)
+				   || std::fabs(residence_duration - observed_duration) > residence_tolerance)
+					residence_time_invariant = false;
+			}
 			if(expected_trace)
 			{
 				const auto event_it = events_by_key.find(key);
@@ -1667,6 +1740,37 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 			}
 			if(rec.event_observed != (completed_keys.count(key) != 0))
 				legacy_reconciliation = false;
+			if(rec.number_of_bound_exterior_arcs == 0)
+			{
+				if(std::isfinite(rec.first_bound_exit_kepler_period_sec)
+				   || std::isfinite(rec.last_bound_exit_kepler_period_sec)
+				   || std::isfinite(rec.max_bound_exit_kepler_period_sec)
+				   || std::isfinite(rec.first_bound_exit_exterior_time_sec)
+				   || std::isfinite(rec.last_bound_exit_exterior_time_sec)
+				   || std::isfinite(rec.max_bound_exit_exterior_time_sec))
+					bound_exit_orbit_invariant = false;
+			}
+			else
+			{
+				const double periods[] = {
+				    rec.first_bound_exit_kepler_period_sec,
+				    rec.last_bound_exit_kepler_period_sec,
+				    rec.max_bound_exit_kepler_period_sec,
+				    rec.first_bound_exit_exterior_time_sec,
+				    rec.last_bound_exit_exterior_time_sec,
+				    rec.max_bound_exit_exterior_time_sec};
+				for(double value : periods)
+				if(!std::isfinite(value) || value <= 0.0)
+					bound_exit_orbit_invariant = false;
+				if(rec.first_bound_exit_kepler_period_sec > rec.max_bound_exit_kepler_period_sec
+				   || rec.last_bound_exit_kepler_period_sec > rec.max_bound_exit_kepler_period_sec
+				   || rec.first_bound_exit_exterior_time_sec > rec.max_bound_exit_exterior_time_sec
+				   || rec.last_bound_exit_exterior_time_sec > rec.max_bound_exit_exterior_time_sec
+				   || rec.first_bound_exit_exterior_time_sec > rec.first_bound_exit_kepler_period_sec
+				   || rec.last_bound_exit_exterior_time_sec > rec.last_bound_exit_kepler_period_sec
+				   || rec.max_bound_exit_exterior_time_sec > rec.max_bound_exit_kepler_period_sec)
+					bound_exit_orbit_invariant = false;
+			}
 		}
 		if(completed_keys.size() != number_of_complete_evaporation_particles)
 			legacy_reconciliation = false;
@@ -1688,7 +1792,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 		{
 			std::ofstream metadata(output_dir + "/run_metadata.json");
 			metadata << "{\n"
-			         << "  \"schema_version\": \"trajectory-diagnostic-v2\",\n"
+			         << "  \"schema_version\": \"trajectory-diagnostic-v3\",\n"
 			         << "  \"run_id\": \"" << diagnostic_run_id << "\",\n"
 			         << "  \"git_branch\": \"" << GIT_BRANCH << "\",\n"
 			         << "  \"git_commit\": \"" << git_commit << "\",\n"
@@ -1709,6 +1813,10 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 			         << "  \"rk_absolute_max_step_s\": " << RK45AbsoluteMaxStepSec() << ",\n"
 			         << "  \"bincount_integration\": \"" << BincountIntegrationScheme() << "\",\n"
 			         << "  \"bincount_dense_position_tolerance_km\": " << BincountDensePositionToleranceKm() << ",\n"
+			         << "  \"radial_grid\": \"uniform_inner_log_exterior_v1\",\n"
+			         << "  \"radial_inner_extent_Rsun\": " << BIN_MAX_KM / R_SUN_KM << ",\n"
+			         << "  \"radial_exterior_log_bins\": " << EXTERIOR_LOG_BINS << ",\n"
+			         << "  \"radial_domain_max_AU\": " << RADIAL_DOMAIN_MAX_AU << ",\n"
 			         << "  \"interpolation_points\": " << trajectory_diagnostic_config.interpolation_points << ",\n"
 			         << "  \"max_optical_depth_step\": " << NormalModeMaxOpticalDepthStep() << ",\n"
 			         << "  \"optical_depth_relative_tolerance\": " << OpticalDepthRelativeTolerance() << ",\n"
@@ -1717,6 +1825,8 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 			         << "  \"length_unit\": \"Rsun\",\n"
 			         << "  \"velocity_unit\": \"km/s\",\n"
 			         << "  \"angular_momentum_unit\": \"km^2/s\",\n"
+			         << "  \"bound_exit_period_definition\": \"point-mass osculating Kepler period at a negative-energy outward crossing of 1.1 Rsun\",\n"
+			         << "  \"bound_exit_exterior_time_definition\": \"analytic travel time from the outward 1.1-Rsun crossing through apoapsis to the inbound 1.1-Rsun crossing\",\n"
 			         << "  \"n_scatter_total_definition\": \"all trajectory scatters, including scatters before first capture\",\n"
 			         << "  \"stop_conditions\": {\"max_free_steps\": " << maximum_free_time_steps
 			         << ", \"max_scatterings\": " << maximum_number_of_scatterings << "},\n"
@@ -1733,6 +1843,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 			         << "  \"event_count_invariant\": " << (event_count_invariant ? "true" : "false") << ",\n"
 			         << "  \"trace_selection_invariant\": " << (trace_selection_invariant ? "true" : "false") << ",\n"
 			         << "  \"replay_state_invariant\": " << (replay_state_invariant ? "true" : "false") << ",\n"
+			         << "  \"bound_exit_orbit_invariant\": " << (bound_exit_orbit_invariant ? "true" : "false") << ",\n"
 			         << "  \"legacy_evaporation_reconciliation\": " << (legacy_reconciliation ? "true" : "false") << "\n"
 			         << "}\n";
 		}
@@ -1749,7 +1860,10 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 			        << "\tr_capture_Rsun\tE_capture_eV\tr_first_unbinding_Rsun\tE_first_unbinding_eV"
 			        << "\tr_final_unbinding_Rsun\tE_final_unbinding_eV\tr_escape_Rsun\tvr_escape_km_s\tE_escape_eV"
 			        << "\tn_scatter_total\tn_bound_to_unbound\tn_recapture\tmin_energy_after_capture_eV\tmax_r_Rsun"
-			        << "\ttime_inside_sun_s\ttime_outside_sun_s\tn_integrator_steps\tmax_abs_ballistic_energy_drift_eV"
+			        << "\ttime_inside_sun_s\ttime_outside_sun_s\tn_bound_exterior_arcs"
+			        << "\tP_kepler_first_bound_exit_s\tP_kepler_last_bound_exit_s\tP_kepler_max_bound_exit_s"
+			        << "\tt_exterior_first_bound_exit_s\tt_exterior_last_bound_exit_s\tt_exterior_max_bound_exit_s"
+			        << "\tn_integrator_steps\tmax_abs_ballistic_energy_drift_eV"
 			        << "\tmax_scaled_ballistic_energy_drift\ttrace_written"
 			        << "\treplay_initial_time_s\treplay_initial_x_km\treplay_initial_y_km\treplay_initial_z_km"
 			        << "\treplay_initial_vx_km_s\treplay_initial_vy_km_s\treplay_initial_vz_km_s"
@@ -1788,6 +1902,13 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 				        << rec.number_of_recaptures << '\t' << rec.min_energy_after_capture_eV << '\t'
 				        << rec.max_radius_after_capture_km / R_SUN_KM << '\t'
 				        << rec.time_inside_sun_after_capture_sec << '\t' << rec.time_outside_sun_after_capture_sec << '\t'
+				        << rec.number_of_bound_exterior_arcs << '\t'
+				        << rec.first_bound_exit_kepler_period_sec << '\t'
+				        << rec.last_bound_exit_kepler_period_sec << '\t'
+				        << rec.max_bound_exit_kepler_period_sec << '\t'
+				        << rec.first_bound_exit_exterior_time_sec << '\t'
+				        << rec.last_bound_exit_exterior_time_sec << '\t'
+				        << rec.max_bound_exit_exterior_time_sec << '\t'
 				        << rec.number_of_integrator_steps_after_capture << '\t' << rec.max_free_energy_drift_eV << '\t'
 				        << rec.max_free_energy_drift_rel << '\t' << (traced ? 1 : 0) << '\t'
 				        << (traced ? replay->initial_time_s : std::numeric_limits<double>::quiet_NaN());
@@ -1824,7 +1945,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 
 		if(!unique_keys || !time_invariants || !legacy_reconciliation || !escape_radius_invariant
 		   || !residence_time_invariant || !event_sequence_invariant || !event_count_invariant
-		   || !trace_selection_invariant || !replay_state_invariant)
+		   || !trace_selection_invariant || !replay_state_invariant || !bound_exit_orbit_invariant)
 			std::cerr << "Warning in Write_Output_Files(): trajectory diagnostic invariant check failed; inspect run_metadata.json" << std::endl;
 	}
 
@@ -1957,7 +2078,6 @@ void Simulation_Data::Print_Summary(unsigned int mpi_rank)
 				  << "Normal-mode MPI sync interval:\t" << normal_mode_mpi_sync_interval << std::endl
 				  << "MPI sync rounds:\t\t" << mpi_sync_rounds << std::endl
 				  << "Final MPI round trajectories:\t" << final_mpi_round_trajectories << std::endl
-				  << "MPI tail trajectories:\t\t" << mpi_tail_trajectories << std::endl
 				  << "Capture target overshoot:\t" << capture_target_overshoot << std::endl
 				  << "Total # of scatterings:\t" << total_number_of_scatterings << std::endl
 				  << "Numerical failure count:\t" << number_of_numerical_failures << std::endl
@@ -1967,6 +2087,7 @@ void Simulation_Data::Print_Summary(unsigned int mpi_rank)
 				  << "Numerical failure rate:\t\t" << std::fixed << std::setprecision(6) << Numerical_Failure_Ratio() << std::endl
 				  << "Complete evaporation count:\t" << number_of_complete_evaporation_particles << std::endl
 				  << "Censored captured count:\t" << number_of_censored_captured_particles << std::endl
+				  << "Radial-domain excluded captures:\t" << number_of_radial_domain_excluded_particles << std::endl
 				  << "Invalid survival count:\t\t" << number_of_invalid_survival_captured_particles << std::endl;
 
 		// Raw and classified-sample capture-rate intervals.

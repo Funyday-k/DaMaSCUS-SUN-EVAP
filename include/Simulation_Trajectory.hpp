@@ -24,14 +24,23 @@ namespace DaMaSCUS_SUN
 
 class SnapshotRecorder;
 
-// Bincount histogram constants
-constexpr int NUM_BINS = 2000;
+// The numerical trajectory, injection surface, and exterior Kepler matching
+// surface are deliberately identical.
+constexpr double TRAJECTORY_BOUNDARY_RSUN = 1.1;
 constexpr double R_SUN_KM = 6.957e5;  // km
-constexpr double BIN_MAX_KM = 2.0 * R_SUN_KM;  // 2 R_sun in km
-constexpr double BIN_WIDTH_KM = BIN_MAX_KM / NUM_BINS;  // ~695.7 km
+constexpr double AU_KM = 1.495978707e8;  // IAU 2012 exact astronomical unit [km]
+constexpr double BIN_WIDTH_KM = R_SUN_KM / 1000.0;  // 0.001 R_sun
+constexpr int NUM_BINS = 1100;  // base grid through 1.1 R_sun
+constexpr double BIN_MAX_KM = NUM_BINS * BIN_WIDTH_KM;
+constexpr double RADIAL_DOMAIN_MAX_AU = 5.2;  // Jupiter-orbit cutoff
+constexpr double RADIAL_DOMAIN_MAX_KM = RADIAL_DOMAIN_MAX_AU * AU_KM;
+constexpr double RADIAL_DOMAIN_MAX_RSUN = RADIAL_DOMAIN_MAX_KM / R_SUN_KM;
+constexpr std::size_t EXTERIOR_LOG_BINS = 512;
+constexpr std::size_t TOTAL_BINS =
+    static_cast<std::size_t>(NUM_BINS) + EXTERIOR_LOG_BINS;
 constexpr unsigned long int DEFAULT_MAXIMUM_FREE_TIME_STEPS = 1000000000000UL;
 constexpr unsigned long int DEFAULT_MAXIMUM_SCATTERINGS = 100000000000000UL;
-constexpr int TRAJECTORY_TERMINATION_REASON_COUNT = 11;
+constexpr int TRAJECTORY_TERMINATION_REASON_COUNT = 12;
 
 struct BincountContribution
 {
@@ -48,6 +57,31 @@ void Compute_Bincount_Interval_Contributions(
 	const Event& after,
 	std::vector<BincountContribution>& contributions);
 
+// The fixed histogram is uniform through 1.1 R_sun and logarithmic from there
+// to the 5.2-AU Jupiter cutoff. These helpers are the single source of truth
+// for writers, snapshots, and exact exterior Kepler shell integration.
+double BincountBinLowerKm(std::size_t bin);
+double BincountBinUpperKm(std::size_t bin);
+int BincountBinIndexKm(double radius_km);
+
+struct BoundKeplerExteriorArc
+{
+	Event inbound_event;
+	double return_time_sec = 0.0;
+	double kepler_period_sec = 0.0;
+	double apoapsis_km = 0.0;
+	bool radial_domain_exceeded = false;
+	std::array<double, TOTAL_BINS> dt_hist{};
+	std::array<double, TOTAL_BINS> v2dt_hist{};
+};
+
+// Analytically propagate a negative-specific-energy outward crossing from the
+// 1.1 R_sun matching surface to apoapsis and back to the same surface. The
+// returned histogram uses the fixed compact grid. A mathematically valid orbit
+// whose apoapsis exceeds 5.2 AU is reported via radial_domain_exceeded and is
+// excluded from the near-Sun evaporation sample by the caller.
+bool Compute_Bound_Kepler_Exterior_Arc(const Event& outward_event, BoundKeplerExteriorArc& arc);
+
 enum class TrajectoryTerminationReason
 {
 	Unknown = 0,
@@ -60,7 +94,8 @@ enum class TrajectoryTerminationReason
 	SpeedLimit = 7,
 	NumericalFailure = 8,
 	CaptureMode = 9,
-	EnergyDriftEscape = 10
+	EnergyDriftEscape = 10,
+	RadialDomainExceeded = 11
 };
 
 enum class TrajectoryDiagnosticEventType
@@ -118,8 +153,8 @@ bool TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason reason
 // Per-trajectory bincount result
 struct TrajectoryBincount
 {
-	std::array<double, NUM_BINS> dt_hist;     // Σ Δt per radial bin
-	std::array<double, NUM_BINS> v2dt_hist;   // Σ v²·Δt per radial bin
+	std::array<double, TOTAL_BINS> dt_hist{};     // Σ Δt per radial bin
+	std::array<double, TOTAL_BINS> v2dt_hist{};   // Σ v²·Δt per radial bin
 
 	// Capture/evaporation info
 	bool is_captured = false;
@@ -155,14 +190,16 @@ struct TrajectoryBincount
 	double max_radius_after_capture_km = std::numeric_limits<double>::quiet_NaN();
 	double time_inside_sun_after_capture_sec = 0.0;
 	double time_outside_sun_after_capture_sec = 0.0;
-	bool truncated = false;          // compatibility alias for right-censored unbinding lifetime
+	unsigned long int number_of_bound_exterior_arcs = 0;
+	double first_bound_exit_kepler_period_sec = std::numeric_limits<double>::quiet_NaN();
+	double last_bound_exit_kepler_period_sec = std::numeric_limits<double>::quiet_NaN();
+	double max_bound_exit_kepler_period_sec = std::numeric_limits<double>::quiet_NaN();
+	double first_bound_exit_exterior_time_sec = std::numeric_limits<double>::quiet_NaN();
+	double last_bound_exit_exterior_time_sec = std::numeric_limits<double>::quiet_NaN();
+	double max_bound_exit_exterior_time_sec = std::numeric_limits<double>::quiet_NaN();
+	bool truncated = false;          // true only when the 5.2-AU radial domain is exceeded
 	TrajectoryTerminationReason termination_reason = TrajectoryTerminationReason::Unknown;
 
-	TrajectoryBincount()
-	{
-		dt_hist.fill(0.0);
-		v2dt_hist.fill(0.0);
-	}
 };
 
 // Snapshot configuration: periodic cumulative bincount output
@@ -271,7 +308,7 @@ class Trajectory_Simulator
 	unsigned int current_mpi_rank;
 	unsigned long int current_trajectory_id;
 
-	Trajectory_Simulator(const Solar_Model& model, unsigned long int max_time_steps = DEFAULT_MAXIMUM_FREE_TIME_STEPS, unsigned long int max_scatterings = DEFAULT_MAXIMUM_SCATTERINGS, double max_distance = 2.0 * libphysica::natural_units::rSun);
+	Trajectory_Simulator(const Solar_Model& model, unsigned long int max_time_steps = DEFAULT_MAXIMUM_FREE_TIME_STEPS, unsigned long int max_scatterings = DEFAULT_MAXIMUM_SCATTERINGS, double max_distance = TRAJECTORY_BOUNDARY_RSUN * libphysica::natural_units::rSun);
 
 	void Fix_PRNG_Seed(unsigned int fixed_seed);
 	void Restore_PRNG_State(const std::string& serialized_state);

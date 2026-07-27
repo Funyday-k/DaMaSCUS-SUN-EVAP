@@ -84,7 +84,10 @@ bool ReadHistogramBin(const std::string& path, int requested_bin, std::array<dou
 			continue;
 		std::istringstream row(line);
 		int bin = -1;
+		double radius_lower_rsun = 0.0;
+		double radius_upper_rsun = 0.0;
 		row >> bin;
+		row >> radius_lower_rsun >> radius_upper_rsun;
 		for(double& value : values)
 			row >> value;
 		if(bin == requested_bin)
@@ -208,6 +211,9 @@ void ExpectStatesEqual(const SnapshotRankState& expected, const SnapshotRankStat
 		EXPECT_EQ(expected.new_evaporation_events[index].trajectory_id, actual.new_evaporation_events[index].trajectory_id);
 		EXPECT_DOUBLE_EQ(expected.new_evaporation_events[index].completion_wall_time_sec, actual.new_evaporation_events[index].completion_wall_time_sec);
 		EXPECT_DOUBLE_EQ(expected.new_evaporation_events[index].lifetime_unbinding_sec, actual.new_evaporation_events[index].lifetime_unbinding_sec);
+		EXPECT_DOUBLE_EQ(expected.new_evaporation_events[index].r_capture_rsun, actual.new_evaporation_events[index].r_capture_rsun);
+		EXPECT_DOUBLE_EQ(expected.new_evaporation_events[index].E_capture_eV, actual.new_evaporation_events[index].E_capture_eV);
+		EXPECT_DOUBLE_EQ(expected.new_evaporation_events[index].dE_capture_eV, actual.new_evaporation_events[index].dE_capture_eV);
 	}
 }
 
@@ -305,8 +311,8 @@ TEST_F(SnapshotIOTest, SharedStatePublishesCurrentTrajectoryProgress)
 	SnapshotSharedState shared_state;
 	shared_state.Initialize(501, 4);
 	shared_state.BeginTrajectory(77, 100.0);
-	std::array<double, NUM_BINS> dt_hist{};
-	std::array<double, NUM_BINS> v2dt_hist{};
+	std::array<double, TOTAL_BINS> dt_hist{};
+	std::array<double, TOTAL_BINS> v2dt_hist{};
 	dt_hist[3] = 1.0;
 	v2dt_hist[3] = 4.0;
 	dt_hist[4] = 1.5;
@@ -394,9 +400,12 @@ TEST_F(SnapshotIOTest, TextReportListsEachMpiRankActivity)
 		snapshot_root, rank_snapshot_dir, 1, interval, 4, run_id, 0.5, 1.0e-40, false);
 	ASSERT_EQ(SnapshotMergeStatus::Merged, merged.status);
 	const std::string report = ReadAll(SnapshotTextFilePath(snapshot_root, 1, interval));
-	EXPECT_NE(std::string::npos, report.find("# total_trajectories = 2"));
-	EXPECT_NE(std::string::npos, report.find("# captured_particles = 1"));
-	EXPECT_NE(std::string::npos, report.find("# valid_trajectories = 1"));
+	// Running trajectories have not passed final validity/domain classification,
+	// so snapshots show their activity without treating them as physical samples.
+	EXPECT_NE(std::string::npos, report.find("# total_trajectories = 0"));
+	EXPECT_NE(std::string::npos, report.find("# captured_particles = 0"));
+	EXPECT_NE(std::string::npos, report.find("# valid_trajectories = 0"));
+	EXPECT_NE(std::string::npos, report.find("# in_progress_bincount_included = 0"));
 	EXPECT_NE(std::string::npos, report.find("# [MPI rank status]"));
 	EXPECT_NE(std::string::npos, report.find(
 		"# rank  state  trajectory_id  trajectory_wall_s  simulated_elapsed_s  scatterings  observed_at_wall_s"));

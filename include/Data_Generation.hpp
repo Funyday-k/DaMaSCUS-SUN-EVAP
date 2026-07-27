@@ -5,6 +5,7 @@
 #include <string>
 #include <array>
 #include <cstdint>
+#include <limits>
 
 #include "libphysica/Natural_Units.hpp"
 #include "libphysica/Statistics.hpp"
@@ -47,8 +48,8 @@ struct EvaporationRecord
 	bool boundary_escape_observed = false;
 	bool survival_valid = true;
 	bool numerically_invalid_escape = false;
-	bool censored = true;
-	bool truncated = true; // compatibility alias for censored
+	bool censored = false;
+	bool truncated = false;
 	TrajectoryTerminationReason termination_reason = TrajectoryTerminationReason::Unknown;
 	double max_free_energy_drift_eV = 0.0;
 	double max_free_energy_drift_rel = 0.0;
@@ -60,6 +61,13 @@ struct EvaporationRecord
 	double max_radius_after_capture_km = 0.0;
 	double time_inside_sun_after_capture_sec = 0.0;
 	double time_outside_sun_after_capture_sec = 0.0;
+	unsigned long int number_of_bound_exterior_arcs = 0;
+	double first_bound_exit_kepler_period_sec = std::numeric_limits<double>::quiet_NaN();
+	double last_bound_exit_kepler_period_sec = std::numeric_limits<double>::quiet_NaN();
+	double max_bound_exit_kepler_period_sec = std::numeric_limits<double>::quiet_NaN();
+	double first_bound_exit_exterior_time_sec = std::numeric_limits<double>::quiet_NaN();
+	double last_bound_exit_exterior_time_sec = std::numeric_limits<double>::quiet_NaN();
+	double max_bound_exit_exterior_time_sec = std::numeric_limits<double>::quiet_NaN();
 };
 
 struct CompactEvaporationEvent
@@ -68,6 +76,16 @@ struct CompactEvaporationEvent
 	uint64_t trajectory_id = 0;
 	double completion_wall_time_sec = 0.0;
 	double lifetime_unbinding = -1.0;
+	double r_capture_rsun = -1.0;
+	double E_capture_eV = 0.0;
+	double dE_capture_eV = 0.0;
+	uint64_t number_of_bound_exterior_arcs = 0;
+	double first_bound_exit_kepler_period_sec = std::numeric_limits<double>::quiet_NaN();
+	double last_bound_exit_kepler_period_sec = std::numeric_limits<double>::quiet_NaN();
+	double max_bound_exit_kepler_period_sec = std::numeric_limits<double>::quiet_NaN();
+	double first_bound_exit_exterior_time_sec = std::numeric_limits<double>::quiet_NaN();
+	double last_bound_exit_exterior_time_sec = std::numeric_limits<double>::quiet_NaN();
+	double max_bound_exit_exterior_time_sec = std::numeric_limits<double>::quiet_NaN();
 };
 
 struct TrajectoryReplayRecord
@@ -97,7 +115,7 @@ class Simulation_Data
 	unsigned int requested_captured_particles;
 	unsigned long int max_trajectories_per_rank;
 	unsigned long int normal_mode_mpi_sync_interval;
-	double initial_and_final_radius = 2.0 * libphysica::natural_units::rSun;
+	double initial_and_final_radius = TRAJECTORY_BOUNDARY_RSUN * libphysica::natural_units::rSun;
 	unsigned int minimum_number_of_scatterings = 1;
 	unsigned long int maximum_number_of_scatterings = DEFAULT_MAXIMUM_SCATTERINGS;
 	unsigned long int maximum_free_time_steps = DEFAULT_MAXIMUM_FREE_TIME_STEPS;
@@ -110,6 +128,7 @@ class Simulation_Data
 	unsigned long int number_of_completed_outward_escapes;
 	unsigned long int number_of_complete_evaporation_particles;
 	unsigned long int number_of_censored_captured_particles;
+	unsigned long int number_of_radial_domain_excluded_particles;
 	unsigned long int number_of_invalid_survival_captured_particles;
 	unsigned long int number_of_initial_shift_failures;
 	unsigned long int number_of_final_reflection_shift_failures;
@@ -119,23 +138,22 @@ class Simulation_Data
 	double average_number_of_scatterings;
 	unsigned long int mpi_sync_rounds;
 	unsigned long int final_mpi_round_trajectories;
-	unsigned long int mpi_tail_trajectories;
 	unsigned long int capture_target_overshoot;
 	double computing_time;
 	bool early_stopped;
 	SimulationStopReason early_stop_reason;
 
 	// Aggregated bincount histograms
-	std::array<double, NUM_BINS> captured_dt_hist;
-	std::array<double, NUM_BINS> captured_v2dt_hist;
-	std::array<double, NUM_BINS> not_captured_dt_hist;
-	std::array<double, NUM_BINS> not_captured_v2dt_hist;
+	std::array<double, TOTAL_BINS> captured_dt_hist{};
+	std::array<double, TOTAL_BINS> captured_v2dt_hist{};
+	std::array<double, TOTAL_BINS> not_captured_dt_hist{};
+	std::array<double, TOTAL_BINS> not_captured_v2dt_hist{};
 
 	// Per-bin sum of squares for error estimation
-	std::array<double, NUM_BINS> captured_dt_sq_hist;      // Σ (per-traj dt)²
-	std::array<double, NUM_BINS> captured_v2dt_sq_hist;    // Σ (per-traj v²dt)²
-	std::array<double, NUM_BINS> not_captured_dt_sq_hist;
-	std::array<double, NUM_BINS> not_captured_v2dt_sq_hist;
+	std::array<double, TOTAL_BINS> captured_dt_sq_hist{};      // Σ (per-traj dt)²
+	std::array<double, TOTAL_BINS> captured_v2dt_sq_hist{};    // Σ (per-traj v²dt)²
+	std::array<double, TOTAL_BINS> not_captured_dt_sq_hist{};
+	std::array<double, TOTAL_BINS> not_captured_v2dt_sq_hist{};
 
 	// Evaporation records
 	std::vector<EvaporationRecord> evaporation_records;

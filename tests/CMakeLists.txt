@@ -14,6 +14,16 @@ set_tests_properties(test_Invalid_Snapshot_Interval_Config PROPERTIES
 	TIMEOUT 8
 	LABELS "snapshot;config")
 
+add_test(NAME test_Libphysica_Interpolation_Patch
+	COMMAND ${CMAKE_COMMAND}
+		-DLIBPHYSICA_SOURCE_DIR=${libphysica_SOURCE_DIR}
+		-DPATCH_SCRIPT=${PROJECT_SOURCE_DIR}/cmake/PatchLibphysicaInterpolation.cmake
+		-DTEST_OUTPUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/libphysica_patch_test
+		-P ${PROJECT_SOURCE_DIR}/cmake/TestLibphysicaInterpolationPatch.cmake
+	WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(test_Libphysica_Interpolation_Patch PROPERTIES
+	LABELS "build;unit")
+
 # 2. Unit tests: Dark_Photon.xpp	
 add_executable(test_Dark_Photon
 	test_Dark_Photon.cpp)

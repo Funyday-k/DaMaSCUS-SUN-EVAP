@@ -56,6 +56,19 @@ double SumBins(const std::array<double, NUM_BINS>& values)
 }
 }
 
+TEST(TestSimulationTrajectory, SnapshotProgressPublicationHasStepAndWallClockBounds)
+{
+	const double wall_interval = SnapshotProgressPublishWallIntervalSeconds();
+	ASSERT_GT(wall_interval, 0.0);
+	EXPECT_FALSE(SnapshotProgressPublishDue(0, 0.0, false));
+	EXPECT_FALSE(SnapshotProgressPublishDue(511, wall_interval * 0.5, false));
+	EXPECT_TRUE(SnapshotProgressPublishDue(512, 0.0, false));
+	EXPECT_TRUE(SnapshotProgressPublishDue(1, wall_interval, false));
+	EXPECT_TRUE(SnapshotProgressPublishDue(0, 0.0, true));
+	EXPECT_FALSE(SnapshotProgressPublishDue(
+	    0, std::numeric_limits<double>::quiet_NaN(), false));
+}
+
 // 1. Result of one trajectory
 TEST(TestSimulationTrajectory, TestTrajectoryResultConstructor)
 {

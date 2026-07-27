@@ -4,6 +4,8 @@
 #include <cstddef>
 #include <cmath>
 #include <cstdio>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <libconfig.h++>
 #include <limits>
@@ -31,6 +33,54 @@ namespace DaMaSCUS_SUN
 using namespace libconfig;
 using namespace libphysica::natural_units;
 
+// P_Values_Grid.txt is the scan's only resume record, so it must be written by a
+// single rank and must never be observable half-written: Import_P_Values() would
+// either reject a torn grid and discard the whole scan, or import wrong values.
+// Callers are responsible for restricting this to rank 0.
+bool Write_P_Value_Grid_Atomically(
+    const std::string& path, const std::vector<std::vector<double>>& p_value_grid)
+{
+	const std::string tmp_path = path + ".tmp." + std::to_string(getpid());
+	std::ofstream file(tmp_path, std::ios::out | std::ios::trunc);
+	if(!file.is_open())
+	{
+		std::cerr << "Warning in Write_P_Value_Grid_Atomically(): failed to open "
+		          << tmp_path << std::endl;
+		return false;
+	}
+
+	file << std::setprecision(std::numeric_limits<double>::max_digits10);
+	for(std::size_t row = 0; row < p_value_grid.size(); row++)
+	{
+		for(std::size_t column = 0; column < p_value_grid[row].size(); column++)
+		{
+			if(column > 0)
+				file << '\t';
+			file << p_value_grid[row][column];
+		}
+		file << '\n';
+	}
+	file.flush();
+	const bool write_succeeded = file.good();
+	file.close();
+	if(!write_succeeded || file.fail())
+	{
+		std::remove(tmp_path.c_str());
+		std::cerr << "Warning in Write_P_Value_Grid_Atomically(): failed to write "
+		          << tmp_path << std::endl;
+		return false;
+	}
+
+	if(std::rename(tmp_path.c_str(), path.c_str()) != 0)
+	{
+		std::remove(tmp_path.c_str());
+		std::cerr << "Warning in Write_P_Value_Grid_Atomically(): failed to update "
+		          << path << std::endl;
+		return false;
+	}
+	return true;
+}
+
 namespace
 {
 
@@ -39,22 +89,6 @@ double Checked_Probability(double p, const std::string& context)
 	if(!std::isfinite(p) || p < 0.0 || p > 1.0)
 		throw std::runtime_error(context + ": p-value must be finite and lie in [0, 1].");
 	return p;
-}
-
-// P_Values_Grid.txt is the scan's only resume record, so it must be written by a
-// single rank and must never be observable half-written: Import_P_Values() would
-// either reject a torn grid and discard the whole scan, or import wrong values.
-// Callers are responsible for restricting this to rank 0.
-void Export_P_Value_Grid(const std::string& results_path, const std::vector<std::vector<double>>& p_value_grid)
-{
-	const std::string path	   = results_path + "P_Values_Grid.txt";
-	const std::string tmp_path = path + ".tmp." + std::to_string(getpid());
-	libphysica::Export_Table(tmp_path, p_value_grid);
-	if(std::rename(tmp_path.c_str(), path.c_str()) != 0)
-	{
-		std::remove(tmp_path.c_str());
-		std::cerr << "Warning in Export_P_Value_Grid(): failed to update " << path << std::endl;
-	}
 }
 
 double Log10_Probability(double p, const std::string& context)
@@ -938,7 +972,7 @@ void Parameter_Scan::Perform_STA_Scan(obscura::DM_Particle& DM, obscura::DM_Dete
 			p_value_grid[row][column] = p;
 			if(mpi_rank == 0)
 			{
-				Export_P_Value_Grid(results_path, p_value_grid);
+				Write_P_Value_Grid_Atomically(results_path + "P_Values_Grid.txt", p_value_grid);
 				std::cout << std::endl
 						  << std::endl;
 				libphysica::Print_Box("p = " + std::to_string(libphysica::Round(p)), 1);
@@ -965,7 +999,7 @@ void Parameter_Scan::Perform_STA_Scan(obscura::DM_Particle& DM, obscura::DM_Dete
 	STA_Fill_Gaps();
 	Print_Grid(mpi_rank);
 	if(mpi_rank == 0)
-		Export_P_Value_Grid(results_path, p_value_grid);
+		Write_P_Value_Grid_Atomically(results_path + "P_Values_Grid.txt", p_value_grid);
 	DM.Set_Mass(mDM_original);
 	DM.Set_Interaction_Parameter(coupling_original, detector.Target_Particles());
 }
@@ -1010,7 +1044,7 @@ void Parameter_Scan::Perform_Full_Scan(obscura::DM_Particle& DM, obscura::DM_Det
 				p_value_grid[row][column] = p;
 				if(mpi_rank == 0)
 				{
-					Export_P_Value_Grid(results_path, p_value_grid);
+					Write_P_Value_Grid_Atomically(results_path + "P_Values_Grid.txt", p_value_grid);
 					std::cout << std::endl
 							  << std::endl;
 					libphysica::Print_Box("p = " + std::to_string(libphysica::Round(p)), 1);
@@ -1030,7 +1064,7 @@ void Parameter_Scan::Perform_Full_Scan(obscura::DM_Particle& DM, obscura::DM_Det
 		}
 	}
 	if(mpi_rank == 0)
-		Export_P_Value_Grid(results_path, p_value_grid);
+		Write_P_Value_Grid_Atomically(results_path + "P_Values_Grid.txt", p_value_grid);
 
 	DM.Set_Mass(mDM_original);
 	DM.Set_Interaction_Parameter(coupling_original, detector.Target_Particles());

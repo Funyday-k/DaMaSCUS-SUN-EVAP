@@ -81,6 +81,49 @@ TEST(TestParameterScan, TestRejectsInvalidGridDefinitions)
 	EXPECT_THROW(Parameter_Scan({1.0 * MeV}, {1.0 * cm * cm}, "bad_cl", 1, 0, 1.0), std::invalid_argument);
 }
 
+TEST(TestParameterScan, AtomicGridWriteRoundTripsAndPreservesOldFileOnFailure)
+{
+	const std::string root =
+	    "/tmp/damascus_atomic_grid_" + std::to_string(getpid()) + "/";
+	const std::string path = root + "P_Values_Grid.txt";
+	ASSERT_EQ(0, mkdir(root.c_str(), 0755));
+
+	const std::vector<std::vector<double>> expected{
+	    {0.12345678901234566, -1.0}, {1.0, std::numeric_limits<double>::min()}};
+	ASSERT_TRUE(Write_P_Value_Grid_Atomically(path, expected));
+	{
+		std::ifstream file(path);
+		ASSERT_TRUE(file.good());
+		double value = 0.0;
+		for(const auto& row : expected)
+			for(double expected_value : row)
+			{
+				ASSERT_TRUE(static_cast<bool>(file >> value));
+				EXPECT_DOUBLE_EQ(expected_value, value);
+			}
+	}
+
+	{
+		std::ofstream file(path, std::ios::out | std::ios::trunc);
+		ASSERT_TRUE(file.good());
+		file << "stable resume grid\n";
+	}
+	const std::string tmp_path = path + ".tmp." + std::to_string(getpid());
+	ASSERT_EQ(0, mkdir(tmp_path.c_str(), 0755));
+	EXPECT_FALSE(Write_P_Value_Grid_Atomically(path, {{0.5}}));
+	{
+		std::ifstream file(path);
+		ASSERT_TRUE(file.good());
+		std::string contents;
+		std::getline(file, contents);
+		EXPECT_EQ("stable resume grid", contents);
+	}
+
+	ASSERT_EQ(0, rmdir(tmp_path.c_str()));
+	ASSERT_EQ(0, std::remove(path.c_str()));
+	ASSERT_EQ(0, rmdir(root.c_str()));
+}
+
 TEST(TestParameterScan, TestCriticalProbabilityDoesNotStallSquareTrace)
 {
 	const std::string previous_output_root = g_top_level_dir;

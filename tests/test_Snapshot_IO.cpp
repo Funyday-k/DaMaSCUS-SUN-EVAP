@@ -305,18 +305,13 @@ TEST_F(SnapshotIOTest, SharedStatePublishesCurrentTrajectoryProgress)
 	SnapshotSharedState shared_state;
 	shared_state.Initialize(501, 4);
 	shared_state.BeginTrajectory(77, 100.0);
-	std::vector<BincountContribution> interval;
-	BincountContribution first_contribution;
-	first_contribution.bin = 3;
-	first_contribution.dt_sec = 1.0;
-	first_contribution.v2dt_km2_per_sec = 4.0;
-	interval.push_back(first_contribution);
-	BincountContribution second_contribution;
-	second_contribution.bin = 4;
-	second_contribution.dt_sec = 1.5;
-	second_contribution.v2dt_km2_per_sec = 6.0;
-	interval.push_back(second_contribution);
-	shared_state.AddCurrentBincountInterval(interval, 102.5);
+	std::array<double, NUM_BINS> dt_hist{};
+	std::array<double, NUM_BINS> v2dt_hist{};
+	dt_hist[3] = 1.0;
+	v2dt_hist[3] = 4.0;
+	dt_hist[4] = 1.5;
+	v2dt_hist[4] = 6.0;
+	shared_state.PublishCurrentTrajectoryProgress(dt_hist, v2dt_hist, 102.5);
 	shared_state.UpdateCurrentScatterings(9);
 	shared_state.MarkCurrentCaptured(true);
 
@@ -399,6 +394,9 @@ TEST_F(SnapshotIOTest, TextReportListsEachMpiRankActivity)
 		snapshot_root, rank_snapshot_dir, 1, interval, 4, run_id, 0.5, 1.0e-40, false);
 	ASSERT_EQ(SnapshotMergeStatus::Merged, merged.status);
 	const std::string report = ReadAll(SnapshotTextFilePath(snapshot_root, 1, interval));
+	EXPECT_NE(std::string::npos, report.find("# total_trajectories = 2"));
+	EXPECT_NE(std::string::npos, report.find("# captured_particles = 1"));
+	EXPECT_NE(std::string::npos, report.find("# valid_trajectories = 1"));
 	EXPECT_NE(std::string::npos, report.find("# [MPI rank status]"));
 	EXPECT_NE(std::string::npos, report.find(
 		"# rank  state  trajectory_id  trajectory_wall_s  simulated_elapsed_s  scatterings  observed_at_wall_s"));

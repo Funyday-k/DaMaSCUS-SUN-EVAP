@@ -391,31 +391,37 @@ void AccumulateSnapshotReportState(SnapshotReportState& report, const SnapshotRa
 		report.not_captured_v2dt_sq_hist[bin] += state.not_captured_v2dt_sq_hist[bin];
 	}
 
-	if(state.trajectory_in_progress && HasBincountContribution(state.current_trajectory_dt_hist, state.current_trajectory_v2dt_hist))
+	if(state.trajectory_in_progress)
 	{
 		report.total_trajectories++;
 		if(state.current_trajectory_captured)
 		{
 			report.captured_particles++;
 			report.classified_trajectories++;
-			report.snapshot_bincount_captured_samples++;
-			for(int bin = 0; bin < NUM_BINS; bin++)
-			{
-				report.captured_dt_hist[bin] += state.current_trajectory_dt_hist[bin];
-				report.captured_v2dt_hist[bin] += state.current_trajectory_v2dt_hist[bin];
-				report.captured_dt_sq_hist[bin] += state.current_trajectory_dt_hist[bin] * state.current_trajectory_dt_hist[bin];
-				report.captured_v2dt_sq_hist[bin] += state.current_trajectory_v2dt_hist[bin] * state.current_trajectory_v2dt_hist[bin];
-			}
 		}
-		else
+		if(HasBincountContribution(state.current_trajectory_dt_hist, state.current_trajectory_v2dt_hist))
 		{
-			report.snapshot_bincount_not_captured_samples++;
-			for(int bin = 0; bin < NUM_BINS; bin++)
+			if(state.current_trajectory_captured)
 			{
-				report.not_captured_dt_hist[bin] += state.current_trajectory_dt_hist[bin];
-				report.not_captured_v2dt_hist[bin] += state.current_trajectory_v2dt_hist[bin];
-				report.not_captured_dt_sq_hist[bin] += state.current_trajectory_dt_hist[bin] * state.current_trajectory_dt_hist[bin];
-				report.not_captured_v2dt_sq_hist[bin] += state.current_trajectory_v2dt_hist[bin] * state.current_trajectory_v2dt_hist[bin];
+				report.snapshot_bincount_captured_samples++;
+				for(int bin = 0; bin < NUM_BINS; bin++)
+				{
+					report.captured_dt_hist[bin] += state.current_trajectory_dt_hist[bin];
+					report.captured_v2dt_hist[bin] += state.current_trajectory_v2dt_hist[bin];
+					report.captured_dt_sq_hist[bin] += state.current_trajectory_dt_hist[bin] * state.current_trajectory_dt_hist[bin];
+					report.captured_v2dt_sq_hist[bin] += state.current_trajectory_v2dt_hist[bin] * state.current_trajectory_v2dt_hist[bin];
+				}
+			}
+			else
+			{
+				report.snapshot_bincount_not_captured_samples++;
+				for(int bin = 0; bin < NUM_BINS; bin++)
+				{
+					report.not_captured_dt_hist[bin] += state.current_trajectory_dt_hist[bin];
+					report.not_captured_v2dt_hist[bin] += state.current_trajectory_v2dt_hist[bin];
+					report.not_captured_dt_sq_hist[bin] += state.current_trajectory_dt_hist[bin] * state.current_trajectory_dt_hist[bin];
+					report.not_captured_v2dt_sq_hist[bin] += state.current_trajectory_v2dt_hist[bin] * state.current_trajectory_v2dt_hist[bin];
+				}
 			}
 		}
 	}

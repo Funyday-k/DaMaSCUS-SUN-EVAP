@@ -1,6 +1,12 @@
 if(NOT DEFINED LIBPHYSICA_SOURCE_DIR)
   message(FATAL_ERROR "LIBPHYSICA_SOURCE_DIR is required")
 endif()
+if(NOT DEFINED PATCHED_OUTPUT)
+  message(FATAL_ERROR "PATCHED_OUTPUT is required")
+endif()
+if(NOT DEFINED PATCH_ENABLED)
+  message(FATAL_ERROR "PATCH_ENABLED is required")
+endif()
 
 set(NUMERICS_SOURCE "${LIBPHYSICA_SOURCE_DIR}/src/Numerics.cpp")
 if(NOT EXISTS "${NUMERICS_SOURCE}")
@@ -18,19 +24,27 @@ set(PATCHED_EXPRESSION
   "double inte = prefactor * (((a[j] * (x - x_j) + b[j]) * (x - x_j) + c[j]) * (x - x_j) + d[j]);")
 
 file(READ "${NUMERICS_SOURCE}" CONTENTS)
-
 string(FIND "${CONTENTS}" "${ORIGINAL_EXPRESSION}" ORIGINAL_POSITION)
-if(ORIGINAL_POSITION EQUAL -1)
-  # Leave the file (and its timestamp) untouched when the patch is already in
-  # place, so repeated configures do not force a rebuild of the dependency.
-  string(FIND "${CONTENTS}" "${PATCHED_EXPRESSION}" PATCHED_POSITION)
-  if(PATCHED_POSITION EQUAL -1)
-    message(FATAL_ERROR
-      "unsupported libphysica Numerics.cpp: Interpolation::Interpolate body changed")
-  endif()
-  return()
+string(FIND "${CONTENTS}" "${PATCHED_EXPRESSION}" PATCHED_POSITION)
+if(ORIGINAL_POSITION EQUAL -1 AND PATCHED_POSITION EQUAL -1)
+  message(FATAL_ERROR
+    "unsupported libphysica Numerics.cpp: Interpolation::Interpolate body changed")
 endif()
 
-string(REPLACE "${ORIGINAL_EXPRESSION}" "${PATCHED_EXPRESSION}" PATCHED "${CONTENTS}")
-file(WRITE "${NUMERICS_SOURCE}" "${PATCHED}")
-message(STATUS "Patched libphysica cubic interpolation to Horner form")
+if(PATCH_ENABLED)
+  string(REPLACE "${ORIGINAL_EXPRESSION}" "${PATCHED_EXPRESSION}" OUTPUT_CONTENTS "${CONTENTS}")
+  message(STATUS "Using Horner-form libphysica cubic interpolation")
+else()
+  string(REPLACE "${PATCHED_EXPRESSION}" "${ORIGINAL_EXPRESSION}" OUTPUT_CONTENTS "${CONTENTS}")
+  message(STATUS "Using upstream libphysica cubic interpolation")
+endif()
+
+get_filename_component(PATCHED_OUTPUT_DIR "${PATCHED_OUTPUT}" DIRECTORY)
+file(MAKE_DIRECTORY "${PATCHED_OUTPUT_DIR}")
+if(EXISTS "${PATCHED_OUTPUT}")
+  file(READ "${PATCHED_OUTPUT}" EXISTING_OUTPUT_CONTENTS)
+  if(EXISTING_OUTPUT_CONTENTS STREQUAL OUTPUT_CONTENTS)
+    return()
+  endif()
+endif()
+file(WRITE "${PATCHED_OUTPUT}" "${OUTPUT_CONTENTS}")

@@ -14,6 +14,12 @@
 namespace DaMaSCUS_SUN
 {
 
+// Atomically replace the parameter-scan resume grid after the complete table
+// has been written and closed successfully. Callers must restrict writes to
+// rank 0.
+bool Write_P_Value_Grid_Atomically(
+    const std::string& path, const std::vector<std::vector<double>>& p_value_grid);
+
 // 1. Configuration class for input file, which extends the obscura::Configuration class.
 
 class Configuration : public obscura::Configuration

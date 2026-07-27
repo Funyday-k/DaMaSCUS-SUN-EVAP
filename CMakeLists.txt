@@ -38,6 +38,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Set these before the dependencies are added so their targets inherit them.
 option(DAMASCUS_ENABLE_LTO "Enable link-time optimization for optimized builds" ON)
 option(DAMASCUS_ENABLE_NATIVE_ARCH "Tune the build for the building machine's CPU" OFF)
+option(DAMASCUS_PATCH_LIBPHYSICA_INTERPOLATION
+  "Build libphysica's cubic interpolation in Horner form" ON)
 
 if(DAMASCUS_ENABLE_LTO AND NOT CODE_COVERAGE)
   include(CheckIPOSupported)
@@ -160,29 +162,53 @@ if(NOT obscura_POPULATED)
     add_subdirectory(${obscura_SOURCE_DIR} ${obscura_BINARY_DIR} EXCLUDE_FROM_ALL)
     # libphysica is populated by obscura's own FetchContent call inside the
     # add_subdirectory() above, so its source directory is only known here.
-    # Configure always completes before anything is compiled, so patching now
-    # still reaches the build; the patch script is a no-op once applied.
-    # Turning this off keeps the dependency pristine, at the cost of one libm
-    # pow() call per interpolation lookup. Results differ at the ulp level
-    # between the two forms, so a bit-for-bit comparison against an older run
-    # needs the same setting.
-    option(DAMASCUS_PATCH_LIBPHYSICA_INTERPOLATION
-      "Rewrite libphysica's cubic interpolation in Horner form" ON)
-    if(DAMASCUS_PATCH_LIBPHYSICA_INTERPOLATION)
-      FetchContent_GetProperties(libphysica)
-      if(NOT libphysica_SOURCE_DIR)
-        get_target_property(LIBPHYSICA_TARGET_DIR libphysica SOURCE_DIR)
-        get_filename_component(libphysica_SOURCE_DIR "${LIBPHYSICA_TARGET_DIR}" DIRECTORY)
-      endif()
-      execute_process(
-        COMMAND ${CMAKE_COMMAND}
-          -DLIBPHYSICA_SOURCE_DIR=${libphysica_SOURCE_DIR}
-          -P ${PROJECT_SOURCE_DIR}/cmake/PatchLibphysicaInterpolation.cmake
-        RESULT_VARIABLE LIBPHYSICA_PATCH_RESULT)
-      if(NOT LIBPHYSICA_PATCH_RESULT EQUAL 0)
-        message(FATAL_ERROR "Failed to patch libphysica cubic interpolation")
-      endif()
+    # Generate a build-tree copy of Numerics.cpp and replace that source in the
+    # target. This keeps the fetched checkout pristine and makes toggling the
+    # optimization in either direction deterministic.
+    FetchContent_GetProperties(libphysica)
+    get_target_property(LIBPHYSICA_TARGET_SOURCE_DIR libphysica SOURCE_DIR)
+    if(NOT libphysica_SOURCE_DIR)
+      get_filename_component(libphysica_SOURCE_DIR "${LIBPHYSICA_TARGET_SOURCE_DIR}" DIRECTORY)
     endif()
+    set(DAMASCUS_LIBPHYSICA_NUMERICS_BUILD_SOURCE
+      "${PROJECT_BINARY_DIR}/patched_dependencies/libphysica/Numerics.cpp")
+    execute_process(
+      COMMAND ${CMAKE_COMMAND}
+        -DLIBPHYSICA_SOURCE_DIR=${libphysica_SOURCE_DIR}
+        -DPATCHED_OUTPUT=${DAMASCUS_LIBPHYSICA_NUMERICS_BUILD_SOURCE}
+        -DPATCH_ENABLED=${DAMASCUS_PATCH_LIBPHYSICA_INTERPOLATION}
+        -P ${PROJECT_SOURCE_DIR}/cmake/PatchLibphysicaInterpolation.cmake
+      RESULT_VARIABLE LIBPHYSICA_PATCH_RESULT)
+    if(NOT LIBPHYSICA_PATCH_RESULT EQUAL 0)
+      message(FATAL_ERROR "Failed to prepare libphysica cubic interpolation source")
+    endif()
+
+    get_target_property(LIBPHYSICA_SOURCES libphysica SOURCES)
+    set(DAMASCUS_LIBPHYSICA_SOURCES)
+    set(DAMASCUS_REPLACED_LIBPHYSICA_NUMERICS OFF)
+    foreach(LIBPHYSICA_SOURCE IN LISTS LIBPHYSICA_SOURCES)
+      if(IS_ABSOLUTE "${LIBPHYSICA_SOURCE}")
+        set(LIBPHYSICA_ABSOLUTE_SOURCE "${LIBPHYSICA_SOURCE}")
+      else()
+        set(LIBPHYSICA_ABSOLUTE_SOURCE
+          "${LIBPHYSICA_TARGET_SOURCE_DIR}/${LIBPHYSICA_SOURCE}")
+      endif()
+      get_filename_component(LIBPHYSICA_SOURCE_NAME
+        "${LIBPHYSICA_ABSOLUTE_SOURCE}" NAME)
+      if(LIBPHYSICA_SOURCE_NAME STREQUAL "Numerics.cpp")
+        list(APPEND DAMASCUS_LIBPHYSICA_SOURCES
+          "${DAMASCUS_LIBPHYSICA_NUMERICS_BUILD_SOURCE}")
+        set(DAMASCUS_REPLACED_LIBPHYSICA_NUMERICS ON)
+      else()
+        list(APPEND DAMASCUS_LIBPHYSICA_SOURCES
+          "${LIBPHYSICA_ABSOLUTE_SOURCE}")
+      endif()
+    endforeach()
+    if(NOT DAMASCUS_REPLACED_LIBPHYSICA_NUMERICS)
+      message(FATAL_ERROR "libphysica target no longer contains Numerics.cpp")
+    endif()
+    set_property(TARGET libphysica PROPERTY SOURCES
+      "${DAMASCUS_LIBPHYSICA_SOURCES}")
     # Both pinned dependencies declare C++11 internally. Override their target
     # properties because current Boost.Math headers require C++14.
     set_target_properties(libphysica libobscura PROPERTIES

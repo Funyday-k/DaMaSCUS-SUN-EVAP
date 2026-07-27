@@ -43,11 +43,10 @@ constexpr unsigned int MAX_OPTICAL_DEPTH_RETRIES = 100;
 constexpr std::size_t MAX_OPTICAL_DEPTH_PIECES = 4;
 constexpr std::size_t CAPTURE_MODE_OPTICAL_DEPTH_PIECES = 2;
 constexpr unsigned long int TARGET_VELOCITY_MAX_REJECTION_ATTEMPTS = 10000UL;
-// Accepted integrator steps between two publications of the in-progress
-// trajectory histogram to the snapshot shared state. Snapshots are written on a
-// wall-clock cadence of at least one second, so this only bounds how stale the
-// in-progress part of a progress report can be.
+// Publish at either bound: the step limit keeps fast trajectories inexpensive,
+// while the wall-clock limit keeps slow trajectories visible to snapshots.
 constexpr unsigned long int SNAPSHOT_PUBLISH_STEP_INTERVAL = 512UL;
+constexpr double SNAPSHOT_PUBLISH_WALL_INTERVAL_SEC = 0.25;
 constexpr double BINCOUNT_DENSE_POSITION_TOLERANCE_KM = 2.0e-3 * BIN_WIDTH_KM;
 constexpr int BINCOUNT_DENSE_MAX_RECURSION = 20;
 constexpr double BINCOUNT_GAUSS_LEGENDRE_OFFSET = 0.77459666924148337704;
@@ -1046,6 +1045,14 @@ double NormalModeMaxOpticalDepthStep() { return MAX_OPTICAL_DEPTH_STEP; }
 double OpticalDepthRelativeTolerance() { return OPTICAL_DEPTH_RELATIVE_TOLERANCE; }
 const char* BincountIntegrationScheme() { return "conservative-hermite-radial-v1"; }
 double BincountDensePositionToleranceKm() { return BINCOUNT_DENSE_POSITION_TOLERANCE_KM; }
+double SnapshotProgressPublishWallIntervalSeconds() { return SNAPSHOT_PUBLISH_WALL_INTERVAL_SEC; }
+bool SnapshotProgressPublishDue(
+    unsigned long int accepted_steps_since_publish, double wall_seconds_since_publish, bool force)
+{
+	return force || accepted_steps_since_publish >= SNAPSHOT_PUBLISH_STEP_INTERVAL
+	       || (std::isfinite(wall_seconds_since_publish)
+	           && wall_seconds_since_publish >= SNAPSHOT_PUBLISH_WALL_INTERVAL_SEC);
+}
 
 // 1. Result of one trajectory
 bool TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason reason)
@@ -1249,12 +1256,16 @@ void Trajectory_Simulator::Maybe_Publish_Snapshot_Progress(double simulated_time
 	if(snapshot_recorder == nullptr)
 		return;
 	steps_since_snapshot_publish++;
-	if(!force && steps_since_snapshot_publish < SNAPSHOT_PUBLISH_STEP_INTERVAL)
+	const auto now = std::chrono::steady_clock::now();
+	const double wall_seconds_since_publish =
+	    std::chrono::duration<double>(now - last_snapshot_publish_wall_time).count();
+	if(!SnapshotProgressPublishDue(steps_since_snapshot_publish, wall_seconds_since_publish, force))
 		return;
 	steps_since_snapshot_publish = 0;
+	last_snapshot_publish_wall_time = now;
 	// current_bincount already holds exactly the accumulation the shared state
 	// used to build step by step, so publishing it wholesale is equivalent.
-	const auto snapshot_operation_start = std::chrono::steady_clock::now();
+	const auto snapshot_operation_start = now;
 	snapshot_recorder->PublishCurrentTrajectoryProgress(
 	    current_bincount.dt_hist, current_bincount.v2dt_hist, simulated_time_sec);
 	Accumulate_Snapshot_Overhead(snapshot_operation_start);
@@ -1406,6 +1417,7 @@ bool Trajectory_Simulator::Update_Capture_State(double radius, double speed, dou
 				const auto snapshot_operation_start = std::chrono::steady_clock::now();
 				snapshot_recorder->MarkCurrentCaptured(true);
 				Accumulate_Snapshot_Overhead(snapshot_operation_start);
+				Maybe_Publish_Snapshot_Progress(t_now_sec, true);
 			}
 		}
 		else if(!was_bound)
@@ -1996,6 +2008,7 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
 	track_trajectory_wall_time = snapshot_recorder != nullptr || max_trajectory_wall_time_sec > 0.0;
 	if(track_trajectory_wall_time)
 		current_trajectory_wall_start = std::chrono::steady_clock::now();
+	last_snapshot_publish_wall_time = std::chrono::steady_clock::now();
 	accumulated_snapshot_overhead_sec = 0.0;
 	if(snapshot_recorder != nullptr)
 	{

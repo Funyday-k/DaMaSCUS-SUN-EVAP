@@ -109,6 +109,9 @@ double NormalModeMaxOpticalDepthStep();
 double OpticalDepthRelativeTolerance();
 const char* BincountIntegrationScheme();
 double BincountDensePositionToleranceKm();
+double SnapshotProgressPublishWallIntervalSeconds();
+bool SnapshotProgressPublishDue(
+    unsigned long int accepted_steps_since_publish, double wall_seconds_since_publish, bool force);
 
 bool TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason reason);
 
@@ -238,12 +241,12 @@ class Trajectory_Simulator
 	bool trajectory_in_progress;
 	bool track_trajectory_wall_time;
 	std::chrono::steady_clock::time_point current_trajectory_wall_start;
+	std::chrono::steady_clock::time_point last_snapshot_publish_wall_time;
 	double accumulated_snapshot_overhead_sec;
 	void Accumulate_Snapshot_Overhead(const std::chrono::steady_clock::time_point& operation_start);
 
-	// Snapshots are wall-clock progress reports on a multi-second cadence, so the
-	// in-progress histogram is published in batches instead of pushing every
-	// integrator step through the shared state's mutex.
+	// Publish in batches, but bound staleness independently of the accepted-step
+	// rate so a slow trajectory remains visible to the snapshot thread.
 	unsigned long int steps_since_snapshot_publish;
 	void Maybe_Publish_Snapshot_Progress(double simulated_time_sec, bool force);
 

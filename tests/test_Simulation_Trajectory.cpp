@@ -194,9 +194,7 @@ TEST(TestSimulationTrajectory, TestTrajectoryBincountSurvivalDefaults)
 	EXPECT_FALSE(bincount.boundary_escape_observed);
 	EXPECT_TRUE(bincount.survival_valid);
 	EXPECT_FALSE(bincount.numerically_invalid_escape);
-	EXPECT_FALSE(bincount.truncated);
-	EXPECT_DOUBLE_EQ(bincount.t_first_negative, -1.0);
-	EXPECT_DOUBLE_EQ(bincount.t_last_negative, -1.0);
+	EXPECT_FALSE(bincount.outer_domain_removed);
 	EXPECT_DOUBLE_EQ(bincount.t_capture, -1.0);
 	EXPECT_DOUBLE_EQ(bincount.t_last_bound, -1.0);
 	EXPECT_DOUBLE_EQ(bincount.t_termination, -1.0);
@@ -219,7 +217,49 @@ TEST(TestSimulationTrajectory, TestTrajectoryBincountSurvivalDefaults)
 	EXPECT_TRUE(std::isnan(bincount.min_energy_after_capture_eV));
 	EXPECT_EQ(TRAJECTORY_TERMINATION_REASON_COUNT, 12);
 	EXPECT_EQ(static_cast<int>(TrajectoryTerminationReason::EnergyDriftEscape), 10);
-	EXPECT_EQ(static_cast<int>(TrajectoryTerminationReason::RadialDomainExceeded), 11);
+	EXPECT_EQ(static_cast<int>(TrajectoryTerminationReason::OuterDomainRemoval), 11);
+	EXPECT_EQ(
+	    bincount.numerical_failure_detail,
+	    TrajectoryNumericalFailureDetail::None);
+	EXPECT_TRUE(std::isnan(bincount.failure_energy_before_step_eV));
+	EXPECT_TRUE(std::isnan(bincount.failure_energy_after_step_eV));
+	EXPECT_TRUE(std::isnan(bincount.failure_energy_at_boundary_eV));
+	EXPECT_TRUE(std::isnan(bincount.failure_reference_energy_eV));
+	EXPECT_TRUE(std::isnan(bincount.failure_boundary_vr_km_s));
+	EXPECT_EQ(
+	    std::string(TrajectoryNumericalFailureDetailKey(
+	        TrajectoryNumericalFailureDetail::
+	            BoundaryEnergyMismatch)),
+	    "boundary_energy_mismatch");
+}
+
+TEST(TestSimulationTrajectory, HermiteBoundaryLocatorSelectsOutwardCrossing)
+{
+	const double target_radius = 100.0 * km;
+	Event before(
+	    0.0 * sec,
+	    libphysica::Vector({90.0 * km, 0.0, 0.0}),
+	    libphysica::Vector({2.0 * km / sec, 0.0, 0.0}));
+	Event after(
+	    100.0 * sec,
+	    libphysica::Vector({110.0 * km, 0.0, 0.0}),
+	    libphysica::Vector({-1.0 * km / sec, 0.0, 0.0}));
+	Event crossing;
+
+	ASSERT_TRUE(Find_First_Outward_Hermite_Radius_Crossing(
+	    before, after, target_radius, crossing));
+	EXPECT_NEAR(
+	    In_Units(crossing.Radius(), km),
+	    In_Units(target_radius, km),
+	    1.0e-10);
+	EXPECT_GT(
+	    In_Units(
+	        crossing.position.Dot(crossing.velocity)
+	        / crossing.Radius(),
+	        km / sec),
+	    0.0);
+	EXPECT_GT(crossing.time, before.time);
+	EXPECT_LT(crossing.time, after.time);
 }
 
 TEST(TestSimulationTrajectory, TestBincountDepositsLinearRadialIntervalAcrossEveryBin)
@@ -396,25 +436,25 @@ TEST(TestSimulationTrajectory, BoundKeplerExteriorArcUsesCompactLogGrid)
 
 	BoundKeplerExteriorArc arc;
 	ASSERT_TRUE(Compute_Bound_Kepler_Exterior_Arc(outward, arc));
-	EXPECT_FALSE(arc.radial_domain_exceeded);
+	EXPECT_FALSE(arc.outer_domain_removed);
 	EXPECT_NEAR(arc.apoapsis_km, 2.0 * R_SUN_KM, 1.0e-10 * R_SUN_KM);
 	EXPECT_EQ(arc.dt_hist.size(), TOTAL_BINS);
 	EXPECT_EQ(arc.v2dt_hist.size(), arc.dt_hist.size());
 	EXPECT_NEAR(
-	    In_Units(arc.inbound_event.Radius(), rSun),
+	    In_Units(arc.terminal_event.Radius(), rSun),
 	    TRAJECTORY_BOUNDARY_RSUN,
 	    1.0e-12);
 	EXPECT_LT(
-	    arc.inbound_event.position.Dot(arc.inbound_event.velocity),
+	    arc.terminal_event.position.Dot(arc.terminal_event.velocity),
 	    0.0);
 	EXPECT_NEAR(
-	    In_Units(arc.inbound_event.Speed(), km / sec),
+	    In_Units(arc.terminal_event.Speed(), km / sec),
 	    In_Units(outward.Speed(), km / sec),
 	    1.0e-10);
 	EXPECT_NEAR(
 	    std::accumulate(arc.dt_hist.begin(), arc.dt_hist.end(), 0.0),
-	    arc.return_time_sec,
-	    1.0e-10 * arc.return_time_sec);
+	    arc.elapsed_time_sec,
+	    1.0e-10 * arc.elapsed_time_sec);
 	const double expected_period_sec = In_Units(
 	    2.0 * M_PI * std::sqrt(
 	        semi_major_axis * semi_major_axis * semi_major_axis / mu),
@@ -423,7 +463,7 @@ TEST(TestSimulationTrajectory, BoundKeplerExteriorArcUsesCompactLogGrid)
 	    arc.kepler_period_sec,
 	    expected_period_sec,
 	    1.0e-12 * expected_period_sec);
-	EXPECT_GT(arc.kepler_period_sec, arc.return_time_sec);
+	EXPECT_GT(arc.kepler_period_sec, arc.elapsed_time_sec);
 	EXPECT_EQ(
 	    std::accumulate(arc.dt_hist.begin(), arc.dt_hist.begin() + NUM_BINS, 0.0),
 	    0.0);
@@ -457,12 +497,23 @@ TEST(TestSimulationTrajectory, BoundKeplerExteriorArcFlagsApoapsisBeyondJupiter)
 
 	BoundKeplerExteriorArc arc;
 	ASSERT_TRUE(Compute_Bound_Kepler_Exterior_Arc(outward, arc));
-	EXPECT_TRUE(arc.radial_domain_exceeded);
+	EXPECT_TRUE(arc.outer_domain_removed);
 	EXPECT_GT(arc.apoapsis_km, RADIAL_DOMAIN_MAX_KM);
-	EXPECT_GT(arc.kepler_period_sec, arc.return_time_sec);
+	EXPECT_GT(arc.kepler_period_sec, arc.elapsed_time_sec);
 	EXPECT_EQ(arc.dt_hist.size(), TOTAL_BINS);
-	EXPECT_DOUBLE_EQ(
+	EXPECT_NEAR(
+	    In_Units(arc.terminal_event.Radius(), km),
+	    RADIAL_DOMAIN_MAX_KM,
+	    1.0e-10 * RADIAL_DOMAIN_MAX_KM);
+	EXPECT_GT(
+	    arc.terminal_event.position.Dot(arc.terminal_event.velocity),
+	    0.0);
+	EXPECT_NEAR(
 	    std::accumulate(arc.dt_hist.begin(), arc.dt_hist.end(), 0.0),
+	    arc.elapsed_time_sec,
+	    1.0e-9 * arc.elapsed_time_sec);
+	EXPECT_GT(
+	    std::accumulate(arc.v2dt_hist.begin(), arc.v2dt_hist.end(), 0.0),
 	    0.0);
 }
 
@@ -478,7 +529,7 @@ TEST(TestSimulationTrajectory, TestSurvivalInvalidTerminationReasons)
 	EXPECT_TRUE(TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason::MaxFreeSteps));
 	EXPECT_TRUE(TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason::MaxScatterings));
 	EXPECT_FALSE(TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason::OutwardEscape));
-	EXPECT_TRUE(TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason::RadialDomainExceeded));
+	EXPECT_TRUE(TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason::OuterDomainRemoval));
 }
 
 TEST(TestSimulationTrajectory, TestScatter)
@@ -538,7 +589,7 @@ TEST(TestSimulationTrajectory, TestMaxFreeStepsTerminationReason)
 	Trajectory_Result result = simulator.Simulate(IC, DM, 0);
 
 	EXPECT_EQ(result.bincount.termination_reason, TrajectoryTerminationReason::MaxFreeSteps);
-	EXPECT_FALSE(result.bincount.truncated);
+	EXPECT_FALSE(result.bincount.outer_domain_removed);
 	EXPECT_FALSE(result.bincount.survival_valid);
 	EXPECT_FALSE(result.Particle_Free());
 	EXPECT_FALSE(result.Particle_Reflected());
@@ -563,6 +614,10 @@ TEST(TestSimulationTrajectory, TestUncapturedBoundFreeFlightTerminatesAsNumerica
 	const std::string stderr_output = testing::internal::GetCapturedStderr();
 
 	EXPECT_EQ(result.bincount.termination_reason, TrajectoryTerminationReason::NumericalFailure);
+	EXPECT_EQ(
+	    result.bincount.numerical_failure_detail,
+	    TrajectoryNumericalFailureDetail::
+	        UncapturedBoundMismatch);
 	EXPECT_TRUE(stderr_output.empty());
 	EXPECT_FALSE(result.bincount.is_captured);
 	EXPECT_FALSE(result.bincount.survival_valid);

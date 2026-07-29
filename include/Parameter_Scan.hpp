@@ -39,7 +39,6 @@ class Configuration : public obscura::Configuration
 	SnapshotConfig snapshot_config;
 	TrajectoryDiagnosticConfig trajectory_diagnostic_config;
 	double cross_section_min, cross_section_max;
-	double escape_radius_rsun;
 	bool compute_halo_constraints, perform_full_scan, capture_mode;
 	explicit Configuration(std::string cfg_filename, int MPI_rank = 0);
 

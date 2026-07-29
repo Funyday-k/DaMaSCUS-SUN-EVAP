@@ -40,7 +40,6 @@ TEST(TestParameterScan, TestConfiguration)
 	EXPECT_DOUBLE_EQ(cfg.cross_section_max, 1.0e-32 * cm * cm);
 	EXPECT_EQ(cfg.cross_sections, 5);
 	EXPECT_EQ(cfg.interpolation_points, 150);
-	EXPECT_DOUBLE_EQ(cfg.escape_radius_rsun, TRAJECTORY_BOUNDARY_RSUN);
 	EXPECT_EQ(cfg.isoreflection_rings, 3);
 	EXPECT_EQ(g_top_level_dir, "./unit_test_output/");
 	EXPECT_TRUE(cfg.snapshot_config.enabled);
@@ -55,7 +54,6 @@ TEST(TestParameterScan, TestMinimalCaptureConfigurationDefaults)
 	EXPECT_TRUE(cfg.capture_mode);
 	EXPECT_EQ(cfg.isoreflection_rings, 1);
 	EXPECT_EQ(cfg.interpolation_points, 0);
-	EXPECT_DOUBLE_EQ(cfg.escape_radius_rsun, TRAJECTORY_BOUNDARY_RSUN);
 	EXPECT_DOUBLE_EQ(cfg.cross_section_min, 0.0);
 	EXPECT_DOUBLE_EQ(cfg.cross_section_max, 0.0);
 	EXPECT_EQ(cfg.cross_sections, 0);
@@ -154,37 +152,4 @@ TEST(TestParameterScan, TestCriticalProbabilityDoesNotStallSquareTrace)
 	rmdir(run.c_str());
 	rmdir(results.c_str());
 	rmdir(root.c_str());
-}
-TEST(TestParameterScan, DISABLED_TestSTAScan)
-{
-	// ARRANGE
-	Configuration cfg(PROJECT_DIR "tests/config_unittest.cfg", 1);
-	Solar_Model SSM;
-	// ACT
-	Parameter_Scan scan(cfg);
-	scan.Perform_STA_Scan(*cfg.DM, *cfg.DM_detector, SSM, *cfg.DM_distr, 0);
-	std::vector<std::vector<double>> limit_curve = scan.Limit_Curve();
-	scan.Print_Grid();
-	// ASSERT
-	ASSERT_GT(limit_curve.size(), 0);
-	// for(auto& row : scan.p_value_grid)
-	// 	for(auto& entry : row)
-	// 		ASSERT_GE(entry, 0.0);
-}
-
-TEST(TestParameterScan, DISABLED_TestFullScan)
-{
-	// ARRANGE
-	Configuration cfg(PROJECT_DIR "tests/config_unittest.cfg", 1);
-	Solar_Model SSM;
-	// ACT
-	Parameter_Scan scan(cfg);
-	scan.Perform_Full_Scan(*cfg.DM, *cfg.DM_detector, SSM, *cfg.DM_distr, 1);
-	std::vector<std::vector<double>> limit_curve = scan.Limit_Curve();
-	scan.Print_Grid();
-	// ASSERT
-	ASSERT_GT(limit_curve.size(), 0);
-	// for(auto& row : scan.p_value_grid)
-	// 	for(auto& entry : row)
-	// 		ASSERT_GE(entry, 0.0);
 }

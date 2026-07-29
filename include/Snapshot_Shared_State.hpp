@@ -35,8 +35,8 @@ class SnapshotSharedState
 
 	void RecordCompletedTrajectory(
 		const TrajectoryBincount& bincount,
-		bool count_as_captured_bincount_sample,
-		bool count_as_not_captured_bincount_sample,
+		bool count_as_residence_sample,
+		bool physically_classified_uncaptured,
 		const std::vector<SnapshotEvaporationProgressEntry>& new_evaporation_events);
 
 	// max_new_evaporation_events bounds how many completed events a single
@@ -75,16 +75,11 @@ class SnapshotSharedState
 	uint64_t classified_trajectories_ = 0;
 	uint64_t numerical_failures_ = 0;
 	uint64_t bincount_captured_samples_ = 0;
-	uint64_t bincount_not_captured_samples_ = 0;
 
 	std::array<double, TOTAL_BINS> captured_dt_hist_{};
 	std::array<double, TOTAL_BINS> captured_v2dt_hist_{};
 	std::array<double, TOTAL_BINS> captured_dt_sq_hist_{};
 	std::array<double, TOTAL_BINS> captured_v2dt_sq_hist_{};
-	std::array<double, TOTAL_BINS> not_captured_dt_hist_{};
-	std::array<double, TOTAL_BINS> not_captured_v2dt_hist_{};
-	std::array<double, TOTAL_BINS> not_captured_dt_sq_hist_{};
-	std::array<double, TOTAL_BINS> not_captured_v2dt_sq_hist_{};
 
 	std::vector<SnapshotEvaporationProgressEntry> evaporation_events_;
 };

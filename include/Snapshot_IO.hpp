@@ -40,7 +40,6 @@ struct SnapshotRankState
 	uint64_t local_classified = 0;
 	uint64_t local_numerical_failures = 0;
 	uint64_t bincount_captured_samples = 0;
-	uint64_t bincount_not_captured_samples = 0;
 	uint64_t current_trajectory_id = 0;
 	double rank_elapsed_wall_sec = 0.0;
 	double current_trajectory_wall_sec = 0.0;
@@ -53,10 +52,6 @@ struct SnapshotRankState
 	std::array<double, TOTAL_BINS> captured_v2dt_hist{};
 	std::array<double, TOTAL_BINS> captured_dt_sq_hist{};
 	std::array<double, TOTAL_BINS> captured_v2dt_sq_hist{};
-	std::array<double, TOTAL_BINS> not_captured_dt_hist{};
-	std::array<double, TOTAL_BINS> not_captured_v2dt_hist{};
-	std::array<double, TOTAL_BINS> not_captured_dt_sq_hist{};
-	std::array<double, TOTAL_BINS> not_captured_v2dt_sq_hist{};
 	std::vector<SnapshotEvaporationProgressEntry> new_evaporation_events;
 };
 
@@ -98,15 +93,10 @@ struct SnapshotReportState
 	uint64_t classified_trajectories = 0;
 	uint64_t numerical_failures = 0;
 	uint64_t snapshot_bincount_captured_samples = 0;
-	uint64_t snapshot_bincount_not_captured_samples = 0;
 	std::array<double, TOTAL_BINS> captured_dt_hist{};
 	std::array<double, TOTAL_BINS> captured_v2dt_hist{};
 	std::array<double, TOTAL_BINS> captured_dt_sq_hist{};
 	std::array<double, TOTAL_BINS> captured_v2dt_sq_hist{};
-	std::array<double, TOTAL_BINS> not_captured_dt_hist{};
-	std::array<double, TOTAL_BINS> not_captured_v2dt_hist{};
-	std::array<double, TOTAL_BINS> not_captured_dt_sq_hist{};
-	std::array<double, TOTAL_BINS> not_captured_v2dt_sq_hist{};
 	std::vector<SnapshotRankedEvaporationEntry> new_evaporation_events;
 	std::vector<RankProgress> rank_progress;
 };

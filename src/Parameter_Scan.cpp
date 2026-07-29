@@ -182,16 +182,6 @@ void Configuration::Import_Parameter_Scan_Parameter()
 		std::exit(EXIT_FAILURE);
 	}
 	capture_mode = (run_mode == "Capture");
-	try
-	{
-		bool cfg_capture_mode = config.lookup("capture_mode");
-		capture_mode = cfg_capture_mode;
-	}
-	catch(const SettingNotFoundException& nfex)
-	{
-	}
-	if(run_mode == "Capture")
-		capture_mode = true;
 	const bool parameter_scan_mode = (run_mode == "Parameter scan");
 	try
 	{
@@ -220,36 +210,6 @@ void Configuration::Import_Parameter_Scan_Parameter()
 	catch(const SettingNotFoundException& nfex)
 	{
 		interpolation_points = 0;
-	}
-	escape_radius_rsun = TRAJECTORY_BOUNDARY_RSUN;
-	try
-	{
-		double configured_escape_radius_rsun = TRAJECTORY_BOUNDARY_RSUN;
-		try
-		{
-			configured_escape_radius_rsun = config.lookup("R_escape_Rsun");
-		}
-		catch(const SettingTypeException& type_error)
-		{
-			const int integer_radius = config.lookup("R_escape_Rsun");
-			configured_escape_radius_rsun = static_cast<double>(integer_radius);
-		}
-		if(!std::isfinite(configured_escape_radius_rsun)
-		   || configured_escape_radius_rsun <= 1.0)
-		{
-			std::cerr << "Error in Configuration::Import_Parameter_Scan_Parameter(): 'R_escape_Rsun' must be finite and greater than 1." << std::endl;
-			std::exit(EXIT_FAILURE);
-		}
-		if(std::fabs(configured_escape_radius_rsun - TRAJECTORY_BOUNDARY_RSUN) > 1.0e-12)
-		{
-			std::cerr << "Warning: R_escape_Rsun=" << configured_escape_radius_rsun
-			          << " is deprecated; injection, numerical propagation, and "
-			          << "Kepler matching now use the unified boundary "
-			          << TRAJECTORY_BOUNDARY_RSUN << " R_sun." << std::endl;
-		}
-	}
-	catch(const SettingNotFoundException& nfex)
-	{
 	}
 	try
 	{
@@ -497,7 +457,7 @@ void Configuration::Import_Parameter_Scan_Parameter()
 	if(trajectory_diagnostic_config.events_enabled)
 		trajectory_diagnostic_config.summary_enabled = true;
 
-	if(run_mode != "Parameter point" && run_mode != "Parameter scan" && run_mode != "Custom" && run_mode != "Capture")
+	if(run_mode != "Parameter point" && run_mode != "Parameter scan" && run_mode != "Capture")
 	{
 		std::cerr << "Error in Configuration::Import_Parameter_Scan_Parameter(): Run mode " << run_mode << " not recognized." << std::endl;
 		std::exit(EXIT_FAILURE);
@@ -667,7 +627,7 @@ void Configuration::Print_Summary(int mpi_rank)
 				  << "\tSample size:\t\t\t" << sample_size << std::endl
 				  << "\tFixed PRNG seed:\t\t" << (fixed_seed == 0 ? "random" : std::to_string(fixed_seed)) << std::endl
 				  << "\tMax scatterings/traj:\t\t" << maximum_number_of_scatterings << std::endl
-				  << "\tTrajectory boundary [Rsun]:\t" << escape_radius_rsun << std::endl
+				  << "\tTrajectory boundary [Rsun]:\t" << TRAJECTORY_BOUNDARY_RSUN << std::endl
 				  << "\tSc. rate interpolation:\t\t" << ((interpolation_points > 0) ? "[x] (Grid: " + std::to_string(interpolation_points) + "×" + std::to_string(interpolation_points) + ")" : "[ ]") << std::endl;
 		if(run_mode == "Parameter point" && isoreflection_rings > 1)
 			std::cout << "\tIsoreflection rings:\t\t" << isoreflection_rings << std::endl;

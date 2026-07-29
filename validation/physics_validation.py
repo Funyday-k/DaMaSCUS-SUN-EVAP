@@ -356,7 +356,6 @@ def _run_one(args, source_config: str, grid: int, seed: int):
 
     overrides: Dict[str, object] = {
         "run_mode": "Parameter point",
-        "capture_mode": False,
         "interpolation_points": grid,
         "fixed_seed": seed,
         "snapshot_enabled": False,

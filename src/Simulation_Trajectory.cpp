@@ -35,6 +35,11 @@ constexpr double RK45_MAX_STEP_FACTOR = 4.0;
 // 步长重试长时间占住外层，使轨迹墙钟保护无法及时获得控制权。
 constexpr int RK45_MAX_INNER_RETRIES = 256;
 constexpr double FREE_ENERGY_DRIFT_REL_E_SCALE_EV = 1.0e-30;
+constexpr double BOUNDARY_ENERGY_ABSOLUTE_TOLERANCE_EV_AT_10_MEV = 1.0e-4;
+constexpr double BOUNDARY_ENERGY_RELATIVE_TOLERANCE = 1.0e-8;
+constexpr unsigned int MAX_BOUNDARY_REFINEMENT_RETRIES = 32;
+constexpr int BOUNDARY_HERMITE_SCAN_INTERVALS = 64;
+constexpr int BOUNDARY_HERMITE_BISECTION_ITERATIONS = 80;
 constexpr double MAX_OPTICAL_DEPTH_STEP = 0.05;
 constexpr double CAPTURE_MODE_MAX_OPTICAL_DEPTH_STEP = 0.10;
 constexpr double OPTICAL_DEPTH_RELATIVE_TOLERANCE = 1.0e-2;
@@ -87,16 +92,6 @@ double Free_Propagation_Time_Step_Cap(double radius, double speed, double maximu
 		cap = std::min(cap, 0.1 * dynamical_time);
 
 	return std::max(cap, 1.0e-8 * sec);
-}
-
-bool Outward_Escaping_At_Boundary(const Event& event, Solar_Model& solar_model, double boundary_radius)
-{
-	const double radius = event.Radius();
-	if(radius < boundary_radius)
-		return false;
-
-	const double radial_velocity = (radius > 0.0) ? event.position.Dot(event.velocity) / radius : 0.0;
-	return radial_velocity > 0.0 && event.Speed() > solar_model.Local_Escape_Speed(radius);
 }
 
 double Clamp_Unit_Interval(double value)
@@ -245,6 +240,68 @@ Event Interpolate_Event(const Event& before, const Event& after, double fraction
 	return Event(before.time + fraction * (after.time - before.time), position, velocity);
 }
 
+Event Hermite_Interpolate_Event(const Event& before, const Event& after, double fraction)
+{
+	fraction = Clamp_Unit_Interval(fraction);
+	const double dt = after.time - before.time;
+	const double s = fraction;
+	const double s2 = s * s;
+	const double s3 = s2 * s;
+	const double h00 = 2.0 * s3 - 3.0 * s2 + 1.0;
+	const double h10 = s3 - 2.0 * s2 + s;
+	const double h01 = -2.0 * s3 + 3.0 * s2;
+	const double h11 = s3 - s2;
+	const double dh00 = 6.0 * s2 - 6.0 * s;
+	const double dh10 = 3.0 * s2 - 4.0 * s + 1.0;
+	const double dh01 = -6.0 * s2 + 6.0 * s;
+	const double dh11 = 3.0 * s2 - 2.0 * s;
+
+	libphysica::Vector position(3);
+	libphysica::Vector velocity(3);
+	for(unsigned int component = 0; component < 3; component++)
+	{
+		position[component] =
+		    h00 * before.position[component]
+		    + h10 * dt * before.velocity[component]
+		    + h01 * after.position[component]
+		    + h11 * dt * after.velocity[component];
+		if(dt > 0.0)
+		{
+			velocity[component] =
+			    dh00 / dt * before.position[component]
+			    + dh10 * before.velocity[component]
+			    + dh01 / dt * after.position[component]
+			    + dh11 * after.velocity[component];
+		}
+		else
+			velocity[component] = before.velocity[component];
+	}
+	return Event(before.time + fraction * dt, position, velocity);
+}
+
+double Hermite_Radius_Residual(
+	const Event& before,
+	const Event& after,
+	double fraction,
+	double target_radius)
+{
+	return Hermite_Interpolate_Event(before, after, fraction).Radius()
+	     - target_radius;
+}
+
+double Boundary_Energy_Tolerance_eV(
+	double reference_energy_eV,
+	const obscura::DM_Particle& DM)
+{
+	const double mass_scale =
+	    std::max(In_Units(DM.mass, MeV) / 10.0, 1.0e-12);
+	const double absolute_tolerance =
+	    BOUNDARY_ENERGY_ABSOLUTE_TOLERANCE_EV_AT_10_MEV * mass_scale;
+	return absolute_tolerance
+	     + BOUNDARY_ENERGY_RELATIVE_TOLERANCE
+	       * std::max(std::fabs(reference_energy_eV), absolute_tolerance);
+}
+
 double Radius_At_Fraction(const Event& before, const Event& after, double fraction)
 {
 	fraction = Clamp_Unit_Interval(fraction);
@@ -258,30 +315,76 @@ double Radius_At_Fraction(const Event& before, const Event& after, double fracti
 	return sqrt(std::max(0.0, radius_squared));
 }
 
-double Find_Radius_Crossing_Fraction(const Event& before, const Event& after, double target_radius)
+bool Find_First_Outward_Hermite_Radius_Crossing_Impl(
+	const Event& before,
+	const Event& after,
+	double target_radius,
+	Event& crossing)
 {
-	double lower = 0.0;
-	double upper = 1.0;
-	double lower_value = Radius_At_Fraction(before, after, lower) - target_radius;
-	double upper_value = Radius_At_Fraction(before, after, upper) - target_radius;
-	if(!std::isfinite(lower_value) || !std::isfinite(upper_value)
-	   || lower_value == 0.0 || upper_value == 0.0)
-		return (lower_value == 0.0) ? lower : upper;
-	if((lower_value < 0.0) == (upper_value < 0.0))
-		throw std::runtime_error("Find_Radius_Crossing_Fraction(): interval does not bracket target radius.");
-	for(int iteration = 0; iteration < 80; iteration++)
+	if(!(after.time > before.time)
+	   || !std::isfinite(target_radius)
+	   || target_radius <= 0.0)
+		return false;
+
+	double left = 0.0;
+	double residual_left =
+	    Hermite_Radius_Residual(before, after, left, target_radius);
+	for(int interval = 1; interval <= BOUNDARY_HERMITE_SCAN_INTERVALS; interval++)
 	{
-		const double middle = 0.5 * (lower + upper);
-		const double middle_value = Radius_At_Fraction(before, after, middle) - target_radius;
-		if((middle_value < 0.0) == (lower_value < 0.0))
+		const double right =
+		    static_cast<double>(interval)
+		    / static_cast<double>(BOUNDARY_HERMITE_SCAN_INTERVALS);
+		const double residual_right =
+		    Hermite_Radius_Residual(before, after, right, target_radius);
+		const bool bracketed =
+		    std::isfinite(residual_left)
+		    && std::isfinite(residual_right)
+		    && ((residual_left <= 0.0 && residual_right >= 0.0)
+		        || (residual_left >= 0.0 && residual_right <= 0.0));
+		if(bracketed)
 		{
-			lower = middle;
-			lower_value = middle_value;
+			double lower = left;
+			double upper = right;
+			double lower_residual = residual_left;
+			for(int iteration = 0;
+			    iteration < BOUNDARY_HERMITE_BISECTION_ITERATIONS;
+			    iteration++)
+			{
+				const double middle = 0.5 * (lower + upper);
+				const double middle_residual =
+				    Hermite_Radius_Residual(
+				        before, after, middle, target_radius);
+				if(!std::isfinite(middle_residual))
+					return false;
+				if((lower_residual <= 0.0 && middle_residual <= 0.0)
+				   || (lower_residual >= 0.0 && middle_residual >= 0.0))
+				{
+					lower = middle;
+					lower_residual = middle_residual;
+				}
+				else
+					upper = middle;
+			}
+			Event candidate =
+			    Hermite_Interpolate_Event(
+			        before, after, 0.5 * (lower + upper));
+			const double candidate_radius = candidate.Radius();
+			if(std::isfinite(candidate_radius)
+			   && candidate_radius > 0.0)
+				candidate.position =
+				    target_radius / candidate_radius * candidate.position;
+			if(std::isfinite(candidate.Radius())
+			   && std::isfinite(candidate.Speed())
+			   && Radial_Velocity(candidate) > 0.0)
+			{
+				crossing = candidate;
+				return true;
+			}
 		}
-		else
-			upper = middle;
+		left = right;
+		residual_left = residual_right;
 	}
-	return 0.5 * (lower + upper);
+	return false;
 }
 
 bool Surface_Crossing_Fractions(const Event& before, const Event& after, double& first, double& second)
@@ -1010,6 +1113,16 @@ class HermiteBincountDepositor
 };
 }
 
+bool Find_First_Outward_Hermite_Radius_Crossing(
+	const Event& before,
+	const Event& after,
+	double target_radius,
+	Event& crossing)
+{
+	return Find_First_Outward_Hermite_Radius_Crossing_Impl(
+	    before, after, target_radius, crossing);
+}
+
 void Compute_Bincount_Interval_Contributions(
 	const Event& before,
 	const Event& after,
@@ -1097,16 +1210,81 @@ bool Compute_Bound_Kepler_Exterior_Arc(
 	if(!std::isfinite(apoapsis_km) || apoapsis_km < radius_km)
 		return false;
 	arc = BoundKeplerExteriorArc();
-	arc.inbound_event = inbound_event;
-	arc.return_time_sec = In_Units(return_time, sec);
+	arc.terminal_event = inbound_event;
+	arc.elapsed_time_sec = In_Units(return_time, sec);
 	arc.kepler_period_sec = 2.0 * M_PI / mean_motion_s_inv;
 	arc.apoapsis_km = apoapsis_km;
-	if(apoapsis_km > RADIAL_DOMAIN_MAX_KM
-	                     * (1.0 + 1.0e-12))
+	arc.outer_domain_removed =
+	    apoapsis_km > RADIAL_DOMAIN_MAX_KM * (1.0 + 1.0e-12);
+	const double integration_limit_km =
+	    arc.outer_domain_removed ? RADIAL_DOMAIN_MAX_KM : apoapsis_km;
+	const double pass_factor = arc.outer_domain_removed ? 1.0 : 2.0;
+	if(arc.outer_domain_removed)
 	{
-		arc.radial_domain_exceeded = true;
-		return std::isfinite(arc.return_time_sec) && arc.return_time_sec > 0.0
-		    && std::isfinite(arc.kepler_period_sec) && arc.kepler_period_sec > 0.0;
+		const double cos_e_start = Clamp_Cosine(
+		    (1.0 - radius_km / semi_major_axis_km) / eccentricity);
+		const double cos_e_terminal = Clamp_Cosine(
+		    (1.0 - RADIAL_DOMAIN_MAX_KM / semi_major_axis_km) / eccentricity);
+		const double e_start = acos(cos_e_start);
+		const double e_terminal = acos(cos_e_terminal);
+		const double sin_e_start =
+		    sqrt(std::max(0.0, 1.0 - cos_e_start * cos_e_start));
+		const double sin_e_terminal =
+		    sqrt(std::max(0.0, 1.0 - cos_e_terminal * cos_e_terminal));
+		arc.elapsed_time_sec =
+		    ((e_terminal - eccentricity * sin_e_terminal)
+		     - (e_start - eccentricity * sin_e_start))
+		    / mean_motion_s_inv;
+
+		const double radius = outward_event.Radius();
+		const double mu = G_Newton * mSun;
+		const libphysica::Vector radial_unit = outward_event.position / radius;
+		const libphysica::Vector angular_momentum_vector =
+		    outward_event.position.Cross(outward_event.velocity);
+		const double angular_momentum = angular_momentum_vector.Norm();
+		const double semi_latus_rectum =
+		    angular_momentum * angular_momentum / mu;
+		const libphysica::Vector eccentricity_vector =
+		    outward_event.velocity.Cross(angular_momentum_vector) / mu
+		    - radial_unit;
+		const double eccentricity_natural = eccentricity_vector.Norm();
+		if(!std::isfinite(angular_momentum) || angular_momentum <= 0.0
+		   || !std::isfinite(semi_latus_rectum) || semi_latus_rectum <= 0.0
+		   || !std::isfinite(eccentricity_natural)
+		   || eccentricity_natural <= 0.0)
+			return false;
+
+		libphysica::Vector axis_x =
+		    eccentricity_vector / eccentricity_natural;
+		const libphysica::Vector axis_z =
+		    angular_momentum_vector / angular_momentum;
+		libphysica::Vector axis_y = axis_z.Cross(axis_x);
+		const double axis_y_norm = axis_y.Norm();
+		if(!std::isfinite(axis_y_norm) || axis_y_norm <= 0.0)
+			return false;
+		axis_y = axis_y / axis_y_norm;
+		axis_x = axis_y.Cross(axis_z).Normalized();
+
+		const double terminal_radius = RADIAL_DOMAIN_MAX_KM * km;
+		const double cos_true_anomaly = Clamp_Cosine(
+		    (semi_latus_rectum / terminal_radius - 1.0)
+		    / eccentricity_natural);
+		const double true_anomaly = acos(cos_true_anomaly);
+		arc.terminal_event = outward_event;
+		arc.terminal_event.time += arc.elapsed_time_sec * sec;
+		arc.terminal_event.position =
+		    terminal_radius
+		    * (cos(true_anomaly) * axis_x + sin(true_anomaly) * axis_y);
+		arc.terminal_event.velocity =
+		    sqrt(mu / semi_latus_rectum)
+		    * (-sin(true_anomaly) * axis_x
+		       + (eccentricity_natural + cos(true_anomaly)) * axis_y);
+		if(!std::isfinite(arc.elapsed_time_sec)
+		   || arc.elapsed_time_sec <= 0.0
+		   || !std::isfinite(arc.terminal_event.Radius())
+		   || !std::isfinite(arc.terminal_event.Speed())
+		   || Radial_Velocity(arc.terminal_event) <= 0.0)
+			return false;
 	}
 
 	const int first_bin_index = BincountBinIndexKm(radius_km);
@@ -1118,7 +1296,7 @@ bool Compute_Bound_Kepler_Exterior_Arc(
 		const double lower_radius_km =
 		    std::max(radius_km, BincountBinLowerKm(bin));
 		const double upper_radius_km =
-		    std::min(apoapsis_km, BincountBinUpperKm(bin));
+		    std::min(integration_limit_km, BincountBinUpperKm(bin));
 		if(!(upper_radius_km > lower_radius_km))
 			break;
 
@@ -1136,15 +1314,17 @@ bool Compute_Bound_Kepler_Exterior_Arc(
 		const double delta_v2_primitive =
 		    (e_upper - e_lower)
 		    + eccentricity * (sin_e_upper - sin_e_lower);
-		arc.dt_hist[bin] = 2.0 * delta_mean_anomaly / mean_motion_s_inv;
+		arc.dt_hist[bin] =
+		    pass_factor * delta_mean_anomaly / mean_motion_s_inv;
 		arc.v2dt_hist[bin] =
-		    2.0 * mu_km3_s2 / (semi_major_axis_km * mean_motion_s_inv)
+		    pass_factor * mu_km3_s2
+		    / (semi_major_axis_km * mean_motion_s_inv)
 		    * delta_v2_primitive;
 		if(!std::isfinite(arc.dt_hist[bin]) || arc.dt_hist[bin] < 0.0
 		   || !std::isfinite(arc.v2dt_hist[bin]) || arc.v2dt_hist[bin] < 0.0)
 			return false;
 	}
-	return std::isfinite(arc.return_time_sec) && arc.return_time_sec > 0.0
+	return std::isfinite(arc.elapsed_time_sec) && arc.elapsed_time_sec > 0.0
 	    && std::isfinite(arc.kepler_period_sec) && arc.kepler_period_sec > 0.0;
 }
 
@@ -1163,6 +1343,36 @@ const char* TrajectoryDiagnosticEventTypeKey(TrajectoryDiagnosticEventType type)
 		case TrajectoryDiagnosticEventType::Censored: return "censored";
 		case TrajectoryDiagnosticEventType::NumericalFailure: return "numerical_failure";
 		default: return "unknown";
+	}
+}
+
+const char* TrajectoryNumericalFailureDetailKey(
+	TrajectoryNumericalFailureDetail detail)
+{
+	switch(detail)
+	{
+		case TrajectoryNumericalFailureDetail::None:
+			return "none";
+		case TrajectoryNumericalFailureDetail::RK45ToleranceFailure:
+			return "rk45_tolerance_failure";
+		case TrajectoryNumericalFailureDetail::NonFinitePropagationState:
+			return "non_finite_propagation_state";
+		case TrajectoryNumericalFailureDetail::InvalidScatteringRate:
+			return "invalid_scattering_rate";
+		case TrajectoryNumericalFailureDetail::OpticalDepthRetryExhausted:
+			return "optical_depth_retry_exhausted";
+		case TrajectoryNumericalFailureDetail::UncapturedBoundMismatch:
+			return "uncaptured_bound_mismatch";
+		case TrajectoryNumericalFailureDetail::BoundaryCrossingLocalizationFailure:
+			return "boundary_crossing_localization_failure";
+		case TrajectoryNumericalFailureDetail::BoundaryDirectionMismatch:
+			return "boundary_direction_mismatch";
+		case TrajectoryNumericalFailureDetail::BoundaryEnergyMismatch:
+			return "boundary_energy_mismatch";
+		case TrajectoryNumericalFailureDetail::KeplerArcConstructionFailure:
+			return "kepler_arc_construction_failure";
+		default:
+			return "unknown";
 	}
 }
 
@@ -1195,7 +1405,7 @@ bool TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason reason
 		case TrajectoryTerminationReason::WallTimeLimit:
 		case TrajectoryTerminationReason::MaxFreeSteps:
 		case TrajectoryTerminationReason::MaxScatterings:
-		case TrajectoryTerminationReason::RadialDomainExceeded:
+		case TrajectoryTerminationReason::OuterDomainRemoval:
 		case TrajectoryTerminationReason::Unknown:
 			return true;
 		default:
@@ -1356,6 +1566,8 @@ void Trajectory_Simulator::Accumulate_Bincount_Interval(
 	const double dt_sec = In_Units(after.time - before.time, sec);
 	if(!std::isfinite(dt_sec) || dt_sec <= 0.0)
 		return;
+	if(!current_bincount.is_captured)
+		return;
 	Compute_Bincount_Interval_Contributions(before, after, bincount_contribution_cache);
 	for(const BincountContribution& contribution : bincount_contribution_cache)
 	{
@@ -1367,8 +1579,6 @@ void Trajectory_Simulator::Accumulate_Bincount_Interval(
 	}
 
 	const double r_before_km = In_Units(before.Radius(), km);
-	if(!current_bincount.is_captured)
-		return;
 	double interior_start = 0.0;
 	double interior_end = 0.0;
 	double inside_fraction = 0.0;
@@ -1520,7 +1730,6 @@ bool Trajectory_Simulator::Update_Capture_State(double radius, double speed, dou
 		if(current_physical_bound_state && current_bincount.is_captured)
 		{
 			current_bincount.t_last_bound = t_now_sec;
-			current_bincount.t_last_negative = t_now_sec;
 		}
 		return false;
 	}
@@ -1536,7 +1745,6 @@ bool Trajectory_Simulator::Update_Capture_State(double radius, double speed, dou
 		{
 			current_bincount.is_captured = true;
 			current_bincount.t_capture = t_now_sec;
-			current_bincount.t_first_negative = t_now_sec;
 			current_bincount.t_last_bound = t_now_sec;
 			current_bincount.r_first_negative_km = In_Units(radius, km);
 			current_bincount.E_first_negative_eV = E_eV;
@@ -1559,7 +1767,6 @@ bool Trajectory_Simulator::Update_Capture_State(double radius, double speed, dou
 			current_bincount.E_final_unbinding_eV = std::numeric_limits<double>::quiet_NaN();
 		}
 		current_bincount.t_last_bound = t_now_sec;
-		current_bincount.t_last_negative = t_now_sec;
 		return true;
 	}
 
@@ -1582,8 +1789,23 @@ bool Trajectory_Simulator::Update_Capture_State(double radius, double speed, dou
 
 TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& current_event, obscura::DM_Particle& DM)
 {
-	if(Outward_Escaping_At_Boundary(current_event, solar_model, maximum_distance))
-		return TrajectoryTerminationReason::OutwardEscape;
+	if(!current_physical_bound_state
+	   && current_event.Radius() >= maximum_distance
+	   && Radial_Velocity(current_event) > 0.0)
+	{
+		const double boundary_energy_eV =
+		    Capture_Energy_eV(
+		        current_event.Radius(),
+		        current_event.Speed(),
+		        DM);
+		const double energy_tolerance_eV =
+		    Boundary_Energy_Tolerance_eV(
+		        free_flight_reference_energy_eV,
+		        DM);
+		if(std::isfinite(boundary_energy_eV)
+		   && boundary_energy_eV >= -energy_tolerance_eV)
+			return TrajectoryTerminationReason::OutwardEscape;
+	}
 
 	auto abort_if_uncaptured_bound = [&](const Event& event)
 	{
@@ -1594,6 +1816,11 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 		if(std::isfinite(energy_eV) && energy_eV >= 0.0)
 			return false;
 
+		current_bincount.numerical_failure_detail =
+		    TrajectoryNumericalFailureDetail::UncapturedBoundMismatch;
+		current_bincount.failure_energy_after_step_eV = energy_eV;
+		current_bincount.failure_reference_energy_eV =
+		    free_flight_reference_energy_eV;
 		current_event = event;
 		return true;
 	};
@@ -1618,6 +1845,7 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 	unsigned long int time_steps = 0;
 	unsigned long int step_attempts = 0;
 	unsigned int optical_depth_retries = 0;
+	unsigned int boundary_refinement_retries = 0;
 	const bool fast_capture_mode = terminate_on_capture;
 	const double optical_depth_step_limit = fast_capture_mode ? CAPTURE_MODE_MAX_OPTICAL_DEPTH_STEP : MAX_OPTICAL_DEPTH_STEP;
 	const std::size_t optical_depth_piece_target = fast_capture_mode ? CAPTURE_MODE_OPTICAL_DEPTH_PIECES : MAX_OPTICAL_DEPTH_PIECES;
@@ -1704,6 +1932,22 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 			particle_propagator.time_step = std::min(RK45_Sanitized_Time_Step(particle_propagator.time_step), step_cap);
 			const double radial_velocity_before =
 			    (r_before > 0.0) ? event_before.position.Dot(event_before.velocity) / r_before : 0.0;
+			if(r_before < maximum_distance && radial_velocity_before > 0.0)
+			{
+				const double boundary_time_estimate =
+				    (maximum_distance - r_before) / radial_velocity_before;
+				if(std::isfinite(boundary_time_estimate)
+				   && boundary_time_estimate > 0.0)
+				{
+					// Slightly overshoot the estimated first outward crossing so
+					// the accepted step brackets it, while preventing one step
+					// from also crossing the exterior turning point.
+					const double boundary_step_cap =
+					    std::max(1.05 * boundary_time_estimate, 1.0e-8 * sec);
+					particle_propagator.time_step =
+					    std::min(particle_propagator.time_step, boundary_step_cap);
+				}
+			}
 			if(r_before > rSun && radial_velocity_before < 0.0)
 			{
 				const double surface_time_estimate = (r_before - rSun) / (-radial_velocity_before);
@@ -1722,6 +1966,8 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 					          << current_mpi_rank << ", traj " << current_trajectory_id
 					          << ", rate=" << rate_before << "). Marking trajectory as numerically failed." << std::endl;
 					current_event = to_absolute_event(particle_propagator.Event_In_3D());
+					current_bincount.numerical_failure_detail =
+					    TrajectoryNumericalFailureDetail::InvalidScatteringRate;
 					return TrajectoryTerminationReason::NumericalFailure;
 				}
 			if(rate_before > 0.0)
@@ -1739,13 +1985,19 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 		particle_propagator.Fill_Event_In_3D(event_after);
 
 		if(!rk_step_ok)
-			{
+		{
 				std::cerr << "\nWarning in Propagate_Freely(): RK45 step failed tolerance after retry limits (rank "
 				          << current_mpi_rank << ", traj " << current_trajectory_id
 				          << "). Marking trajectory as numerically failed." << std::endl;
-				current_event = to_absolute_event(particle_propagator.Event_In_3D());
-				return TrajectoryTerminationReason::NumericalFailure;
-			}
+			current_event = to_absolute_event(particle_propagator.Event_In_3D());
+			current_bincount.numerical_failure_detail =
+			    TrajectoryNumericalFailureDetail::RK45ToleranceFailure;
+			current_bincount.failure_attempted_step_s =
+			    In_Units(propagator_state_before.time_step, sec);
+			current_bincount.failure_accepted_step_s =
+			    In_Units(actual_dt, sec);
+			return TrajectoryTerminationReason::NumericalFailure;
+		}
 
 			if(!std::isfinite(r_after) || !std::isfinite(v_after) || !std::isfinite(actual_dt) || actual_dt <= 0.0)
 			{
@@ -1753,9 +2005,15 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 				std::cerr << "\nWarning in Propagate_Freely(): non-finite state (rank " << current_mpi_rank
 				          << ", traj " << current_trajectory_id << ", r=" << r_after
 				          << ", v=" << v_after << ", dt=" << actual_dt << "). Aborting trajectory." << std::endl;
-				current_event = to_absolute_event(particle_propagator.Event_In_3D());
-				return TrajectoryTerminationReason::NonFiniteState;
-			}
+			current_event = to_absolute_event(particle_propagator.Event_In_3D());
+			current_bincount.numerical_failure_detail =
+			    TrajectoryNumericalFailureDetail::NonFinitePropagationState;
+			current_bincount.failure_attempted_step_s =
+			    In_Units(propagator_state_before.time_step, sec);
+			current_bincount.failure_accepted_step_s =
+			    In_Units(actual_dt, sec);
+			return TrajectoryTerminationReason::NonFiniteState;
+		}
 
 		if(v_after > v_max)
 			{
@@ -1775,6 +2033,7 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 		// Check for scatterings and reflection
 		bool scattering = false;
 		bool reflection = false;
+		const double minus_log_xi_before_step = minus_log_xi;
 		Copy_Event_Into(accepted_event, event_after);
 		double interior_start = 0.0;
 		double interior_end = 0.0;
@@ -1812,6 +2071,8 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 					          << current_mpi_rank << ", traj " << current_trajectory_id
 					          << "). Marking trajectory as numerically failed." << std::endl;
 					current_event = to_absolute_event(event_after);
+					current_bincount.numerical_failure_detail =
+					    TrajectoryNumericalFailureDetail::InvalidScatteringRate;
 					return TrajectoryTerminationReason::NumericalFailure;
 				}
 
@@ -1831,6 +2092,8 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 							          << ", relative_error=" << tau_relative_error
 							          << "). Marking trajectory as numerically failed." << std::endl;
 							current_event = to_absolute_event(event_before);
+							current_bincount.numerical_failure_detail =
+							    TrajectoryNumericalFailureDetail::OpticalDepthRetryExhausted;
 							return TrajectoryTerminationReason::NumericalFailure;
 						}
 
@@ -1879,31 +2142,148 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 		if(!scattering)
 		{
 			Copy_Event_Into(boundary_event, event_after);
-			double r_boundary = r_after;
-			double v_boundary = v_after;
-			if(r_before < maximum_distance && r_after >= maximum_distance && r_after > r_before)
+			const bool endpoint_brackets_matching_boundary =
+			    r_before <= maximum_distance * (1.0 + 1.0e-12)
+			    && r_after >= maximum_distance;
+			if(endpoint_brackets_matching_boundary)
 			{
-				const double boundary_fraction = Find_Radius_Crossing_Fraction(event_before, event_after, maximum_distance);
-				boundary_event = Interpolate_Event(event_before, event_after, boundary_fraction);
-				const double interpolated_radius = boundary_event.Radius();
-				if(std::isfinite(interpolated_radius) && interpolated_radius > 0.0)
-					boundary_event.position = maximum_distance / interpolated_radius * boundary_event.position;
-				// The crossing has already been bracketed and solved.  Recomputing
-				// the norm after radial projection can round one ULP below the
-				// target and incorrectly bypass the strict boundary branch.
-				r_boundary = maximum_distance;
-				v_boundary = boundary_event.Speed();
-			}
+				if(!Find_First_Outward_Hermite_Radius_Crossing(
+				       event_before,
+				       event_after,
+				       maximum_distance,
+				       boundary_event))
+				{
+					boundary_refinement_retries++;
+					if(boundary_refinement_retries
+					   <= MAX_BOUNDARY_REFINEMENT_RETRIES)
+					{
+						particle_propagator.Restore_Scalar_State(
+						    propagator_state_before);
+						particle_propagator.time_step =
+						    RK45_Sanitized_Time_Step(
+						        std::max(
+						            0.5 * actual_dt,
+						            1.0e-8 * sec));
+						minus_log_xi = minus_log_xi_before_step;
+						continue;
+					}
+					current_bincount.numerical_failure_detail =
+					    TrajectoryNumericalFailureDetail::
+					        BoundaryCrossingLocalizationFailure;
+					current_bincount.failure_energy_before_step_eV =
+					    Capture_Energy_eV(
+					        event_before.Radius(),
+					        event_before.Speed(),
+					        DM);
+					current_bincount.failure_energy_after_step_eV =
+					    Capture_Energy_eV(
+					        event_after.Radius(),
+					        event_after.Speed(),
+					        DM);
+					current_bincount.failure_reference_energy_eV =
+					    free_flight_reference_energy_eV;
+					current_bincount.failure_attempted_step_s =
+					    In_Units(
+					        propagator_state_before.time_step,
+					        sec);
+					current_bincount.failure_accepted_step_s =
+					    In_Units(actual_dt, sec);
+					current_event = to_absolute_event(event_after);
+					return TrajectoryTerminationReason::NumericalFailure;
+				}
+				const double boundary_energy_eV =
+				    Capture_Energy_eV(
+				        boundary_event.Radius(),
+				        boundary_event.Speed(),
+				        DM);
+				const double reference_energy_eV =
+				    free_flight_reference_energy_eV;
+				const double energy_tolerance_eV =
+				    Boundary_Energy_Tolerance_eV(
+				        reference_energy_eV,
+				        DM);
+				const bool boundary_energy_consistent =
+				    std::isfinite(boundary_energy_eV)
+				    && std::isfinite(reference_energy_eV)
+				    && (current_physical_bound_state
+				        ? boundary_energy_eV
+				              <= energy_tolerance_eV
+				        : boundary_energy_eV
+				              >= -energy_tolerance_eV);
+				if(!boundary_energy_consistent)
+				{
+					boundary_refinement_retries++;
+					if(boundary_refinement_retries
+					   <= MAX_BOUNDARY_REFINEMENT_RETRIES)
+					{
+						particle_propagator.Restore_Scalar_State(
+						    propagator_state_before);
+						particle_propagator.time_step =
+						    RK45_Sanitized_Time_Step(
+						        std::max(
+						            0.5 * actual_dt,
+						            1.0e-8 * sec));
+						minus_log_xi = minus_log_xi_before_step;
+						continue;
+					}
+					current_bincount.numerical_failure_detail =
+					    TrajectoryNumericalFailureDetail::
+					        BoundaryEnergyMismatch;
+					current_bincount.failure_energy_before_step_eV =
+					    Capture_Energy_eV(
+					        event_before.Radius(),
+					        event_before.Speed(),
+					        DM);
+					current_bincount.failure_energy_after_step_eV =
+					    Capture_Energy_eV(
+					        event_after.Radius(),
+					        event_after.Speed(),
+					        DM);
+					current_bincount.failure_energy_at_boundary_eV =
+					    boundary_energy_eV;
+					current_bincount.failure_reference_energy_eV =
+					    reference_energy_eV;
+					current_bincount.failure_boundary_vr_km_s =
+					    In_Units(
+					        Radial_Velocity(boundary_event),
+					        km / sec);
+					current_bincount.failure_attempted_step_s =
+					    In_Units(
+					        propagator_state_before.time_step,
+					        sec);
+					current_bincount.failure_accepted_step_s =
+					    In_Units(actual_dt, sec);
+					std::cerr
+					    << "\nWarning in Propagate_Freely(): "
+					    << "boundary energy refinement exhausted (rank "
+					    << current_mpi_rank
+					    << ", traj "
+					    << current_trajectory_id
+					    << ", E_ref="
+					    << reference_energy_eV
+					    << " eV, E_boundary="
+					    << boundary_energy_eV
+					    << " eV, tolerance="
+					    << energy_tolerance_eV
+					    << " eV, vr_boundary="
+					    << current_bincount.failure_boundary_vr_km_s
+					    << " km/s)."
+					    << std::endl;
+					current_event =
+					    to_absolute_event(boundary_event);
+					return TrajectoryTerminationReason::NumericalFailure;
+				}
+				boundary_refinement_retries = 0;
 
-			if(r_boundary >= maximum_distance && r_boundary >= r_before
-			   && v_boundary >= solar_model.Local_Escape_Speed(r_boundary))
-			{
-				accepted_event = boundary_event;
-				reflection = true;
-				outcome = TrajectoryTerminationReason::OutwardEscape;
-			}
-			else if(r_boundary >= maximum_distance && r_boundary >= r_before)
-			{
+				if(!current_physical_bound_state)
+				{
+					accepted_event = boundary_event;
+					reflection = true;
+					outcome =
+					    TrajectoryTerminationReason::OutwardEscape;
+				}
+				else
+				{
 				const Event absolute_boundary_event = to_absolute_event(boundary_event);
 				if(abort_if_uncaptured_bound(absolute_boundary_event))
 					return TrajectoryTerminationReason::NumericalFailure;
@@ -1922,55 +2302,53 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 							current_bincount.first_bound_exit_kepler_period_sec =
 							    kepler_arc.kepler_period_sec;
 							current_bincount.first_bound_exit_exterior_time_sec =
-							    kepler_arc.return_time_sec;
+							    kepler_arc.elapsed_time_sec;
 						}
 						current_bincount.last_bound_exit_kepler_period_sec =
 						    kepler_arc.kepler_period_sec;
 						current_bincount.last_bound_exit_exterior_time_sec =
-						    kepler_arc.return_time_sec;
+						    kepler_arc.elapsed_time_sec;
 						if(!std::isfinite(current_bincount.max_bound_exit_kepler_period_sec)
 						   || kepler_arc.kepler_period_sec
 						      > current_bincount.max_bound_exit_kepler_period_sec)
 							current_bincount.max_bound_exit_kepler_period_sec =
 							    kepler_arc.kepler_period_sec;
 						if(!std::isfinite(current_bincount.max_bound_exit_exterior_time_sec)
-						   || kepler_arc.return_time_sec
+						   || kepler_arc.elapsed_time_sec
 						      > current_bincount.max_bound_exit_exterior_time_sec)
 							current_bincount.max_bound_exit_exterior_time_sec =
-							    kepler_arc.return_time_sec;
+							    kepler_arc.elapsed_time_sec;
+						for(std::size_t bin = NUM_BINS; bin < TOTAL_BINS; bin++)
+						{
+							current_bincount.dt_hist[bin] += kepler_arc.dt_hist[bin];
+							current_bincount.v2dt_hist[bin] += kepler_arc.v2dt_hist[bin];
+						}
+						current_bincount.time_outside_sun_after_capture_sec +=
+						    kepler_arc.elapsed_time_sec;
 					}
-					if(kepler_arc.radial_domain_exceeded)
+					current_event = to_absolute_event(kepler_arc.terminal_event);
+					if(kepler_arc.outer_domain_removed)
 					{
-						current_event = absolute_boundary_event;
 						if(current_bincount.is_captured)
 						{
 							if(!std::isfinite(current_bincount.max_radius_after_capture_km)
-							   || kepler_arc.apoapsis_km
+							   || RADIAL_DOMAIN_MAX_KM
 							      > current_bincount.max_radius_after_capture_km)
 								current_bincount.max_radius_after_capture_km =
-								    kepler_arc.apoapsis_km;
-							current_bincount.t_last_bound =
-							    In_Units(current_event.time, sec);
-							current_bincount.t_last_negative =
-							    current_bincount.t_last_bound;
+								    RADIAL_DOMAIN_MAX_KM;
+							current_bincount.t_last_bound = In_Units(current_event.time, sec);
 						}
-						return TrajectoryTerminationReason::RadialDomainExceeded;
+						Maybe_Publish_Snapshot_Progress(
+						    In_Units(current_event.time, sec), true);
+						return TrajectoryTerminationReason::OuterDomainRemoval;
 					}
-					for(std::size_t bin = NUM_BINS; bin < TOTAL_BINS; bin++)
-					{
-						current_bincount.dt_hist[bin] += kepler_arc.dt_hist[bin];
-						current_bincount.v2dt_hist[bin] += kepler_arc.v2dt_hist[bin];
-					}
-					current_event = to_absolute_event(kepler_arc.inbound_event);
 					if(current_bincount.is_captured)
 					{
-						current_bincount.time_outside_sun_after_capture_sec += kepler_arc.return_time_sec;
 						const double apoapsis_km = kepler_arc.apoapsis_km;
 						if(!std::isfinite(current_bincount.max_radius_after_capture_km)
 						   || apoapsis_km > current_bincount.max_radius_after_capture_km)
 							current_bincount.max_radius_after_capture_km = apoapsis_km;
 						current_bincount.t_last_bound = In_Units(current_event.time, sec);
-						current_bincount.t_last_negative = current_bincount.t_last_bound;
 					}
 					Reset_Bincount_Anchor(current_event);
 					// Synchronize the in-progress state after the large analytic
@@ -1979,8 +2357,20 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 					reset_propagator_at_absolute_event(current_event);
 					continue;
 				}
+				current_bincount.numerical_failure_detail =
+				    TrajectoryNumericalFailureDetail::
+				        KeplerArcConstructionFailure;
+				current_bincount.failure_energy_at_boundary_eV =
+				    boundary_energy_eV;
+				current_bincount.failure_reference_energy_eV =
+				    reference_energy_eV;
+				current_bincount.failure_boundary_vr_km_s =
+				    In_Units(
+				        Radial_Velocity(boundary_event),
+				        km / sec);
 				current_event = absolute_boundary_event;
 				return TrajectoryTerminationReason::NumericalFailure;
+				}
 			}
 		}
 
@@ -2173,8 +2563,11 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
 	current_bincount = TrajectoryBincount();
 	Reset_Bincount_Anchor(current_event);
 	previous_capture_energy_eV = Capture_Energy_eV(current_event.Radius(), current_event.Speed(), DM);
-	free_flight_reference_energy_eV = std::numeric_limits<double>::quiet_NaN();
+	free_flight_reference_energy_eV = previous_capture_energy_eV;
 	current_ballistic_energy_drift_eV = 0.0;
+	// Injection is physically unbound by construction. A substantially negative
+	// initial boundary energy is handled by the uncaptured-bound mismatch guard;
+	// a sub-tolerance sign flip must not reclassify the injected particle.
 	current_physical_bound_state = false;
 	current_mpi_rank = mpi_rank;
 	current_trajectory_id++;
@@ -2292,6 +2685,17 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
 			{
 				termination_reason = TrajectoryTerminationReason::EnergyDriftEscape;
 				current_bincount.termination_reason = termination_reason;
+				current_bincount.numerical_failure_detail =
+				    TrajectoryNumericalFailureDetail::BoundaryEnergyMismatch;
+				current_bincount.failure_energy_at_boundary_eV =
+				    E_final_eV;
+				current_bincount.failure_reference_energy_eV =
+				    free_flight_reference_energy_eV;
+				current_bincount.failure_boundary_vr_km_s =
+				    In_Units(
+				        current_event.position.Dot(current_event.velocity)
+				        / r_final,
+				        km / sec);
 				current_bincount.survival_valid = false;
 				current_bincount.numerically_invalid_escape = true;
 				current_bincount.boundary_escape_observed = false;
@@ -2323,8 +2727,8 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
 			if(termination_reason != TrajectoryTerminationReason::CaptureMode)
 				current_bincount.survival_valid = false;
 		}
-		current_bincount.truncated =
-		    termination_reason == TrajectoryTerminationReason::RadialDomainExceeded;
+		current_bincount.outer_domain_removed =
+		    termination_reason == TrajectoryTerminationReason::OuterDomainRemoval;
 	}
 
 	return Trajectory_Result(initial_condition, current_event, number_of_scatterings, current_bincount,

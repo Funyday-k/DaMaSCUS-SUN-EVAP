@@ -243,7 +243,7 @@ int main(int argc, char* argv[])
 		Check(report.find("# total_trajectories = 4") != std::string::npos, "snapshot report has the wrong trajectory total", rank, failures);
 		Check(report.find("# captured_particles = 2") != std::string::npos, "snapshot report has the wrong capture total", rank, failures);
 		Check(report.find("# valid_trajectories = 4") != std::string::npos, "snapshot report has the wrong classified total", rank, failures);
-		Check(report.find("# capture_rate = 0.50000000") != std::string::npos, "snapshot report has the wrong capture rate", rank, failures);
+		Check(report.find("# capture_rate_raw = 0.50000000") != std::string::npos, "snapshot report has the wrong raw capture rate", rank, failures);
 		Check(report.find("# capture_rate_valid = 0.50000000") != std::string::npos, "snapshot report has the wrong valid capture rate", rank, failures);
 		Check(evaporation.find("# snapshot_status = merged") != std::string::npos, "evaporation report is not merged", rank, failures);
 

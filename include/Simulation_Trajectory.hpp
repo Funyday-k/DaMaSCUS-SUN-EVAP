@@ -66,20 +66,20 @@ int BincountBinIndexKm(double radius_km);
 
 struct BoundKeplerExteriorArc
 {
-	Event inbound_event;
-	double return_time_sec = 0.0;
+	Event terminal_event;
+	double elapsed_time_sec = 0.0;
 	double kepler_period_sec = 0.0;
 	double apoapsis_km = 0.0;
-	bool radial_domain_exceeded = false;
+	bool outer_domain_removed = false;
 	std::array<double, TOTAL_BINS> dt_hist{};
 	std::array<double, TOTAL_BINS> v2dt_hist{};
 };
 
 // Analytically propagate a negative-specific-energy outward crossing from the
-// 1.1 R_sun matching surface to apoapsis and back to the same surface. The
-// returned histogram uses the fixed compact grid. A mathematically valid orbit
-// whose apoapsis exceeds 5.2 AU is reported via radial_domain_exceeded and is
-// excluded from the near-Sun evaporation sample by the caller.
+// 1.1 R_sun matching surface. Orbits contained inside 5.2 AU return to the
+// matching surface; larger orbits terminate at the outward 5.2-AU crossing.
+// The returned histogram is a round trip in the first case and a one-way
+// residence contribution in the second.
 bool Compute_Bound_Kepler_Exterior_Arc(const Event& outward_event, BoundKeplerExteriorArc& arc);
 
 enum class TrajectoryTerminationReason
@@ -95,8 +95,24 @@ enum class TrajectoryTerminationReason
 	NumericalFailure = 8,
 	CaptureMode = 9,
 	EnergyDriftEscape = 10,
-	RadialDomainExceeded = 11
+	OuterDomainRemoval = 11
 };
+
+enum class TrajectoryNumericalFailureDetail
+{
+	None = 0,
+	RK45ToleranceFailure = 1,
+	NonFinitePropagationState = 2,
+	InvalidScatteringRate = 3,
+	OpticalDepthRetryExhausted = 4,
+	UncapturedBoundMismatch = 5,
+	BoundaryCrossingLocalizationFailure = 6,
+	BoundaryDirectionMismatch = 7,
+	BoundaryEnergyMismatch = 8,
+	KeplerArcConstructionFailure = 9
+};
+
+constexpr int TRAJECTORY_NUMERICAL_FAILURE_DETAIL_COUNT = 10;
 
 enum class TrajectoryDiagnosticEventType
 {
@@ -136,6 +152,7 @@ struct TrajectoryDiagnosticEvent
 };
 
 const char* TrajectoryDiagnosticEventTypeKey(TrajectoryDiagnosticEventType type);
+const char* TrajectoryNumericalFailureDetailKey(TrajectoryNumericalFailureDetail detail);
 double RK45PositionToleranceKm();
 double RK45VelocityToleranceKmPerSec();
 double RK45PhaseTolerance();
@@ -150,6 +167,15 @@ bool SnapshotProgressPublishDue(
 
 bool TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason reason);
 
+// Locate the first outward target-radius crossing on the cubic Hermite curve
+// defined by two accepted trajectory states. Positions and velocities use
+// libphysica natural units. Returns false if no outward crossing is bracketed.
+bool Find_First_Outward_Hermite_Radius_Crossing(
+	const Event& before,
+	const Event& after,
+	double target_radius,
+	Event& crossing);
+
 // Per-trajectory bincount result
 struct TrajectoryBincount
 {
@@ -158,8 +184,6 @@ struct TrajectoryBincount
 
 	// Capture/evaporation info
 	bool is_captured = false;
-	double t_first_negative = -1.0;  // compatibility alias for t_capture [seconds]
-	double t_last_negative  = -1.0;  // compatibility alias for t_last_bound [seconds]
 	double t_capture = -1.0;         // first post-scatter transition to E < 0 [seconds]
 	double t_last_bound = -1.0;      // latest time physically bound during free flight [seconds]
 	double t_first_unbinding_scatter = std::numeric_limits<double>::quiet_NaN();  // first bound-to-unbound scatter [seconds]
@@ -197,8 +221,17 @@ struct TrajectoryBincount
 	double first_bound_exit_exterior_time_sec = std::numeric_limits<double>::quiet_NaN();
 	double last_bound_exit_exterior_time_sec = std::numeric_limits<double>::quiet_NaN();
 	double max_bound_exit_exterior_time_sec = std::numeric_limits<double>::quiet_NaN();
-	bool truncated = false;          // true only when the 5.2-AU radial domain is exceeded
+	bool outer_domain_removed = false;  // true after physical removal at 5.2 AU
 	TrajectoryTerminationReason termination_reason = TrajectoryTerminationReason::Unknown;
+	TrajectoryNumericalFailureDetail numerical_failure_detail =
+	    TrajectoryNumericalFailureDetail::None;
+	double failure_energy_before_step_eV = std::numeric_limits<double>::quiet_NaN();
+	double failure_energy_after_step_eV = std::numeric_limits<double>::quiet_NaN();
+	double failure_energy_at_boundary_eV = std::numeric_limits<double>::quiet_NaN();
+	double failure_reference_energy_eV = std::numeric_limits<double>::quiet_NaN();
+	double failure_boundary_vr_km_s = std::numeric_limits<double>::quiet_NaN();
+	double failure_attempted_step_s = std::numeric_limits<double>::quiet_NaN();
+	double failure_accepted_step_s = std::numeric_limits<double>::quiet_NaN();
 
 };
 

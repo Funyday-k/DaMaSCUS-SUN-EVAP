@@ -24,14 +24,23 @@ namespace DaMaSCUS_SUN
 
 class SnapshotRecorder;
 
-// Bincount histogram constants
-constexpr int NUM_BINS = 2000;
+// The numerical trajectory, injection surface, and exterior Kepler matching
+// surface are deliberately identical.
+constexpr double TRAJECTORY_BOUNDARY_RSUN = 1.1;
 constexpr double R_SUN_KM = 6.957e5;  // km
-constexpr double BIN_MAX_KM = 2.0 * R_SUN_KM;  // 2 R_sun in km
-constexpr double BIN_WIDTH_KM = BIN_MAX_KM / NUM_BINS;  // ~695.7 km
+constexpr double AU_KM = 1.495978707e8;  // IAU 2012 exact astronomical unit [km]
+constexpr double BIN_WIDTH_KM = R_SUN_KM / 1000.0;  // 0.001 R_sun
+constexpr int NUM_BINS = 1100;  // base grid through 1.1 R_sun
+constexpr double BIN_MAX_KM = NUM_BINS * BIN_WIDTH_KM;
+constexpr double RADIAL_DOMAIN_MAX_AU = 5.2;  // Jupiter-orbit cutoff
+constexpr double RADIAL_DOMAIN_MAX_KM = RADIAL_DOMAIN_MAX_AU * AU_KM;
+constexpr double RADIAL_DOMAIN_MAX_RSUN = RADIAL_DOMAIN_MAX_KM / R_SUN_KM;
+constexpr std::size_t EXTERIOR_LOG_BINS = 512;
+constexpr std::size_t TOTAL_BINS =
+    static_cast<std::size_t>(NUM_BINS) + EXTERIOR_LOG_BINS;
 constexpr unsigned long int DEFAULT_MAXIMUM_FREE_TIME_STEPS = 1000000000000UL;
 constexpr unsigned long int DEFAULT_MAXIMUM_SCATTERINGS = 100000000000000UL;
-constexpr int TRAJECTORY_TERMINATION_REASON_COUNT = 11;
+constexpr int TRAJECTORY_TERMINATION_REASON_COUNT = 12;
 
 struct BincountContribution
 {
@@ -48,6 +57,31 @@ void Compute_Bincount_Interval_Contributions(
 	const Event& after,
 	std::vector<BincountContribution>& contributions);
 
+// The fixed histogram is uniform through 1.1 R_sun and logarithmic from there
+// to the 5.2-AU Jupiter cutoff. These helpers are the single source of truth
+// for writers, snapshots, and exact exterior Kepler shell integration.
+double BincountBinLowerKm(std::size_t bin);
+double BincountBinUpperKm(std::size_t bin);
+int BincountBinIndexKm(double radius_km);
+
+struct BoundKeplerExteriorArc
+{
+	Event terminal_event;
+	double elapsed_time_sec = 0.0;
+	double kepler_period_sec = 0.0;
+	double apoapsis_km = 0.0;
+	bool outer_domain_removed = false;
+	std::array<double, TOTAL_BINS> dt_hist{};
+	std::array<double, TOTAL_BINS> v2dt_hist{};
+};
+
+// Analytically propagate a negative-specific-energy outward crossing from the
+// 1.1 R_sun matching surface. Orbits contained inside 5.2 AU return to the
+// matching surface; larger orbits terminate at the outward 5.2-AU crossing.
+// The returned histogram is a round trip in the first case and a one-way
+// residence contribution in the second.
+bool Compute_Bound_Kepler_Exterior_Arc(const Event& outward_event, BoundKeplerExteriorArc& arc);
+
 enum class TrajectoryTerminationReason
 {
 	Unknown = 0,
@@ -60,8 +94,25 @@ enum class TrajectoryTerminationReason
 	SpeedLimit = 7,
 	NumericalFailure = 8,
 	CaptureMode = 9,
-	EnergyDriftEscape = 10
+	EnergyDriftEscape = 10,
+	OuterDomainRemoval = 11
 };
+
+enum class TrajectoryNumericalFailureDetail
+{
+	None = 0,
+	RK45ToleranceFailure = 1,
+	NonFinitePropagationState = 2,
+	InvalidScatteringRate = 3,
+	OpticalDepthRetryExhausted = 4,
+	UncapturedBoundMismatch = 5,
+	BoundaryCrossingLocalizationFailure = 6,
+	BoundaryDirectionMismatch = 7,
+	BoundaryEnergyMismatch = 8,
+	KeplerArcConstructionFailure = 9
+};
+
+constexpr int TRAJECTORY_NUMERICAL_FAILURE_DETAIL_COUNT = 10;
 
 enum class TrajectoryDiagnosticEventType
 {
@@ -101,6 +152,7 @@ struct TrajectoryDiagnosticEvent
 };
 
 const char* TrajectoryDiagnosticEventTypeKey(TrajectoryDiagnosticEventType type);
+const char* TrajectoryNumericalFailureDetailKey(TrajectoryNumericalFailureDetail detail);
 double RK45PositionToleranceKm();
 double RK45VelocityToleranceKmPerSec();
 double RK45PhaseTolerance();
@@ -109,19 +161,29 @@ double NormalModeMaxOpticalDepthStep();
 double OpticalDepthRelativeTolerance();
 const char* BincountIntegrationScheme();
 double BincountDensePositionToleranceKm();
+double SnapshotProgressPublishWallIntervalSeconds();
+bool SnapshotProgressPublishDue(
+    unsigned long int accepted_steps_since_publish, double wall_seconds_since_publish, bool force);
 
 bool TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason reason);
+
+// Locate the first outward target-radius crossing on the cubic Hermite curve
+// defined by two accepted trajectory states. Positions and velocities use
+// libphysica natural units. Returns false if no outward crossing is bracketed.
+bool Find_First_Outward_Hermite_Radius_Crossing(
+	const Event& before,
+	const Event& after,
+	double target_radius,
+	Event& crossing);
 
 // Per-trajectory bincount result
 struct TrajectoryBincount
 {
-	std::array<double, NUM_BINS> dt_hist;     // Σ Δt per radial bin
-	std::array<double, NUM_BINS> v2dt_hist;   // Σ v²·Δt per radial bin
+	std::array<double, TOTAL_BINS> dt_hist{};     // Σ Δt per radial bin
+	std::array<double, TOTAL_BINS> v2dt_hist{};   // Σ v²·Δt per radial bin
 
 	// Capture/evaporation info
 	bool is_captured = false;
-	double t_first_negative = -1.0;  // compatibility alias for t_capture [seconds]
-	double t_last_negative  = -1.0;  // compatibility alias for t_last_bound [seconds]
 	double t_capture = -1.0;         // first post-scatter transition to E < 0 [seconds]
 	double t_last_bound = -1.0;      // latest time physically bound during free flight [seconds]
 	double t_first_unbinding_scatter = std::numeric_limits<double>::quiet_NaN();  // first bound-to-unbound scatter [seconds]
@@ -152,14 +214,25 @@ struct TrajectoryBincount
 	double max_radius_after_capture_km = std::numeric_limits<double>::quiet_NaN();
 	double time_inside_sun_after_capture_sec = 0.0;
 	double time_outside_sun_after_capture_sec = 0.0;
-	bool truncated = false;          // compatibility alias for right-censored unbinding lifetime
+	unsigned long int number_of_bound_exterior_arcs = 0;
+	double first_bound_exit_kepler_period_sec = std::numeric_limits<double>::quiet_NaN();
+	double last_bound_exit_kepler_period_sec = std::numeric_limits<double>::quiet_NaN();
+	double max_bound_exit_kepler_period_sec = std::numeric_limits<double>::quiet_NaN();
+	double first_bound_exit_exterior_time_sec = std::numeric_limits<double>::quiet_NaN();
+	double last_bound_exit_exterior_time_sec = std::numeric_limits<double>::quiet_NaN();
+	double max_bound_exit_exterior_time_sec = std::numeric_limits<double>::quiet_NaN();
+	bool outer_domain_removed = false;  // true after physical removal at 5.2 AU
 	TrajectoryTerminationReason termination_reason = TrajectoryTerminationReason::Unknown;
+	TrajectoryNumericalFailureDetail numerical_failure_detail =
+	    TrajectoryNumericalFailureDetail::None;
+	double failure_energy_before_step_eV = std::numeric_limits<double>::quiet_NaN();
+	double failure_energy_after_step_eV = std::numeric_limits<double>::quiet_NaN();
+	double failure_energy_at_boundary_eV = std::numeric_limits<double>::quiet_NaN();
+	double failure_reference_energy_eV = std::numeric_limits<double>::quiet_NaN();
+	double failure_boundary_vr_km_s = std::numeric_limits<double>::quiet_NaN();
+	double failure_attempted_step_s = std::numeric_limits<double>::quiet_NaN();
+	double failure_accepted_step_s = std::numeric_limits<double>::quiet_NaN();
 
-	TrajectoryBincount()
-	{
-		dt_hist.fill(0.0);
-		v2dt_hist.fill(0.0);
-	}
 };
 
 // Snapshot configuration: periodic cumulative bincount output
@@ -238,8 +311,14 @@ class Trajectory_Simulator
 	bool trajectory_in_progress;
 	bool track_trajectory_wall_time;
 	std::chrono::steady_clock::time_point current_trajectory_wall_start;
+	std::chrono::steady_clock::time_point last_snapshot_publish_wall_time;
 	double accumulated_snapshot_overhead_sec;
 	void Accumulate_Snapshot_Overhead(const std::chrono::steady_clock::time_point& operation_start);
+
+	// Publish in batches, but bound staleness independently of the accepted-step
+	// rate so a slow trajectory remains visible to the snapshot thread.
+	unsigned long int steps_since_snapshot_publish;
+	void Maybe_Publish_Snapshot_Progress(double simulated_time_sec, bool force);
 
 	TrajectoryTerminationReason Propagate_Freely(Event& current_event, obscura::DM_Particle& DM);
 
@@ -262,7 +341,7 @@ class Trajectory_Simulator
 	unsigned int current_mpi_rank;
 	unsigned long int current_trajectory_id;
 
-	Trajectory_Simulator(const Solar_Model& model, unsigned long int max_time_steps = DEFAULT_MAXIMUM_FREE_TIME_STEPS, unsigned long int max_scatterings = DEFAULT_MAXIMUM_SCATTERINGS, double max_distance = 2.0 * libphysica::natural_units::rSun);
+	Trajectory_Simulator(const Solar_Model& model, unsigned long int max_time_steps = DEFAULT_MAXIMUM_FREE_TIME_STEPS, unsigned long int max_scatterings = DEFAULT_MAXIMUM_SCATTERINGS, double max_distance = TRAJECTORY_BOUNDARY_RSUN * libphysica::natural_units::rSun);
 
 	void Fix_PRNG_Seed(unsigned int fixed_seed);
 	void Restore_PRNG_State(const std::string& serialized_state);
@@ -297,16 +376,35 @@ class Free_Particle_Propagator
   public:
 	double time_step = 0.1 * libphysica::natural_units::sec;
 
+	// A Runge-Kutta step mutates only these scalars; the orbital basis, angular
+	// momentum, and error tolerances are fixed at construction. Rolling a
+	// rejected step back therefore needs no copy of the whole propagator.
+	struct Scalar_State
+	{
+		double time;
+		double radius;
+		double phi;
+		double v_radial;
+		double time_step;
+	};
+
 	explicit Free_Particle_Propagator(const Event& event);
 
 	bool Runge_Kutta_45_Step(Solar_Model& solar_model);
 	bool Runge_Kutta_45_Step(double constant_mass);
+
+	Scalar_State Save_Scalar_State() const;
+	void Restore_Scalar_State(const Scalar_State& state);
 
 	double Current_Time();
 	double Current_Radius();
 	double Current_Speed();
 
 	Event Event_In_3D();
+	// Overwrite an existing Event in place. libphysica::Vector allocates on every
+	// construction and assignment, so the per-step propagation loop reuses one
+	// Event buffer instead of building a fresh one.
+	void Fill_Event_In_3D(Event& event) const;
 };
 }	// namespace DaMaSCUS_SUN
 

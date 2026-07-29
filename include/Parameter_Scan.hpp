@@ -14,6 +14,12 @@
 namespace DaMaSCUS_SUN
 {
 
+// Atomically replace the parameter-scan resume grid after the complete table
+// has been written and closed successfully. Callers must restrict writes to
+// rank 0.
+bool Write_P_Value_Grid_Atomically(
+    const std::string& path, const std::vector<std::vector<double>>& p_value_grid);
+
 // 1. Configuration class for input file, which extends the obscura::Configuration class.
 
 class Configuration : public obscura::Configuration
@@ -33,7 +39,6 @@ class Configuration : public obscura::Configuration
 	SnapshotConfig snapshot_config;
 	TrajectoryDiagnosticConfig trajectory_diagnostic_config;
 	double cross_section_min, cross_section_max;
-	double escape_radius_rsun;
 	bool compute_halo_constraints, perform_full_scan, capture_mode;
 	explicit Configuration(std::string cfg_filename, int MPI_rank = 0);
 

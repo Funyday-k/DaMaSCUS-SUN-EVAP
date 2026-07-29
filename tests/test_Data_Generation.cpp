@@ -56,173 +56,11 @@ void RemoveTestOutputDir(const std::string& directory)
 	std::remove((directory + "run_metadata.json").c_str());
 	std::remove((directory + "trajectory_summary.tsv").c_str());
 	std::remove((directory + "trajectory_events.tsv").c_str());
+	std::remove((directory + "invalid_trajectories.tsv").c_str());
+	std::remove((directory + "residence_jackknife_blocks.tsv").c_str());
 	rmdir(directory.c_str());
 }
 
-// Retired with the block/manifest snapshot workflow.
-#if 0
-struct TestEvaporationRow
-{
-	int rank = -1;
-	uint64_t trajectory_id = 0;
-	double lifetime_unbinding = -1.0;
-};
-
-TestEvaporationRow MakeTestEvaporationRow(int rank, uint64_t trajectory_id, double lifetime_unbinding)
-{
-	TestEvaporationRow row;
-	row.rank = rank;
-	row.trajectory_id = trajectory_id;
-	row.lifetime_unbinding = lifetime_unbinding;
-	return row;
-}
-
-void EnsureDir(const std::string& path)
-{
-	mkdir(path.c_str(), 0755);
-}
-
-void WriteTestEvaporationBlock(const std::string& path, uint64_t run_id, int snapshot_index, double interval, double mass_gev, double sigma_cm2, const std::vector<TestEvaporationRow>& rows)
-{
-	std::ofstream file(path);
-	file << "# format_version = 1\n";
-	file << "# run_id = " << run_id << "\n";
-	file << "# snapshot_index = " << snapshot_index << "\n";
-	file << "# snapshot_interval_sec = " << std::scientific << std::setprecision(17) << interval << "\n";
-	file << "# DM_mass_GeV = " << std::scientific << std::setprecision(17) << mass_gev << "\n";
-	file << "# DM_sigma_cm2 = " << std::scientific << std::setprecision(17) << sigma_cm2 << "\n";
-	file << "# rank trajectory_id lifetime_unbinding_sec\n";
-	for(const auto& row : rows)
-		file << row.rank << "\t" << row.trajectory_id << "\t" << std::scientific << std::setprecision(10) << row.lifetime_unbinding << "\n";
-}
-
-std::vector<TestEvaporationRow> ReadRecoveredRows(const std::string& path)
-{
-	std::vector<TestEvaporationRow> rows;
-	std::ifstream file(path);
-	std::string line;
-	while(std::getline(file, line))
-	{
-		if(line.empty() || line[0] == '#')
-			continue;
-		std::istringstream stream(line);
-		TestEvaporationRow row;
-		if(stream >> row.rank >> row.trajectory_id >> row.lifetime_unbinding)
-			rows.push_back(row);
-	}
-	return rows;
-}
-}
-
-int main(int argc, char* argv[])
-{
-	int result = 0;
-
-	::testing::InitGoogleTest(&argc, argv);
-	MPI_Init(&argc, &argv);
-	result = RUN_ALL_TESTS();
-	MPI_Finalize();
-	return result;
-}
-
-TEST(TestDataGeneration, TestDataSetConstructor)
-{
-	// ARRANGE
-	unsigned int sample_size = 100;
-	unsigned int max_traj    = 0;
-	double u_min			 = 0.0;
-	unsigned int iso_rings	 = 10;
-	// ACT
-	Simulation_Data data_set(sample_size, max_traj, u_min, iso_rings);
-	// ASSERT
-	ASSERT_EQ(data_set.data.size(), iso_rings);
-	for(auto& set : data_set.data)
-		ASSERT_EQ(set.size(), 0);
-}
-
-TEST(TestDataGeneration, TestCompactEvaporationEventStaysCompact)
-{
-	EXPECT_LT(sizeof(CompactEvaporationEvent), sizeof(EvaporationRecord) / 2);
-	EXPECT_LE(sizeof(CompactEvaporationEvent), static_cast<size_t>(40));
-}
-
-TEST(TestDataGeneration, TestRecoverEvaporationTimeFileFromBlocksFiltersRunAndDeduplicates)
-{
-	int rank = 0;
-	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-	if(rank != 0)
-		return;
-
-	const uint64_t run_id = 123456789ULL;
-	const double mass_gev = 1.25;
-	const double sigma_cm2 = 2.5e-36;
-	const double interval = 30.0;
-	const std::string output_dir = TestOutputDir("recover_evaporation_blocks");
-	const std::string snapshot_root = output_dir + "snapshot/";
-	const std::string block_dir = snapshot_root + "evaporation_blocks/";
-	EnsureDir(snapshot_root);
-	EnsureDir(block_dir);
-
-	std::vector<TestEvaporationRow> block_1_rows;
-	block_1_rows.push_back(MakeTestEvaporationRow(1, 5, 99.0));
-	block_1_rows.push_back(MakeTestEvaporationRow(2, 4, 30.0));
-	WriteTestEvaporationBlock(block_dir + "block_000001.txt", run_id, 1, interval, mass_gev, sigma_cm2, block_1_rows);
-
-	std::vector<TestEvaporationRow> block_2_rows;
-	block_2_rows.push_back(MakeTestEvaporationRow(1, 5, 20.0));
-	block_2_rows.push_back(MakeTestEvaporationRow(0, 3, 10.0));
-	WriteTestEvaporationBlock(block_dir + "block_000002.txt", run_id, 2, interval, mass_gev, sigma_cm2, block_2_rows);
-
-	std::vector<TestEvaporationRow> wrong_run_rows;
-	wrong_run_rows.push_back(MakeTestEvaporationRow(9, 9, 9.0));
-	WriteTestEvaporationBlock(block_dir + "block_000003.txt", run_id + 1, 3, interval, mass_gev, sigma_cm2, wrong_run_rows);
-
-	const std::string output_path = output_dir + "evaporation_times.partial.txt";
-	ASSERT_TRUE(Recover_Evaporation_Time_File_From_Blocks(snapshot_root, output_path, run_id, mass_gev, sigma_cm2));
-
-	const std::vector<TestEvaporationRow> rows = ReadRecoveredRows(output_path);
-	ASSERT_EQ(static_cast<size_t>(3), rows.size());
-	EXPECT_EQ(0, rows[0].rank);
-	EXPECT_EQ(static_cast<uint64_t>(3), rows[0].trajectory_id);
-	EXPECT_DOUBLE_EQ(10.0, rows[0].lifetime_unbinding);
-	EXPECT_EQ(1, rows[1].rank);
-	EXPECT_EQ(static_cast<uint64_t>(5), rows[1].trajectory_id);
-	EXPECT_DOUBLE_EQ(99.0, rows[1].lifetime_unbinding);
-	EXPECT_EQ(2, rows[2].rank);
-	EXPECT_EQ(static_cast<uint64_t>(4), rows[2].trajectory_id);
-	EXPECT_DOUBLE_EQ(30.0, rows[2].lifetime_unbinding);
-}
-
-TEST(TestDataGeneration, TestRecoverEvaporationTimeFileFromBlocksRejectsWrongRun)
-{
-	int rank = 0;
-	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-	if(rank != 0)
-		return;
-
-	const uint64_t run_id = 77ULL;
-	const double mass_gev = 1.0;
-	const double sigma_cm2 = 1.0e-37;
-	const std::string output_dir = TestOutputDir("recover_wrong_run");
-	const std::string snapshot_root = output_dir + "snapshot/";
-	const std::string block_dir = snapshot_root + "evaporation_blocks/";
-	EnsureDir(snapshot_root);
-	EnsureDir(block_dir);
-
-	std::vector<TestEvaporationRow> block_rows;
-	block_rows.push_back(MakeTestEvaporationRow(0, 1, 5.0));
-	WriteTestEvaporationBlock(block_dir + "block_000001.txt", run_id, 1, 60.0, mass_gev, sigma_cm2, block_rows);
-
-	const std::string output_path = output_dir + "evaporation_times.partial.txt";
-	TouchFile(output_path);
-	EXPECT_FALSE(Recover_Evaporation_Time_File_From_Blocks(snapshot_root, output_path, run_id + 1, mass_gev, sigma_cm2));
-
-	std::ifstream file(output_path);
-	std::string first_line;
-	std::getline(file, first_line);
-	EXPECT_EQ("stale", first_line);
-}
-#endif
 }
 
 int main(int argc, char* argv[])
@@ -332,9 +170,15 @@ TEST(TestDataGeneration, TestComputationallyTruncatedNonCaptureIsExcludedFromCap
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# valid_trajectories = 0"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# unresolved_not_captured_trajectories = 1"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# computational_truncations = 1"));
+		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# invalid_trajectory_records = 1"));
+		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# termination_max_scatterings_uncaptured = 1"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# capture_rate_valid = 0.00000000"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# capture_rate_valid_CI_95_lower = 0.00000000"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# EARLY_STOP: max_trajectories_reached"));
+		EXPECT_TRUE(FileExists(output_dir + "invalid_trajectories.tsv"));
+		EXPECT_TRUE(FileContains(output_dir + "invalid_trajectories.tsv", "# record_count = 1"));
+		EXPECT_TRUE(FileContains(output_dir + "invalid_trajectories.tsv", "\tpropagation\tmax_scatterings\t"));
+		EXPECT_TRUE(FileContains(output_dir + "invalid_trajectories.tsv", "rng_state_before_simulation"));
 		RemoveTestOutputDir(output_dir);
 	}
 }
@@ -382,6 +226,20 @@ TEST(TestDataGeneration, TestCaptureModeCompletedEscapeIsIncludedInCaptureRate)
 	EXPECT_EQ(data_set.Valid_Trajectories(), 1UL);
 	EXPECT_DOUBLE_EQ(data_set.Capture_Ratio_Valid(), 0.0);
 	EXPECT_DOUBLE_EQ(data_set.Numerical_Failure_Ratio(), 0.0);
+	for(int detail_index = 1;
+	    detail_index < TRAJECTORY_NUMERICAL_FAILURE_DETAIL_COUNT;
+	    detail_index++)
+	{
+		EXPECT_EQ(
+		    data_set.Numerical_Failure_Detail_Count(
+		        static_cast<TrajectoryNumericalFailureDetail>(
+		            detail_index),
+		        false),
+		    0UL)
+		    << TrajectoryNumericalFailureDetailKey(
+		           static_cast<TrajectoryNumericalFailureDetail>(
+		               detail_index));
+	}
 }
 
 TEST(TestDataGeneration, TestDataFreeRatio)
@@ -504,19 +362,38 @@ TEST(TestDataGeneration, TestDefaultOutputContract)
 	if(rank == 0)
 	{
 		EXPECT_TRUE(FileExists(output_dir + "bincount.txt"));
-		EXPECT_TRUE(FileExists(output_dir + "evaporation_times.txt"));
+			EXPECT_TRUE(FileExists(output_dir + "evaporation_times.txt"));
+			EXPECT_TRUE(FileExists(output_dir + "invalid_trajectories.tsv"));
+			EXPECT_TRUE(FileExists(output_dir + "residence_jackknife_blocks.tsv"));
+			EXPECT_FALSE(FileExists(output_dir + "bincount.txt.tmp"));
+			EXPECT_FALSE(FileExists(
+			    output_dir + "residence_jackknife_blocks.tsv.tmp"));
+		EXPECT_TRUE(FileContains(
+		    output_dir + "residence_jackknife_blocks.tsv",
+		    "# block_count = 64"));
+		EXPECT_TRUE(FileContains(
+		    output_dir + "residence_jackknife_blocks.tsv",
+		    "block_id\tbin_index\tresidence_dt_s\tresidence_v2dt_km2_s"));
+		EXPECT_TRUE(FileContains(
+		    output_dir + "residence_jackknife_blocks.tsv",
+		    "# block_0_attempted = "));
+		EXPECT_TRUE(FileContains(output_dir + "invalid_trajectories.tsv", "# record_count = 0"));
+		EXPECT_TRUE(FileContains(output_dir + "evaporation_times.txt", "# format_version = 5"));
+		EXPECT_TRUE(FileContains(output_dir + "evaporation_times.txt", "P_kepler_first_bound_exit_sec"));
 		EXPECT_TRUE(FileContains(
 		    output_dir + "bincount.txt",
-		    "# bincount_integration = conservative-hermite-radial-v1"));
+		    "# bincount_integration = conservative-hermite-kepler-jupiter-log-v3"));
+		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# radial_domain_max_AU = 5.2000000000e+00"));
+		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# total_radial_bins = 1612"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# normal_mode_mpi_sync_interval = 1048576"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# mpi_sync_rounds = 1"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# final_mpi_round_trajectories = 1"));
-		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# mpi_tail_trajectories = 0"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# capture_target_overshoot = 0"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# total_scatterings = 0"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# simulation_time_seconds = "));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# completed_outward_escapes = 1"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# unresolved_not_captured_trajectories = 0"));
+		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# termination_outward_escape_uncaptured = 1"));
 		EXPECT_FALSE(FileExists(output_dir + "evaporation_diagnostics.txt"));
 		EXPECT_FALSE(FileExists(output_dir + "run_metadata.json"));
 		EXPECT_FALSE(FileExists(output_dir + "trajectory_summary.tsv"));
@@ -558,20 +435,22 @@ TEST(TestDataGeneration, TestTrajectoryDiagnosticOutputContract)
 	data_set.Write_Output_Files(output_dir, DM);
 	if(rank == 0)
 	{
-		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"schema_version\": \"trajectory-diagnostic-v2\""));
+		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"schema_version\": \"trajectory-diagnostic-v4\""));
 		EXPECT_TRUE(FileContains(
 		    output_dir + "run_metadata.json",
-		    "\"bincount_integration\": \"conservative-hermite-radial-v1\""));
+		    "\"bincount_integration\": \"conservative-hermite-kepler-jupiter-log-v3\""));
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"interpolation_points\": 20"));
-		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"legacy_evaporation_reconciliation\": true"));
+		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"evaporation_event_reconciliation\": true"));
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"escape_radius_invariant\": true"));
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"residence_time_invariant\": true"));
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"event_sequence_invariant\": true"));
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"event_count_invariant\": true"));
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"trace_selection_invariant\": true"));
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"replay_state_invariant\": true"));
+		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"bound_exit_orbit_invariant\": true"));
 		EXPECT_TRUE(FileContains(output_dir + "trajectory_summary.tsv", "t_first_unbinding_s"));
 		EXPECT_TRUE(FileContains(output_dir + "trajectory_summary.tsv", "n_recapture"));
+		EXPECT_TRUE(FileContains(output_dir + "trajectory_summary.tsv", "P_kepler_max_bound_exit_s"));
 		EXPECT_TRUE(FileContains(output_dir + "trajectory_summary.tsv", "rng_state_before_simulation"));
 		EXPECT_TRUE(FileContains(output_dir + "trajectory_events.tsv", "event_type"));
 		EXPECT_TRUE(FileContains(output_dir + "trajectory_events.tsv", "scatter_pre"));
@@ -625,6 +504,7 @@ TEST(TestDataGeneration, TestFinalOutputContainsOnlyRequestedReports)
 	{
 		EXPECT_TRUE(FileExists(output_dir + "bincount.txt"));
 		EXPECT_TRUE(FileExists(output_dir + "evaporation_times.txt"));
+		EXPECT_TRUE(FileExists(output_dir + "residence_jackknife_blocks.tsv"));
 		EXPECT_FALSE(FileExists(output_dir + "evaporation_diagnostics.txt"));
 		EXPECT_FALSE(FileExists(output_dir + std::string("evaporation_") + "mode_summary.txt"));
 		EXPECT_FALSE(FileExists(output_dir + std::string("evaporation_") + "mode_" + "bincount.txt"));

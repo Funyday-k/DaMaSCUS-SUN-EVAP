@@ -2,6 +2,7 @@
 #define __Snapshot_Shared_State_hpp_
 
 #include <chrono>
+#include <limits>
 #include <mutex>
 #include <vector>
 
@@ -23,18 +24,31 @@ class SnapshotSharedState
 	void UpdateCurrentScatterings(uint64_t scatterings);
 	void MarkCurrentCaptured(bool captured);
 
+	// Replace the in-progress trajectory histogram wholesale instead of
+	// streaming every integrator step through the mutex. The simulator already
+	// keeps the identical per-trajectory accumulation, so publishing it at a
+	// coarse cadence costs one lock per publish rather than one lock per step.
+	void PublishCurrentTrajectoryProgress(
+		const std::array<double, TOTAL_BINS>& dt_hist,
+		const std::array<double, TOTAL_BINS>& v2dt_hist,
+		double simulated_time_sec);
+
 	void RecordCompletedTrajectory(
 		const TrajectoryBincount& bincount,
-		bool count_as_captured_bincount_sample,
-		bool count_as_not_captured_bincount_sample,
+		bool count_as_residence_sample,
+		bool physically_classified_uncaptured,
 		const std::vector<SnapshotEvaporationProgressEntry>& new_evaporation_events);
 
+	// max_new_evaporation_events bounds how many completed events a single
+	// checkpoint publishes. Committing a bounded prefix keeps an oversized
+	// backlog from making every later checkpoint fail permanently.
 	SnapshotRankState CopyForSnapshot(
 		int snapshot_index,
 		double rank_elapsed_wall_sec,
 		double target_wall_sec,
 		size_t evaporation_begin,
-		size_t& evaporation_end) const;
+		size_t& evaporation_end,
+		size_t max_new_evaporation_events = std::numeric_limits<size_t>::max()) const;
 
 	SnapshotRankState CopyFinal(double computing_time_sec, size_t evaporation_begin) const;
 
@@ -53,24 +67,19 @@ class SnapshotSharedState
 	double current_trajectory_simulation_start_sec_ = 0.0;
 	double current_trajectory_simulated_elapsed_sec_ = 0.0;
 	uint64_t current_trajectory_scatterings_ = 0;
-	std::array<double, NUM_BINS> current_dt_hist_{};
-	std::array<double, NUM_BINS> current_v2dt_hist_{};
+	std::array<double, TOTAL_BINS> current_dt_hist_{};
+	std::array<double, TOTAL_BINS> current_v2dt_hist_{};
 
 	uint64_t completed_trajectories_ = 0;
 	uint64_t captured_particles_ = 0;
 	uint64_t classified_trajectories_ = 0;
 	uint64_t numerical_failures_ = 0;
 	uint64_t bincount_captured_samples_ = 0;
-	uint64_t bincount_not_captured_samples_ = 0;
 
-	std::array<double, NUM_BINS> captured_dt_hist_{};
-	std::array<double, NUM_BINS> captured_v2dt_hist_{};
-	std::array<double, NUM_BINS> captured_dt_sq_hist_{};
-	std::array<double, NUM_BINS> captured_v2dt_sq_hist_{};
-	std::array<double, NUM_BINS> not_captured_dt_hist_{};
-	std::array<double, NUM_BINS> not_captured_v2dt_hist_{};
-	std::array<double, NUM_BINS> not_captured_dt_sq_hist_{};
-	std::array<double, NUM_BINS> not_captured_v2dt_sq_hist_{};
+	std::array<double, TOTAL_BINS> captured_dt_hist_{};
+	std::array<double, TOTAL_BINS> captured_v2dt_hist_{};
+	std::array<double, TOTAL_BINS> captured_dt_sq_hist_{};
+	std::array<double, TOTAL_BINS> captured_v2dt_sq_hist_{};
 
 	std::vector<SnapshotEvaporationProgressEntry> evaporation_events_;
 };
@@ -85,6 +94,10 @@ class SnapshotRecorder
 		const std::vector<BincountContribution>& contributions,
 		double simulated_time_sec);
 	void UpdateCurrentSimulationTime(double simulated_time_sec);
+	void PublishCurrentTrajectoryProgress(
+		const std::array<double, TOTAL_BINS>& dt_hist,
+		const std::array<double, TOTAL_BINS>& v2dt_hist,
+		double simulated_time_sec);
 	void UpdateCurrentScatterings(uint64_t scatterings);
 	void MarkCurrentCaptured(bool captured);
 

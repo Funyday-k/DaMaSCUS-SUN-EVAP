@@ -3,12 +3,18 @@
 #include <algorithm>
 #include <cstddef>
 #include <cmath>
+#include <cstdio>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
 #include <libconfig.h++>
 #include <limits>
 #include <mpi.h>
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <unistd.h>
+#include <vector>
 
 #include "libphysica/Natural_Units.hpp"
 #include "libphysica/Special_Functions.hpp"
@@ -26,6 +32,54 @@ namespace DaMaSCUS_SUN
 
 using namespace libconfig;
 using namespace libphysica::natural_units;
+
+// P_Values_Grid.txt is the scan's only resume record, so it must be written by a
+// single rank and must never be observable half-written: Import_P_Values() would
+// either reject a torn grid and discard the whole scan, or import wrong values.
+// Callers are responsible for restricting this to rank 0.
+bool Write_P_Value_Grid_Atomically(
+    const std::string& path, const std::vector<std::vector<double>>& p_value_grid)
+{
+	const std::string tmp_path = path + ".tmp." + std::to_string(getpid());
+	std::ofstream file(tmp_path, std::ios::out | std::ios::trunc);
+	if(!file.is_open())
+	{
+		std::cerr << "Warning in Write_P_Value_Grid_Atomically(): failed to open "
+		          << tmp_path << std::endl;
+		return false;
+	}
+
+	file << std::setprecision(std::numeric_limits<double>::max_digits10);
+	for(std::size_t row = 0; row < p_value_grid.size(); row++)
+	{
+		for(std::size_t column = 0; column < p_value_grid[row].size(); column++)
+		{
+			if(column > 0)
+				file << '\t';
+			file << p_value_grid[row][column];
+		}
+		file << '\n';
+	}
+	file.flush();
+	const bool write_succeeded = file.good();
+	file.close();
+	if(!write_succeeded || file.fail())
+	{
+		std::remove(tmp_path.c_str());
+		std::cerr << "Warning in Write_P_Value_Grid_Atomically(): failed to write "
+		          << tmp_path << std::endl;
+		return false;
+	}
+
+	if(std::rename(tmp_path.c_str(), path.c_str()) != 0)
+	{
+		std::remove(tmp_path.c_str());
+		std::cerr << "Warning in Write_P_Value_Grid_Atomically(): failed to update "
+		          << path << std::endl;
+		return false;
+	}
+	return true;
+}
 
 namespace
 {
@@ -128,16 +182,6 @@ void Configuration::Import_Parameter_Scan_Parameter()
 		std::exit(EXIT_FAILURE);
 	}
 	capture_mode = (run_mode == "Capture");
-	try
-	{
-		bool cfg_capture_mode = config.lookup("capture_mode");
-		capture_mode = cfg_capture_mode;
-	}
-	catch(const SettingNotFoundException& nfex)
-	{
-	}
-	if(run_mode == "Capture")
-		capture_mode = true;
 	const bool parameter_scan_mode = (run_mode == "Parameter scan");
 	try
 	{
@@ -166,27 +210,6 @@ void Configuration::Import_Parameter_Scan_Parameter()
 	catch(const SettingNotFoundException& nfex)
 	{
 		interpolation_points = 0;
-	}
-	escape_radius_rsun = 2.0;
-	try
-	{
-		try
-		{
-			escape_radius_rsun = config.lookup("R_escape_Rsun");
-		}
-		catch(const SettingTypeException& type_error)
-		{
-			const int integer_radius = config.lookup("R_escape_Rsun");
-			escape_radius_rsun = static_cast<double>(integer_radius);
-		}
-		if(!std::isfinite(escape_radius_rsun) || escape_radius_rsun <= 1.0)
-		{
-			std::cerr << "Error in Configuration::Import_Parameter_Scan_Parameter(): 'R_escape_Rsun' must be finite and greater than 1." << std::endl;
-			std::exit(EXIT_FAILURE);
-		}
-	}
-	catch(const SettingNotFoundException& nfex)
-	{
 	}
 	try
 	{
@@ -434,7 +457,7 @@ void Configuration::Import_Parameter_Scan_Parameter()
 	if(trajectory_diagnostic_config.events_enabled)
 		trajectory_diagnostic_config.summary_enabled = true;
 
-	if(run_mode != "Parameter point" && run_mode != "Parameter scan" && run_mode != "Custom" && run_mode != "Capture")
+	if(run_mode != "Parameter point" && run_mode != "Parameter scan" && run_mode != "Capture")
 	{
 		std::cerr << "Error in Configuration::Import_Parameter_Scan_Parameter(): Run mode " << run_mode << " not recognized." << std::endl;
 		std::exit(EXIT_FAILURE);
@@ -604,7 +627,7 @@ void Configuration::Print_Summary(int mpi_rank)
 				  << "\tSample size:\t\t\t" << sample_size << std::endl
 				  << "\tFixed PRNG seed:\t\t" << (fixed_seed == 0 ? "random" : std::to_string(fixed_seed)) << std::endl
 				  << "\tMax scatterings/traj:\t\t" << maximum_number_of_scatterings << std::endl
-				  << "\tEscape radius [Rsun]:\t\t" << escape_radius_rsun << std::endl
+				  << "\tTrajectory boundary [Rsun]:\t" << TRAJECTORY_BOUNDARY_RSUN << std::endl
 				  << "\tSc. rate interpolation:\t\t" << ((interpolation_points > 0) ? "[x] (Grid: " + std::to_string(interpolation_points) + "×" + std::to_string(interpolation_points) + ")" : "[ ]") << std::endl;
 		if(run_mode == "Parameter point" && isoreflection_rings > 1)
 			std::cout << "\tIsoreflection rings:\t\t" << isoreflection_rings << std::endl;
@@ -623,7 +646,7 @@ double Compute_p_Value(unsigned int sample_size, obscura::DM_Particle& DM, obscu
 
 	solar_model.Interpolate_Total_DM_Scattering_Rate(DM, rate_interpolation_points, rate_interpolation_points);
 	Simulation_Data data_set(sample_size, g_max_trajectories, u_min);
-	data_set.Configure(2.0 * rSun, 1, max_scatterings);
+	data_set.Configure(TRAJECTORY_BOUNDARY_RSUN * rSun, 1, max_scatterings);
 	data_set.Generate_Data(DM, solar_model, halo_model, snapshot_config, fixed_seed, false);
 	data_set.Print_Summary(mpi_rank);
 	Reflection_Spectrum spectrum(data_set, solar_model, halo_model, DM.mass);
@@ -916,9 +939,9 @@ void Parameter_Scan::Perform_STA_Scan(obscura::DM_Particle& DM, obscura::DM_Dete
 			p = Compute_p_Value(sample_size, DM, detector, solar_model, halo_model, scattering_rate_interpolation_points, mpi_rank, maximum_number_of_scatterings, snapshot_config, fixed_seed);
 
 			p_value_grid[row][column] = p;
-			libphysica::Export_Table(results_path + "P_Values_Grid.txt", p_value_grid);
 			if(mpi_rank == 0)
 			{
+				Write_P_Value_Grid_Atomically(results_path + "P_Values_Grid.txt", p_value_grid);
 				std::cout << std::endl
 						  << std::endl;
 				libphysica::Print_Box("p = " + std::to_string(libphysica::Round(p)), 1);
@@ -944,7 +967,8 @@ void Parameter_Scan::Perform_STA_Scan(obscura::DM_Particle& DM, obscura::DM_Dete
 	}
 	STA_Fill_Gaps();
 	Print_Grid(mpi_rank);
-	libphysica::Export_Table(results_path + "P_Values_Grid.txt", p_value_grid);
+	if(mpi_rank == 0)
+		Write_P_Value_Grid_Atomically(results_path + "P_Values_Grid.txt", p_value_grid);
 	DM.Set_Mass(mDM_original);
 	DM.Set_Interaction_Parameter(coupling_original, detector.Target_Particles());
 }
@@ -987,9 +1011,9 @@ void Parameter_Scan::Perform_Full_Scan(obscura::DM_Particle& DM, obscura::DM_Det
 				p = Compute_p_Value(sample_size, DM, detector, solar_model, halo_model, scattering_rate_interpolation_points, mpi_rank, maximum_number_of_scatterings, snapshot_config, fixed_seed);
 
 				p_value_grid[row][column] = p;
-				libphysica::Export_Table(results_path + "P_Values_Grid.txt", p_value_grid);
 				if(mpi_rank == 0)
 				{
+					Write_P_Value_Grid_Atomically(results_path + "P_Values_Grid.txt", p_value_grid);
 					std::cout << std::endl
 							  << std::endl;
 					libphysica::Print_Box("p = " + std::to_string(libphysica::Round(p)), 1);
@@ -1008,7 +1032,8 @@ void Parameter_Scan::Perform_Full_Scan(obscura::DM_Particle& DM, obscura::DM_Det
 			break;
 		}
 	}
-	libphysica::Export_Table(results_path + "P_Values_Grid.txt", p_value_grid);
+	if(mpi_rank == 0)
+		Write_P_Value_Grid_Atomically(results_path + "P_Values_Grid.txt", p_value_grid);
 
 	DM.Set_Mass(mDM_original);
 	DM.Set_Interaction_Parameter(coupling_original, detector.Target_Particles());

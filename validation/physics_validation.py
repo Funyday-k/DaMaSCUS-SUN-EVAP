@@ -86,7 +86,9 @@ def _parse_bincount(path: Path):
             fields = line.split()
             if len(fields) < 2:
                 raise ValueError(f"Malformed bincount row in {path}: {line}")
-            captured_dt.append(float(fields[1]))
+            # v2 adds explicit lower/upper radial edges before cap_dt.
+            captured_dt_index = 3 if len(fields) >= 11 else 1
+            captured_dt.append(float(fields[captured_dt_index]))
 
     total = sum(captured_dt)
     radial_distribution = (
@@ -105,7 +107,7 @@ def _parse_evaporation_times(path: Path) -> List[float]:
             if not line or line.startswith("#"):
                 continue
             fields = line.split()
-            if len(fields) != 3:
+            if len(fields) < 3:
                 raise ValueError(f"Malformed evaporation row in {path}: {line}")
             lifetime = float(fields[2])
             if math.isfinite(lifetime) and lifetime > 0.0:
@@ -354,7 +356,6 @@ def _run_one(args, source_config: str, grid: int, seed: int):
 
     overrides: Dict[str, object] = {
         "run_mode": "Parameter point",
-        "capture_mode": False,
         "interpolation_points": grid,
         "fixed_seed": seed,
         "snapshot_enabled": False,

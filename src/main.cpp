@@ -11,7 +11,6 @@
 
 #include "Data_Generation.hpp"
 #include "Parameter_Scan.hpp"
-#include "Reflection_Spectrum.hpp"
 #include "Solar_Model.hpp"
 #include "version.hpp"
 
@@ -82,7 +81,7 @@ int main(int argc, char* argv[])
 	{
 		double u_min = 0.0;
 		Simulation_Data data_set(cfg.sample_size, cfg.max_trajectories, u_min, cfg.isoreflection_rings);
-		data_set.Configure(cfg.escape_radius_rsun * rSun, 1, cfg.maximum_number_of_scatterings);
+		data_set.Configure(TRAJECTORY_BOUNDARY_RSUN * rSun, 1, cfg.maximum_number_of_scatterings);
 		data_set.Configure_Trajectory_Diagnostics(cfg.trajectory_diagnostic_config);
 		if(mpi_rank == 0)
 			std::cout << (cfg.capture_mode ? "Generate data in CAPTURE MODE..." : "Generate data...") << std::endl
@@ -105,12 +104,6 @@ int main(int argc, char* argv[])
 		if(!cfg.capture_mode)
 			data_set.Write_Output_Files(output_path, *cfg.DM);
 
-		// Reflection spectrum (kept for compatibility)
-		if(!cfg.capture_mode && cfg.isoreflection_rings == 1 && data_set.data[0].size() > 0)
-		{
-			Reflection_Spectrum spectrum(data_set, SSM, *cfg.DM_distr, cfg.DM->mass, 0);
-			spectrum.Print_Summary(mpi_rank);
-		}
 	}
 	// Perform a parameter scan to compute exclusion limits
 	else if(cfg.run_mode == "Parameter scan")
@@ -137,11 +130,6 @@ int main(int argc, char* argv[])
 			scan.Print_Grid(mpi_rank);
 		}
 	}
-	// Run some custom code
-	else
-	{
-	}
-
 	////////////////////////////////////////////////////////////////////////
 	// Final terminal output
 	MPI_Barrier(MPI_COMM_WORLD);

@@ -36,15 +36,10 @@ void SnapshotSharedState::Initialize(uint64_t run_id, int rank)
 	classified_trajectories_ = 0;
 	numerical_failures_ = 0;
 	bincount_captured_samples_ = 0;
-	bincount_not_captured_samples_ = 0;
 	captured_dt_hist_.fill(0.0);
 	captured_v2dt_hist_.fill(0.0);
 	captured_dt_sq_hist_.fill(0.0);
 	captured_v2dt_sq_hist_.fill(0.0);
-	not_captured_dt_hist_.fill(0.0);
-	not_captured_v2dt_hist_.fill(0.0);
-	not_captured_dt_sq_hist_.fill(0.0);
-	not_captured_v2dt_sq_hist_.fill(0.0);
 	evaporation_events_.clear();
 }
 
@@ -74,10 +69,12 @@ void SnapshotSharedState::AddCurrentBincountInterval(
 			std::max(0.0, simulated_time_sec - current_trajectory_simulation_start_sec_);
 	for(const BincountContribution& contribution : contributions)
 	{
-		if(contribution.bin < 0 || contribution.bin >= NUM_BINS
+		if(contribution.bin < 0
 		   || !std::isfinite(contribution.dt_sec) || contribution.dt_sec <= 0.0
 		   || !std::isfinite(contribution.v2dt_km2_per_sec)
 		   || contribution.v2dt_km2_per_sec < 0.0)
+			continue;
+		if(static_cast<std::size_t>(contribution.bin) >= TOTAL_BINS)
 			continue;
 		current_dt_hist_[contribution.bin] += contribution.dt_sec;
 		current_v2dt_hist_[contribution.bin] += contribution.v2dt_km2_per_sec;
@@ -107,42 +104,52 @@ void SnapshotSharedState::MarkCurrentCaptured(bool captured)
 		current_trajectory_captured_ = captured;
 }
 
+void SnapshotSharedState::PublishCurrentTrajectoryProgress(
+	const std::array<double, TOTAL_BINS>& dt_hist,
+	const std::array<double, TOTAL_BINS>& v2dt_hist,
+	double simulated_time_sec)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	if(!trajectory_in_progress_)
+		return;
+	if(std::isfinite(simulated_time_sec))
+		current_trajectory_simulated_elapsed_sec_ =
+			std::max(0.0, simulated_time_sec - current_trajectory_simulation_start_sec_);
+	// Published snapshots must satisfy the rank-state validity invariants, so a
+	// non-finite or negative bin is dropped exactly as the per-step path did.
+	for(std::size_t bin = 0; bin < TOTAL_BINS; bin++)
+	{
+		const double dt = dt_hist[bin];
+		const double v2dt = v2dt_hist[bin];
+		current_dt_hist_[bin] = (std::isfinite(dt) && dt > 0.0) ? dt : 0.0;
+		current_v2dt_hist_[bin] = (std::isfinite(v2dt) && v2dt >= 0.0) ? v2dt : 0.0;
+	}
+}
+
 void SnapshotSharedState::RecordCompletedTrajectory(
 	const TrajectoryBincount& bincount,
-	bool count_as_captured_bincount_sample,
-	bool count_as_not_captured_bincount_sample,
+	bool count_as_residence_sample,
+	bool physically_classified_uncaptured,
 	const std::vector<SnapshotEvaporationProgressEntry>& new_evaporation_events)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 	completed_trajectories_++;
 	if(bincount.is_captured)
 		captured_particles_++;
-	if(bincount.is_captured || count_as_not_captured_bincount_sample)
+	if(bincount.is_captured || physically_classified_uncaptured)
 		classified_trajectories_++;
 	if(IsNumericalTermination(bincount.termination_reason))
 		numerical_failures_++;
 
-	if(count_as_captured_bincount_sample)
+	if(count_as_residence_sample)
 	{
 		bincount_captured_samples_++;
-		for(int bin = 0; bin < NUM_BINS; bin++)
+		for(std::size_t bin = 0; bin < TOTAL_BINS; bin++)
 		{
 			captured_dt_hist_[bin] += bincount.dt_hist[bin];
 			captured_v2dt_hist_[bin] += bincount.v2dt_hist[bin];
 			captured_dt_sq_hist_[bin] += bincount.dt_hist[bin] * bincount.dt_hist[bin];
 			captured_v2dt_sq_hist_[bin] += bincount.v2dt_hist[bin] * bincount.v2dt_hist[bin];
-		}
-	}
-
-	if(count_as_not_captured_bincount_sample)
-	{
-		bincount_not_captured_samples_++;
-		for(int bin = 0; bin < NUM_BINS; bin++)
-		{
-			not_captured_dt_hist_[bin] += bincount.dt_hist[bin];
-			not_captured_v2dt_hist_[bin] += bincount.v2dt_hist[bin];
-			not_captured_dt_sq_hist_[bin] += bincount.dt_hist[bin] * bincount.dt_hist[bin];
-			not_captured_v2dt_sq_hist_[bin] += bincount.v2dt_hist[bin] * bincount.v2dt_hist[bin];
 		}
 	}
 
@@ -155,13 +162,20 @@ SnapshotRankState SnapshotSharedState::CopyForSnapshot(
 	double rank_elapsed_wall_sec,
 	double target_wall_sec,
 	size_t evaporation_begin,
-	size_t& evaporation_end) const
+	size_t& evaporation_end,
+	size_t max_new_evaporation_events) const
 {
 	std::lock_guard<std::mutex> lock(mutex_);
+	evaporation_begin = std::min(evaporation_begin, evaporation_events_.size());
 	evaporation_end = evaporation_begin;
 	while(evaporation_end < evaporation_events_.size()
 	      && evaporation_events_[evaporation_end].completion_wall_time_sec <= target_wall_sec)
 		evaporation_end++;
+	// Events are appended in completion order, so a prefix is also a
+	// wall-time-ordered prefix. Whatever is left over is picked up by a later
+	// checkpoint, whose window filter admits earlier completion times as well.
+	if(evaporation_end - evaporation_begin > max_new_evaporation_events)
+		evaporation_end = evaporation_begin + max_new_evaporation_events;
 	return CopyLocked(snapshot_index, false, rank_elapsed_wall_sec, evaporation_begin, evaporation_end);
 }
 
@@ -202,7 +216,6 @@ SnapshotRankState SnapshotSharedState::CopyLocked(
 	state.local_classified = classified_trajectories_;
 	state.local_numerical_failures = numerical_failures_;
 	state.bincount_captured_samples = bincount_captured_samples_;
-	state.bincount_not_captured_samples = bincount_not_captured_samples_;
 	state.current_trajectory_id = state.trajectory_in_progress ? current_trajectory_id_ : 0;
 	state.rank_elapsed_wall_sec = rank_elapsed_wall_sec;
 	state.current_trajectory_captured = (state.trajectory_in_progress && current_trajectory_captured_) ? 1 : 0;
@@ -219,10 +232,6 @@ SnapshotRankState SnapshotSharedState::CopyLocked(
 	state.captured_v2dt_hist = captured_v2dt_hist_;
 	state.captured_dt_sq_hist = captured_dt_sq_hist_;
 	state.captured_v2dt_sq_hist = captured_v2dt_sq_hist_;
-	state.not_captured_dt_hist = not_captured_dt_hist_;
-	state.not_captured_v2dt_hist = not_captured_v2dt_hist_;
-	state.not_captured_dt_sq_hist = not_captured_dt_sq_hist_;
-	state.not_captured_v2dt_sq_hist = not_captured_v2dt_sq_hist_;
 
 	evaporation_begin = std::min(evaporation_begin, evaporation_events_.size());
 	evaporation_end = std::min(evaporation_end, evaporation_events_.size());
@@ -252,6 +261,14 @@ void SnapshotRecorder::AddCurrentBincountInterval(
 void SnapshotRecorder::UpdateCurrentSimulationTime(double simulated_time_sec)
 {
 	state_.UpdateCurrentSimulationTime(simulated_time_sec);
+}
+
+void SnapshotRecorder::PublishCurrentTrajectoryProgress(
+	const std::array<double, TOTAL_BINS>& dt_hist,
+	const std::array<double, TOTAL_BINS>& v2dt_hist,
+	double simulated_time_sec)
+{
+	state_.PublishCurrentTrajectoryProgress(dt_hist, v2dt_hist, simulated_time_sec);
 }
 
 void SnapshotRecorder::UpdateCurrentScatterings(uint64_t scatterings)

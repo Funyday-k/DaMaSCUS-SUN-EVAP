@@ -74,7 +74,7 @@ size_t CountOccurrences(const std::string& contents, const std::string& needle)
 	return count;
 }
 
-bool ReadHistogramBin(const std::string& path, int requested_bin, std::array<double, 8>& values)
+bool ReadHistogramBin(const std::string& path, int requested_bin, std::array<double, 4>& values)
 {
 	std::ifstream file(path);
 	std::string line;
@@ -84,7 +84,10 @@ bool ReadHistogramBin(const std::string& path, int requested_bin, std::array<dou
 			continue;
 		std::istringstream row(line);
 		int bin = -1;
+		double radius_lower_rsun = 0.0;
+		double radius_upper_rsun = 0.0;
 		row >> bin;
+		row >> radius_lower_rsun >> radius_upper_rsun;
 		for(double& value : values)
 			row >> value;
 		if(bin == requested_bin)
@@ -113,15 +116,6 @@ SnapshotRankState MakeMergeState(uint64_t run_id, int rank)
 		state.captured_dt_sq_hist[0] = value * value;
 		state.captured_v2dt_sq_hist[0] = 100.0 * value * value;
 	}
-	else
-	{
-		state.bincount_not_captured_samples = 1;
-		state.not_captured_dt_hist[0] = value;
-		state.not_captured_v2dt_hist[0] = 10.0 * value;
-		state.not_captured_dt_sq_hist[0] = value * value;
-		state.not_captured_v2dt_sq_hist[0] = 100.0 * value * value;
-	}
-
 	SnapshotEvaporationProgressEntry event;
 	event.trajectory_id = static_cast<uint64_t>(100 + rank);
 	event.completion_wall_time_sec = value;
@@ -142,7 +136,6 @@ SnapshotRankState MakeRoundTripState(uint64_t run_id)
 	state.local_classified = 2;
 	state.local_numerical_failures = 1;
 	state.bincount_captured_samples = 1;
-	state.bincount_not_captured_samples = 1;
 	state.current_trajectory_id = 901;
 	state.rank_elapsed_wall_sec = 30.125;
 	state.current_trajectory_wall_sec = 12.5;
@@ -155,10 +148,6 @@ SnapshotRankState MakeRoundTripState(uint64_t run_id)
 	state.captured_v2dt_hist[1] = 20.0;
 	state.captured_dt_sq_hist[1] = 4.0;
 	state.captured_v2dt_sq_hist[1] = 400.0;
-	state.not_captured_dt_hist[2] = 3.0;
-	state.not_captured_v2dt_hist[2] = 30.0;
-	state.not_captured_dt_sq_hist[2] = 9.0;
-	state.not_captured_v2dt_sq_hist[2] = 900.0;
 
 	SnapshotEvaporationProgressEntry first;
 	first.trajectory_id = 41;
@@ -185,7 +174,6 @@ void ExpectStatesEqual(const SnapshotRankState& expected, const SnapshotRankStat
 	EXPECT_EQ(expected.local_classified, actual.local_classified);
 	EXPECT_EQ(expected.local_numerical_failures, actual.local_numerical_failures);
 	EXPECT_EQ(expected.bincount_captured_samples, actual.bincount_captured_samples);
-	EXPECT_EQ(expected.bincount_not_captured_samples, actual.bincount_not_captured_samples);
 	EXPECT_EQ(expected.current_trajectory_id, actual.current_trajectory_id);
 	EXPECT_DOUBLE_EQ(expected.rank_elapsed_wall_sec, actual.rank_elapsed_wall_sec);
 	EXPECT_DOUBLE_EQ(expected.current_trajectory_wall_sec, actual.current_trajectory_wall_sec);
@@ -198,16 +186,15 @@ void ExpectStatesEqual(const SnapshotRankState& expected, const SnapshotRankStat
 	EXPECT_EQ(expected.captured_v2dt_hist, actual.captured_v2dt_hist);
 	EXPECT_EQ(expected.captured_dt_sq_hist, actual.captured_dt_sq_hist);
 	EXPECT_EQ(expected.captured_v2dt_sq_hist, actual.captured_v2dt_sq_hist);
-	EXPECT_EQ(expected.not_captured_dt_hist, actual.not_captured_dt_hist);
-	EXPECT_EQ(expected.not_captured_v2dt_hist, actual.not_captured_v2dt_hist);
-	EXPECT_EQ(expected.not_captured_dt_sq_hist, actual.not_captured_dt_sq_hist);
-	EXPECT_EQ(expected.not_captured_v2dt_sq_hist, actual.not_captured_v2dt_sq_hist);
 	ASSERT_EQ(expected.new_evaporation_events.size(), actual.new_evaporation_events.size());
 	for(size_t index = 0; index < expected.new_evaporation_events.size(); index++)
 	{
 		EXPECT_EQ(expected.new_evaporation_events[index].trajectory_id, actual.new_evaporation_events[index].trajectory_id);
 		EXPECT_DOUBLE_EQ(expected.new_evaporation_events[index].completion_wall_time_sec, actual.new_evaporation_events[index].completion_wall_time_sec);
 		EXPECT_DOUBLE_EQ(expected.new_evaporation_events[index].lifetime_unbinding_sec, actual.new_evaporation_events[index].lifetime_unbinding_sec);
+		EXPECT_DOUBLE_EQ(expected.new_evaporation_events[index].r_capture_rsun, actual.new_evaporation_events[index].r_capture_rsun);
+		EXPECT_DOUBLE_EQ(expected.new_evaporation_events[index].E_capture_eV, actual.new_evaporation_events[index].E_capture_eV);
+		EXPECT_DOUBLE_EQ(expected.new_evaporation_events[index].dE_capture_eV, actual.new_evaporation_events[index].dE_capture_eV);
 	}
 }
 
@@ -305,18 +292,13 @@ TEST_F(SnapshotIOTest, SharedStatePublishesCurrentTrajectoryProgress)
 	SnapshotSharedState shared_state;
 	shared_state.Initialize(501, 4);
 	shared_state.BeginTrajectory(77, 100.0);
-	std::vector<BincountContribution> interval;
-	BincountContribution first_contribution;
-	first_contribution.bin = 3;
-	first_contribution.dt_sec = 1.0;
-	first_contribution.v2dt_km2_per_sec = 4.0;
-	interval.push_back(first_contribution);
-	BincountContribution second_contribution;
-	second_contribution.bin = 4;
-	second_contribution.dt_sec = 1.5;
-	second_contribution.v2dt_km2_per_sec = 6.0;
-	interval.push_back(second_contribution);
-	shared_state.AddCurrentBincountInterval(interval, 102.5);
+	std::array<double, TOTAL_BINS> dt_hist{};
+	std::array<double, TOTAL_BINS> v2dt_hist{};
+	dt_hist[3] = 1.0;
+	v2dt_hist[3] = 4.0;
+	dt_hist[4] = 1.5;
+	v2dt_hist[4] = 6.0;
+	shared_state.PublishCurrentTrajectoryProgress(dt_hist, v2dt_hist, 102.5);
 	shared_state.UpdateCurrentScatterings(9);
 	shared_state.MarkCurrentCaptured(true);
 
@@ -399,6 +381,12 @@ TEST_F(SnapshotIOTest, TextReportListsEachMpiRankActivity)
 		snapshot_root, rank_snapshot_dir, 1, interval, 4, run_id, 0.5, 1.0e-40, false);
 	ASSERT_EQ(SnapshotMergeStatus::Merged, merged.status);
 	const std::string report = ReadAll(SnapshotTextFilePath(snapshot_root, 1, interval));
+	// Running trajectories have not passed final validity/domain classification,
+	// so snapshots show their activity without treating them as physical samples.
+	EXPECT_NE(std::string::npos, report.find("# total_trajectories = 0"));
+	EXPECT_NE(std::string::npos, report.find("# captured_particles = 0"));
+	EXPECT_NE(std::string::npos, report.find("# valid_trajectories = 0"));
+	EXPECT_NE(std::string::npos, report.find("# in_progress_bincount_included = 0"));
 	EXPECT_NE(std::string::npos, report.find("# [MPI rank status]"));
 	EXPECT_NE(std::string::npos, report.find(
 		"# rank  state  trajectory_id  trajectory_wall_s  simulated_elapsed_s  scatterings  observed_at_wall_s"));
@@ -438,7 +426,7 @@ TEST_F(SnapshotIOTest, FourLogicalRanksProgressFromPartialToMergedWithoutDowngra
 	EXPECT_NE(std::string::npos, partial_report.find("# missing_ranks = 3"));
 	EXPECT_NE(std::string::npos, partial_report.find("# total_trajectories = 3"));
 	EXPECT_NE(std::string::npos, partial_report.find("# captured_particles = 2"));
-	EXPECT_NE(std::string::npos, partial_report.find("# capture_rate = 0.66666667"));
+	EXPECT_NE(std::string::npos, partial_report.find("# capture_rate_raw = 0.66666667"));
 	for(int rank = 0; rank < 3; rank++)
 		EXPECT_TRUE(PathExists(SnapshotRankCheckpointPath(rank_snapshot_dir, rank, 1, interval)));
 
@@ -459,18 +447,14 @@ TEST_F(SnapshotIOTest, FourLogicalRanksProgressFromPartialToMergedWithoutDowngra
 	EXPECT_NE(std::string::npos, merged_report.find("# missing_ranks = \n"));
 	EXPECT_NE(std::string::npos, merged_report.find("# total_trajectories = 4"));
 	EXPECT_NE(std::string::npos, merged_report.find("# captured_particles = 2"));
-	EXPECT_NE(std::string::npos, merged_report.find("# capture_rate = 0.50000000"));
+	EXPECT_NE(std::string::npos, merged_report.find("# capture_rate_raw = 0.50000000"));
 
-	std::array<double, 8> histogram{};
+	std::array<double, 4> histogram{};
 	ASSERT_TRUE(ReadHistogramBin(report_path, 0, histogram));
 	EXPECT_DOUBLE_EQ(4.0, histogram[0]);
 	EXPECT_DOUBLE_EQ(40.0, histogram[1]);
 	EXPECT_NEAR(std::sqrt(2.0), histogram[2], 1.0e-9);
 	EXPECT_NEAR(std::sqrt(200.0), histogram[3], 1.0e-8);
-	EXPECT_DOUBLE_EQ(6.0, histogram[4]);
-	EXPECT_DOUBLE_EQ(60.0, histogram[5]);
-	EXPECT_NEAR(std::sqrt(2.0), histogram[6], 1.0e-9);
-	EXPECT_NEAR(std::sqrt(200.0), histogram[7], 1.0e-8);
 
 	const size_t rank3_event = merged_evaporation.find("3\t103\t1.0000000000e+00");
 	const size_t rank2_event = merged_evaporation.find("2\t102\t2.0000000000e+00");

@@ -243,7 +243,7 @@ class Simulation_Data
 	void Configure(double initial_radius, unsigned int min_scattering, unsigned long int max_scattering, unsigned long int max_free_steps = DEFAULT_MAXIMUM_FREE_TIME_STEPS);
 	void Configure_Trajectory_Diagnostics(const TrajectoryDiagnosticConfig& config);
 
-	void Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, SnapshotConfig snapshot_cfg = SnapshotConfig(), unsigned int fixed_seed = 0, bool capture_mode = false);
+	void Generate_Data(obscura::DM_Particle& DM, Celestial_Model& solar_model, obscura::DM_Distribution& halo_model, SnapshotConfig snapshot_cfg = SnapshotConfig(), unsigned int fixed_seed = 0, bool capture_mode = false);
 
 	// Output files
 	void Write_Output_Files(const std::string& output_dir, obscura::DM_Particle& DM);

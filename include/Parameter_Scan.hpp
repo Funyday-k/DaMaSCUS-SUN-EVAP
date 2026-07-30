@@ -8,7 +8,7 @@
 #include "obscura/DM_Particle.hpp"
 #include "obscura/Direct_Detection.hpp"
 
-#include "Solar_Model.hpp"
+#include "Celestial_Model.hpp"
 #include "Simulation_Trajectory.hpp"
 
 namespace DaMaSCUS_SUN
@@ -48,7 +48,7 @@ class Configuration : public obscura::Configuration
 // 2. 	Class to perform parameter scans in the (m_DM, sigma)-plane to search for equal-p-value contours.
 //		Either a full scan, or more efficiently and targeted via the square tracing algorithm (STA).
 
-double Compute_p_Value(unsigned int sample_size, obscura::DM_Particle& DM, obscura::DM_Detector& detector, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, unsigned int rate_interpolation_points = 1000, int mpi_rank = 0, unsigned long int max_scatterings = DEFAULT_MAXIMUM_SCATTERINGS, SnapshotConfig snapshot_config = SnapshotConfig(), unsigned int fixed_seed = 0);
+double Compute_p_Value(unsigned int sample_size, obscura::DM_Particle& DM, obscura::DM_Detector& detector, Celestial_Model& solar_model, obscura::DM_Distribution& halo_model, unsigned int rate_interpolation_points = 1000, int mpi_rank = 0, unsigned long int max_scatterings = DEFAULT_MAXIMUM_SCATTERINGS, SnapshotConfig snapshot_config = SnapshotConfig(), unsigned int fixed_seed = 0);
 
 class Parameter_Scan
 {
@@ -78,8 +78,8 @@ class Parameter_Scan
 	Parameter_Scan(const std::vector<double>& masses, const std::vector<double>& coupl, std::string ID, unsigned int samplesize, unsigned int interpolation_points = 1000, double CL = 0.95, unsigned long int max_scatterings = DEFAULT_MAXIMUM_SCATTERINGS);
 	Parameter_Scan(Configuration& config);
 
-	void Perform_Full_Scan(obscura::DM_Particle& DM, obscura::DM_Detector& detector, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, int mpi_rank = 0);
-	void Perform_STA_Scan(obscura::DM_Particle& DM, obscura::DM_Detector& detector, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, int mpi_rank = 0);
+	void Perform_Full_Scan(obscura::DM_Particle& DM, obscura::DM_Detector& detector, Celestial_Model& solar_model, obscura::DM_Distribution& halo_model, int mpi_rank = 0);
+	void Perform_STA_Scan(obscura::DM_Particle& DM, obscura::DM_Detector& detector, Celestial_Model& solar_model, obscura::DM_Distribution& halo_model, int mpi_rank = 0);
 
 	// Compute the excluded contours based on the p_value_grid using STA to find the contour shape.
 	std::vector<std::vector<double>> Limit_Curve();

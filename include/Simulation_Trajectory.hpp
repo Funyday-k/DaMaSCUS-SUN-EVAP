@@ -15,7 +15,7 @@
 #include "obscura/DM_Particle.hpp"
 
 #include "Simulation_Utilities.hpp"
-#include "Solar_Model.hpp"
+#include "Celestial_Model.hpp"
 
 extern std::string g_top_level_dir;  // 从config文件读取的输出目录
 
@@ -270,16 +270,16 @@ struct Trajectory_Result
 
 	bool Particle_Reflected() const;
 	bool Particle_Free() const;
-	bool Particle_Captured(Solar_Model& solar_model) const;
+	bool Particle_Captured(Celestial_Model& solar_model) const;
 
-	void Print_Summary(Solar_Model& solar_model, unsigned int mpi_rank = 0);
+	void Print_Summary(Celestial_Model& solar_model, unsigned int mpi_rank = 0);
 };
 
 // 2. Simulator
 class Trajectory_Simulator
 {
   private:
-	Solar_Model solar_model;
+	Celestial_Model* celestial_model;
 	double v_max = 0.75;
 
 	// Per-trajectory bincount accumulation
@@ -341,7 +341,7 @@ class Trajectory_Simulator
 	unsigned int current_mpi_rank;
 	unsigned long int current_trajectory_id;
 
-	Trajectory_Simulator(const Solar_Model& model, unsigned long int max_time_steps = DEFAULT_MAXIMUM_FREE_TIME_STEPS, unsigned long int max_scatterings = DEFAULT_MAXIMUM_SCATTERINGS, double max_distance = TRAJECTORY_BOUNDARY_RSUN * libphysica::natural_units::rSun);
+	Trajectory_Simulator(Celestial_Model& model, unsigned long int max_time_steps = DEFAULT_MAXIMUM_FREE_TIME_STEPS, unsigned long int max_scatterings = DEFAULT_MAXIMUM_SCATTERINGS, double max_distance = TRAJECTORY_BOUNDARY_RSUN * libphysica::natural_units::rSun);
 
 	void Fix_PRNG_Seed(unsigned int fixed_seed);
 	void Restore_PRNG_State(const std::string& serialized_state);
@@ -390,7 +390,7 @@ class Free_Particle_Propagator
 
 	explicit Free_Particle_Propagator(const Event& event);
 
-	bool Runge_Kutta_45_Step(Solar_Model& solar_model);
+	bool Runge_Kutta_45_Step(Celestial_Model& solar_model);
 	bool Runge_Kutta_45_Step(double constant_mass);
 
 	Scalar_State Save_Scalar_State() const;

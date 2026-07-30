@@ -718,7 +718,7 @@ void Simulation_Data::Configure_Trajectory_Diagnostics(const TrajectoryDiagnosti
 	evaporation_diagnostics_enabled = trajectory_diagnostic_config.summary_enabled;
 }
 
-void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, SnapshotConfig snapshot_cfg, unsigned int fixed_seed, bool capture_mode)
+void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Celestial_Model& solar_model, obscura::DM_Distribution& halo_model, SnapshotConfig snapshot_cfg, unsigned int fixed_seed, bool capture_mode)
 {
 	if(capture_mode)
 		snapshot_cfg.enabled = false;

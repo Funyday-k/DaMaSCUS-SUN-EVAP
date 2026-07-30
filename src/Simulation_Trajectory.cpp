@@ -483,7 +483,7 @@ bool Solar_Interior_Fraction_Interval(const Event& before, const Event& after, d
 	return false;
 }
 
-double Scattering_Rate_At_Fraction(const Event& before, const Event& after, double fraction, Solar_Model& solar_model, obscura::DM_Particle& DM)
+double Scattering_Rate_At_Fraction(const Event& before, const Event& after, double fraction, Celestial_Model& solar_model, obscura::DM_Particle& DM)
 {
 	fraction = Clamp_Unit_Interval(fraction);
 	double radius_squared = 0.0;
@@ -508,7 +508,7 @@ bool Build_Optical_Depth_Pieces(const Event& before,
                                 double interior_start,
                                 double interior_end,
                                 double actual_dt,
-                                Solar_Model& solar_model,
+                                Celestial_Model& solar_model,
                                 obscura::DM_Particle& DM,
                                 bool use_cached_start_rate,
                                 double cached_start_rate,
@@ -1435,14 +1435,14 @@ bool Trajectory_Result::Particle_Free() const
 	    && number_of_scatterings == 0;
 }
 
-bool Trajectory_Result::Particle_Captured(Solar_Model& solar_model) const
+bool Trajectory_Result::Particle_Captured(Celestial_Model& solar_model) const
 {
 	double r	= final_event.Radius();
 	double vesc = solar_model.Local_Escape_Speed(r);
 	return final_event.Speed() < vesc;
 }
 
-void Trajectory_Result::Print_Summary(Solar_Model& solar_model, unsigned int mpi_rank)
+void Trajectory_Result::Print_Summary(Celestial_Model& solar_model, unsigned int mpi_rank)
 {
 	if(mpi_rank == 0)
 	{
@@ -1478,8 +1478,8 @@ void Trajectory_Result::Print_Summary(Solar_Model& solar_model, unsigned int mpi
 }
 
 // 2. Simulator
-Trajectory_Simulator::Trajectory_Simulator(const Solar_Model& model, unsigned long int max_time_steps, unsigned long int max_scatterings, double max_distance)
-: solar_model(model), has_previous_bincount_event(false),
+Trajectory_Simulator::Trajectory_Simulator(Celestial_Model& model, unsigned long int max_time_steps, unsigned long int max_scatterings, double max_distance)
+: celestial_model(&model), has_previous_bincount_event(false),
   free_flight_reference_energy_eV(std::numeric_limits<double>::quiet_NaN()), current_ballistic_energy_drift_eV(0.0),
   current_physical_bound_state(false), terminate_on_capture(false), diagnostic_trace_enabled(false),
   diagnostic_event_index(0), diagnostic_scatter_index(0), diagnostic_step_index(0), last_scatter_target_index(-2),
@@ -1491,7 +1491,7 @@ Trajectory_Simulator::Trajectory_Simulator(const Solar_Model& model, unsigned lo
 		throw std::invalid_argument("Trajectory_Simulator(): maximum distance must be finite and positive.");
 	std::random_device rd;
 	PRNG.seed(rd());
-	rate_nuclei_cache.resize(solar_model.target_isotopes.size());
+	rate_nuclei_cache.resize(celestial_model->Target_Count());
 	bincount_contribution_cache.reserve(256);
 }
 
@@ -1622,7 +1622,7 @@ void Trajectory_Simulator::Reset_Bincount_Anchor(const Event& event)
 
 double Trajectory_Simulator::Capture_Energy_eV(double radius, double speed, obscura::DM_Particle& DM)
 {
-	double vesc = solar_model.Local_Escape_Speed(radius);
+	double vesc = celestial_model->Local_Escape_Speed(radius);
 	double E = 0.5 * DM.mass * (speed * speed - vesc * vesc);
 	return In_Units(E, eV);
 }
@@ -1959,7 +1959,7 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 		else
 		{
 			particle_propagator.time_step = RK45_Sanitized_Time_Step(particle_propagator.time_step);
-			rate_before = solar_model.Total_DM_Scattering_Rate(DM, r_before, v_before);
+			rate_before = celestial_model->Total_DM_Scattering_Rate(DM, r_before, v_before);
 			if(!std::isfinite(rate_before) || rate_before < 0.0)
 				{
 					std::cerr << "\nWarning in Propagate_Freely(): invalid pre-step scattering rate (rank "
@@ -1978,7 +1978,7 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 
 		const Free_Particle_Propagator::Scalar_State propagator_state_before = particle_propagator.Save_Scalar_State();
 		double t_before = particle_propagator.Current_Time();
-		bool rk_step_ok = particle_propagator.Runge_Kutta_45_Step(solar_model);
+		bool rk_step_ok = particle_propagator.Runge_Kutta_45_Step(*celestial_model);
 		double actual_dt = particle_propagator.Current_Time() - t_before;
 		double r_after = particle_propagator.Current_Radius();
 		double v_after = particle_propagator.Current_Speed();
@@ -2055,7 +2055,7 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 				                           interior_start,
 				                           interior_end,
 				                           actual_dt,
-				                           solar_model,
+				                           *celestial_model,
 				                           DM,
 				                           use_cached_start_rate,
 				                           rate_before,
@@ -2402,13 +2402,13 @@ int Trajectory_Simulator::Sample_Target(obscura::DM_Particle& DM, double r, doub
 	else
 	{
 		// C: 复用预分配的 rate_nuclei_cache，避免每次散射事件堆分配
-		for(unsigned int i = 0; i < solar_model.target_isotopes.size(); i++)
+		for(unsigned int i = 0; i < celestial_model->Target_Count(); i++)
 		{
-			rate_nuclei_cache[i] = solar_model.DM_Scattering_Rate_Nucleus(DM, r, DM_speed, i);
+			rate_nuclei_cache[i] = celestial_model->DM_Scattering_Rate_Nucleus(DM, r, DM_speed, i);
 			if(!std::isfinite(rate_nuclei_cache[i]) || rate_nuclei_cache[i] < 0.0)
 				throw std::runtime_error("Sample_Target(): nucleus scattering rate is negative or non-finite.");
 		}
-		double rate_electron = solar_model.DM_Scattering_Rate_Electron(DM, r, DM_speed);
+		double rate_electron = celestial_model->DM_Scattering_Rate_Electron(DM, r, DM_speed);
 		if(!std::isfinite(rate_electron) || rate_electron < 0.0)
 			throw std::runtime_error("Sample_Target(): electron scattering rate is negative or non-finite.");
 		double total_rate	 = std::accumulate(rate_nuclei_cache.begin(), rate_nuclei_cache.end(), rate_electron);
@@ -2421,10 +2421,10 @@ int Trajectory_Simulator::Sample_Target(obscura::DM_Particle& DM, double r, doub
 		if(sum > xi)
 			return -1;
 		// Nuclei
-		for(unsigned int i = 0; i < solar_model.target_isotopes.size(); i++)
+		for(unsigned int i = 0; i < celestial_model->Target_Count(); i++)
 		{
 			sum += rate_nuclei_cache[i] / total_rate;
-			if(sum > xi || i == solar_model.target_isotopes.size() - 1)
+			if(sum > xi || i == celestial_model->Target_Count() - 1)
 				return i;
 		}
 		throw std::runtime_error("Sample_Target(): no target could be sampled.");
@@ -2532,12 +2532,12 @@ void Trajectory_Simulator::Scatter(Event& current_event, obscura::DM_Particle& D
 	if(target_index == -1)
 		target_mass = mElectron;
 	else
-		target_mass = solar_model.target_isotopes[target_index].mass;
+		target_mass = celestial_model->Target_Isotope(target_index).mass;
 
-	libphysica::Vector vel_target = Sample_Target_Velocity(solar_model.Temperature(r), target_mass, current_event.velocity);
+	libphysica::Vector vel_target = Sample_Target_Velocity(celestial_model->Temperature(r), target_mass, current_event.velocity);
 
 	// 2. Sample the scattering angle
-	double cos_alpha = (target_index == -1) ? DM.Sample_Scattering_Angle_Electron(PRNG, v, r) : DM.Sample_Scattering_Angle_Nucleus(PRNG, solar_model.target_isotopes[target_index], v, r);
+	double cos_alpha = (target_index == -1) ? DM.Sample_Scattering_Angle_Electron(PRNG, v, r) : DM.Sample_Scattering_Angle_Nucleus(PRNG, celestial_model->Target_Isotope(target_index), v, r);
 
 	// 3. Construct the final DM velocity
 	current_event.velocity = New_DM_Velocity(cos_alpha, DM.mass, target_mass, current_event.velocity, vel_target);
@@ -2618,8 +2618,8 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
 			if(last_scatter_target_index == -1)
 				target_species = "electron";
 			else if(last_scatter_target_index >= 0
-			        && static_cast<size_t>(last_scatter_target_index) < solar_model.target_isotopes.size())
-				target_species = solar_model.target_isotopes[static_cast<size_t>(last_scatter_target_index)].name;
+			        && static_cast<size_t>(last_scatter_target_index) < celestial_model->Target_Count())
+				target_species = celestial_model->Target_Isotope(static_cast<size_t>(last_scatter_target_index)).name;
 			if(diagnostic_trace_enabled && scatter_pre_event_index < current_diagnostic_events.size())
 			{
 				std::strncpy(current_diagnostic_events[scatter_pre_event_index].target_species,
@@ -2666,7 +2666,7 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
 	{
 		double r_final = current_event.Radius();
 		double v_final = current_event.Speed();
-		double vesc_final = solar_model.Local_Escape_Speed(r_final);
+		double vesc_final = celestial_model->Local_Escape_Speed(r_final);
 		double E_final = 0.5 * DM.mass * (v_final * v_final - vesc_final * vesc_final);
 		double E_final_eV = In_Units(E_final, eV);
 		if(termination_reason == TrajectoryTerminationReason::OutwardEscape && E_final_eV >= 0.0)
@@ -2820,7 +2820,7 @@ double Free_Particle_Propagator::dphi_dt(double r)
 	return angular_momentum / r / r;
 }
 
-bool Free_Particle_Propagator::Runge_Kutta_45_Step(Solar_Model& solar_model)
+bool Free_Particle_Propagator::Runge_Kutta_45_Step(Celestial_Model& solar_model)
 {
 	time_step = RK45_Sanitized_Time_Step(time_step);
 	bool accepted = false;

@@ -9,7 +9,7 @@ namespace DaMaSCUS_SUN
 
 using namespace libphysica::natural_units;
 
-Reflection_Spectrum::Reflection_Spectrum(const Simulation_Data& simulation_data, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, double mDM, int iso_ring)
+Reflection_Spectrum::Reflection_Spectrum(const Simulation_Data& simulation_data, Celestial_Model& solar_model, obscura::DM_Distribution& halo_model, double mDM, int iso_ring)
 : DM_Distribution("Reflection spectrum", 0.0, simulation_data.Minimum_Speed(), 1.05 * simulation_data.Highest_Speed(iso_ring)), distance(AU)
 {
 	kde_speed								   = libphysica::Perform_KDE(simulation_data.data[iso_ring], v_domain[0], v_domain[1]);
@@ -63,7 +63,7 @@ void Reflection_Spectrum::Set_Distance(double d)
 	distance = d;
 }
 
-double DM_Entering_Rate(Solar_Model& solar_model, obscura::DM_Distribution& halo_model, double mDM)
+double DM_Entering_Rate(Celestial_Model& solar_model, obscura::DM_Distribution& halo_model, double mDM)
 {
 	double number_density = halo_model.DM_density / mDM;
 	double u_average	  = halo_model.Average_Speed();

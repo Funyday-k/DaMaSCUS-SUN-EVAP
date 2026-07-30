@@ -70,7 +70,7 @@ double Event::Angular_Momentum() const
 	return position.Cross(velocity).Norm();
 }
 
-double Event::Asymptotic_Speed_Sqr(Solar_Model& solar_model) const
+double Event::Asymptotic_Speed_Sqr(Celestial_Model& solar_model) const
 {
 	double r	 = Radius();
 	double v	 = Speed();
@@ -120,7 +120,7 @@ std::ostream& operator<<(std::ostream& output, const Event& event)
 }
 
 // 2. Generator of initial conditions
-double PDF_Initial_Speed(double v, obscura::DM_Distribution& halo_model, Solar_Model& solar_model)
+double PDF_Initial_Speed(double v, obscura::DM_Distribution& halo_model, Celestial_Model& solar_model)
 {
 	if(!std::isfinite(v) || v < 0.0)
 		throw std::invalid_argument("PDF_Initial_Speed(): speed must be finite and non-negative.");
@@ -173,7 +173,7 @@ double PDF_Cos_Theta(double cos_theta, double v, obscura::DM_Distribution& halo_
 	return pdf;
 }
 
-Event Initial_Conditions(obscura::DM_Distribution& halo_model, Solar_Model& solar_model, std::mt19937& PRNG)
+Event Initial_Conditions(obscura::DM_Distribution& halo_model, Celestial_Model& solar_model, std::mt19937& PRNG)
 {
 	auto* standard_halo = dynamic_cast<obscura::Standard_Halo_Model*>(&halo_model);
 	if(standard_halo == nullptr)

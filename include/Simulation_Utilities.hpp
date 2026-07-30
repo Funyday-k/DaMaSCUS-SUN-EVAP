@@ -8,7 +8,7 @@
 
 #include "obscura/DM_Distribution.hpp"
 
-#include "Solar_Model.hpp"
+#include "Celestial_Model.hpp"
 
 namespace DaMaSCUS_SUN
 {
@@ -26,7 +26,7 @@ struct Event
 	double Radius() const;
 	double Speed() const;
 	double Angular_Momentum() const;
-	double Asymptotic_Speed_Sqr(Solar_Model& solar_model) const;
+	double Asymptotic_Speed_Sqr(Celestial_Model& solar_model) const;
 
 	double Isoreflection_Angle(const libphysica::Vector& vel_sun) const;
 	int Isoreflection_Ring(const libphysica::Vector& vel_sun, unsigned int number_of_rings) const;
@@ -38,9 +38,9 @@ struct Event
 };
 
 // 2. Generator of initial conditions
-extern double PDF_Initial_Speed(double v, obscura::DM_Distribution& halo_model, Solar_Model& model);
+extern double PDF_Initial_Speed(double v, obscura::DM_Distribution& halo_model, Celestial_Model& model);
 extern double PDF_Cos_Theta(double cos_theta, double v, obscura::DM_Distribution& halo_model);
-extern Event Initial_Conditions(obscura::DM_Distribution& halo_model, Solar_Model& model, std::mt19937& PRNG);
+extern Event Initial_Conditions(obscura::DM_Distribution& halo_model, Celestial_Model& model, std::mt19937& PRNG);
 
 // 3. Analytically propagate a particle at event on a hyperbolic Kepler orbit to a radius R (without passing the periapsis)
 extern bool Hyperbolic_Kepler_Shift(Event& event, double R_final);

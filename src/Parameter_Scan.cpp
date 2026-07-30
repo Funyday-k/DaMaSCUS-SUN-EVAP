@@ -640,7 +640,7 @@ void Configuration::Print_Summary(int mpi_rank)
 	}
 }
 
-double Compute_p_Value(unsigned int sample_size, obscura::DM_Particle& DM, obscura::DM_Detector& detector, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, unsigned int rate_interpolation_points, int mpi_rank, unsigned long int max_scatterings, SnapshotConfig snapshot_config, unsigned int fixed_seed)
+double Compute_p_Value(unsigned int sample_size, obscura::DM_Particle& DM, obscura::DM_Detector& detector, Celestial_Model& solar_model, obscura::DM_Distribution& halo_model, unsigned int rate_interpolation_points, int mpi_rank, unsigned long int max_scatterings, SnapshotConfig snapshot_config, unsigned int fixed_seed)
 {
 	double u_min = detector.Minimum_DM_Speed(DM);
 
@@ -893,7 +893,7 @@ std::vector<std::vector<double>> Parameter_Scan::Limit_Curve()
 	return limit_curve;
 }
 
-void Parameter_Scan::Perform_STA_Scan(obscura::DM_Particle& DM, obscura::DM_Detector& detector, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, int mpi_rank)
+void Parameter_Scan::Perform_STA_Scan(obscura::DM_Particle& DM, obscura::DM_Detector& detector, Celestial_Model& solar_model, obscura::DM_Distribution& halo_model, int mpi_rank)
 {
 	Import_P_Values();
 	double mDM_original		 = DM.mass;
@@ -973,7 +973,7 @@ void Parameter_Scan::Perform_STA_Scan(obscura::DM_Particle& DM, obscura::DM_Dete
 	DM.Set_Interaction_Parameter(coupling_original, detector.Target_Particles());
 }
 
-void Parameter_Scan::Perform_Full_Scan(obscura::DM_Particle& DM, obscura::DM_Detector& detector, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, int mpi_rank)
+void Parameter_Scan::Perform_Full_Scan(obscura::DM_Particle& DM, obscura::DM_Detector& detector, Celestial_Model& solar_model, obscura::DM_Distribution& halo_model, int mpi_rank)
 {
 	Import_P_Values();
 	double mDM_original		 = DM.mass;

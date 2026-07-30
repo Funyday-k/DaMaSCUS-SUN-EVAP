@@ -288,6 +288,27 @@ Solar_Model::Solar_Model(const std::string& data_file)
 	number_density_electron = libphysica::Interpolation(Create_Number_Density_Table_Electron());
 }
 
+const std::string& Solar_Model::Name() const
+{
+    return name;
+}
+double Solar_Model::Radius() const
+{
+    return rSun;
+}
+double Solar_Model::Total_Mass() const
+{
+    return mSun;
+}
+unsigned int Solar_Model::Target_Count() const
+{
+    return target_isotopes.size();
+}
+const obscura::Isotope& Solar_Model::Target_Isotope(unsigned int index) const
+{
+    return target_isotopes[index];
+}
+
 double Solar_Model::Mass(double r)
 {
 	if(!std::isfinite(r))

@@ -8,6 +8,7 @@
 
 #include "obscura/DM_Particle.hpp"
 #include "obscura/Target_Nucleus.hpp"
+#include "Celestial_Model.hpp"
 
 namespace DaMaSCUS_SUN
 {
@@ -30,7 +31,7 @@ class Solar_Isotope : public obscura::Isotope
 };
 
 // 2. Solar model
-class Solar_Model
+class Solar_Model : public Celestial_Model
 {
   private:
 	libphysica::Interpolation mass, temperature, local_escape_speed_squared, mass_density;
@@ -60,6 +61,13 @@ class Solar_Model
 	std::vector<Solar_Isotope> target_isotopes;
 
 	explicit Solar_Model(const std::string& data_file = "");
+
+    // Celestial_Model interface
+    const std::string& Name() const override;
+    double Radius() const override;
+    double Total_Mass() const override;
+    unsigned int Target_Count() const override;
+    const obscura::Isotope& Target_Isotope(unsigned int index) const override;
 
 	double Mass(double r);
 	double Mass_Density(double r);

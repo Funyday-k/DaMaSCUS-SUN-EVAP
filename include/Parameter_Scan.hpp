@@ -31,7 +31,7 @@ class Configuration : public obscura::Configuration
 	void Construct_DM_Particle_Dark_Photon();
 
   public:
-	std::string run_mode;
+	std::string run_mode, target_body;
 	unsigned int isoreflection_rings, interpolation_points;
 	unsigned int sample_size, cross_sections, fixed_seed;
 	unsigned int max_trajectories;

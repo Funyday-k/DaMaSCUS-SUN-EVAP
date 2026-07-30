@@ -181,6 +181,23 @@ void Configuration::Import_Parameter_Scan_Parameter()
 		std::cerr << "No 'run_mode' setting in configuration file." << std::endl;
 		std::exit(EXIT_FAILURE);
 	}
+	// Optional target body. Legacy configuration files default to Sun.
+	target_body = "Sun";
+	try
+	{
+	        target_body = config.lookup("target_body").c_str();
+	}
+	catch(const SettingNotFoundException& nfex)
+	{
+	}
+
+	if(target_body != "Sun" && target_body != "Earth")
+	{
+	        std::cerr << "Error in Configuration::Import_Parameter_Scan_Parameter(): "
+	                  << "'target_body' must be either \"Sun\" or \"Earth\"." << std::endl;
+	        std::exit(EXIT_FAILURE);
+	}
+
 	capture_mode = (run_mode == "Capture");
 	const bool parameter_scan_mode = (run_mode == "Parameter scan");
 	try

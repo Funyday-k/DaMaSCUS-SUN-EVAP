@@ -3,6 +3,7 @@
 #include <cstring>	 // for strlen
 #include <exception>
 #include <iostream>
+#include <memory>
 #include <mpi.h>
 
 #include "libphysica/Natural_Units.hpp"
@@ -10,6 +11,7 @@
 #include "libphysica/Utilities.hpp"
 
 #include "Data_Generation.hpp"
+#include "Earth_Model.hpp"
 #include "Parameter_Scan.hpp"
 #include "Solar_Model.hpp"
 #include "version.hpp"
@@ -59,19 +61,48 @@ int main(int argc, char* argv[])
 			          << "heartbeat snapshot is disabled. Final MPI-reduced outputs are unaffected." << std::endl;
 		cfg.snapshot_config.enabled = false;
 	}
-	std::string solar_model_data_file;
+	std::unique_ptr<Celestial_Model> celestial_model;
+
 	try
 	{
-		solar_model_data_file = Locate_Solar_Model_Data_File(argv[0]);
+	        if(cfg.target_body == "Earth")
+	        {
+	                celestial_model.reset(new Earth_Model());
+	        }
+	        else if(cfg.target_body == "Sun")
+	        {
+	                const std::string solar_model_data_file =
+	                    Locate_Solar_Model_Data_File(argv[0]);
+	                celestial_model.reset(new Solar_Model(solar_model_data_file));
+	        }
+	        else
+	        {
+	                if(mpi_rank == 0)
+	                        std::cerr << "Error: unsupported target_body: "
+	                                  << cfg.target_body << std::endl;
+	                MPI_Finalize();
+	                return 1;
+	        }
+
+	        // Shared engine code uses these values wherever it cannot
+	        // directly receive a Celestial_Model reference.
+	        g_body_radius = celestial_model->Radius();
+	        g_body_mass   = celestial_model->Total_Mass();
 	}
 	catch(const std::exception& error)
 	{
-		if(mpi_rank == 0)
-			std::cerr << "Error: " << error.what() << std::endl;
-		MPI_Finalize();
-		return 1;
+	        if(mpi_rank == 0)
+	                std::cerr << "Error while initializing "
+	                          << cfg.target_body
+	                          << " model: "
+	                          << error.what()
+	                          << std::endl;
+	        MPI_Finalize();
+	        return 1;
 	}
-	Solar_Model SSM(solar_model_data_file);
+
+	// Retain the existing call sites below through the common interface.
+	Celestial_Model& SSM = *celestial_model;
 	cfg.Print_Summary(mpi_rank);
 	MPI_Barrier(MPI_COMM_WORLD);
 	////////////////////////////////////////////////////////////////////////
@@ -81,7 +112,7 @@ int main(int argc, char* argv[])
 	{
 		double u_min = 0.0;
 		Simulation_Data data_set(cfg.sample_size, cfg.max_trajectories, u_min, cfg.isoreflection_rings);
-		data_set.Configure(TRAJECTORY_BOUNDARY_RSUN * rSun, 1, cfg.maximum_number_of_scatterings);
+		data_set.Configure(TRAJECTORY_BOUNDARY_RSUN * g_body_radius, 1, cfg.maximum_number_of_scatterings);
 		data_set.Configure_Trajectory_Diagnostics(cfg.trajectory_diagnostic_config);
 		if(mpi_rank == 0)
 			std::cout << (cfg.capture_mode ? "Generate data in CAPTURE MODE..." : "Generate data...") << std::endl

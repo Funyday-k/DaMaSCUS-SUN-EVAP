@@ -1,9 +1,0 @@
-CMake Error at /storage01/users/s1155234222/cmake-3.12.4-Linux-x86_64/share/cmake-3.12/Modules/FindPackageHandleStandardArgs.cmake:137 (message):
-  Could NOT find MPI (missing: MPI_CXX_FOUND CXX)
-Call Stack (most recent call first):
-  /storage01/users/s1155234222/cmake-3.12.4-Linux-x86_64/share/cmake-3.12/Modules/FindPackageHandleStandardArgs.cmake:378 (_FPHSA_FAILURE_MESSAGE)
-  /storage01/users/s1155234222/cmake-3.12.4-Linux-x86_64/share/cmake-3.12/Modules/FindMPI.cmake:1666 (find_package_handle_standard_args)
-  CMakeLists.txt:62 (find_package)
-
-
-make: *** No targets specified and no makefile found.  Stop.

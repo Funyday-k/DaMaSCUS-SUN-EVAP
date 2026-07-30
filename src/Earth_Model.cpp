@@ -514,10 +514,12 @@ double Earth_Model::Total_DM_Scattering_Rate_Interpolated(obscura::DM_Particle& 
 
 void Earth_Model::Interpolate_Total_DM_Scattering_Rate(obscura::DM_Particle& DM, unsigned int N_radius, unsigned int N_speed)
 {
-	if(N_radius == 0 || N_speed == 0)
+	// Interpolation_2D must not be constructed with a 1x1 or 2x2 grid.
+	// Use direct scattering-rate evaluation for undersized grids.
+	if(N_radius < 3 || N_speed < 3)
 	{
-		using_interpolated_rate = false;
-		return;
+	        using_interpolated_rate = false;
+	        return;
 	}
 
 	int mpi_processes = 1;

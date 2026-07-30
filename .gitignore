@@ -50,4 +50,12 @@
 !/data/
 /data/*
 !/data/model_agss09.dat
+<<<<<<< HEAD
 ctest_smoke_results/
+=======
+
+# 编译产物与作业日志
+build/
+*.err
+*.log
+>>>>>>> origin/chore/chpc-job-scripts

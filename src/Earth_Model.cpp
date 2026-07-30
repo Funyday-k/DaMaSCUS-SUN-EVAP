@@ -1,4 +1,5 @@
 #include "Earth_Model.hpp"
+#include "Solar_Model.hpp"  // for Thermal_Averaged_Relative_Speed
 
 #include <algorithm>
 #include <cmath>

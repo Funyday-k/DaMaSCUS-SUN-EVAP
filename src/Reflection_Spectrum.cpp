@@ -68,8 +68,8 @@ double DM_Entering_Rate(Celestial_Model& solar_model, obscura::DM_Distribution& 
 	double number_density = halo_model.DM_density / mDM;
 	double u_average	  = halo_model.Average_Speed();
 	double u_inv_average  = halo_model.Eta_Function(0.0);
-	double v_esc		  = solar_model.Local_Escape_Speed(rSun);
-	return rSun * rSun * M_PI * number_density * (u_average + v_esc * v_esc * u_inv_average);
+	double v_esc		  = solar_model.Local_Escape_Speed(g_body_radius);
+	return g_body_radius * g_body_radius * M_PI * number_density * (u_average + v_esc * v_esc * u_inv_average);
 }
 
 }	// namespace DaMaSCUS_SUN

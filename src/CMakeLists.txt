@@ -42,6 +42,7 @@ add_library(lib_damascus_sun STATIC
 	Snapshot_Shared_State.cpp
 	Simulation_Trajectory.cpp
 	Simulation_Utilities.cpp
+	Celestial_Model.cpp
 	Earth_Model.cpp
 	Solar_Model.cpp )
 

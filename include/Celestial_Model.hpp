@@ -44,6 +44,12 @@ class Celestial_Model
     virtual void Interpolate_Total_DM_Scattering_Rate(obscura::DM_Particle& DM, unsigned int N_radius, unsigned int N_speed)   = 0;
 };
 
+
+// Global current-body parameters (set at startup per target_body).
+// Default to Sun so existing Sun runs are byte-for-byte unchanged.
+extern double g_body_radius;
+extern double g_body_mass;
+
 }	// namespace DaMaSCUS_SUN
 
 #endif

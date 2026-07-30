@@ -644,7 +644,7 @@ void Configuration::Print_Summary(int mpi_rank)
 				  << "\tSample size:\t\t\t" << sample_size << std::endl
 				  << "\tFixed PRNG seed:\t\t" << (fixed_seed == 0 ? "random" : std::to_string(fixed_seed)) << std::endl
 				  << "\tMax scatterings/traj:\t\t" << maximum_number_of_scatterings << std::endl
-				  << "\tTrajectory boundary [Rsun]:\t" << TRAJECTORY_BOUNDARY_RSUN << std::endl
+				  << "\tTrajectory boundary [R_body]:\t" << TRAJECTORY_BOUNDARY_RSUN << std::endl
 				  << "\tSc. rate interpolation:\t\t" << ((interpolation_points > 0) ? "[x] (Grid: " + std::to_string(interpolation_points) + "×" + std::to_string(interpolation_points) + ")" : "[ ]") << std::endl;
 		if(run_mode == "Parameter point" && isoreflection_rings > 1)
 			std::cout << "\tIsoreflection rings:\t\t" << isoreflection_rings << std::endl;
@@ -663,7 +663,7 @@ double Compute_p_Value(unsigned int sample_size, obscura::DM_Particle& DM, obscu
 
 	solar_model.Interpolate_Total_DM_Scattering_Rate(DM, rate_interpolation_points, rate_interpolation_points);
 	Simulation_Data data_set(sample_size, g_max_trajectories, u_min);
-	data_set.Configure(TRAJECTORY_BOUNDARY_RSUN * rSun, 1, max_scatterings);
+	data_set.Configure(TRAJECTORY_BOUNDARY_RSUN * g_body_radius, 1, max_scatterings);
 	data_set.Generate_Data(DM, solar_model, halo_model, snapshot_config, fixed_seed, false);
 	data_set.Print_Summary(mpi_rank);
 	Reflection_Spectrum spectrum(data_set, solar_model, halo_model, DM.mass);

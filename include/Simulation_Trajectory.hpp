@@ -341,7 +341,7 @@ class Trajectory_Simulator
 	unsigned int current_mpi_rank;
 	unsigned long int current_trajectory_id;
 
-	Trajectory_Simulator(Celestial_Model& model, unsigned long int max_time_steps = DEFAULT_MAXIMUM_FREE_TIME_STEPS, unsigned long int max_scatterings = DEFAULT_MAXIMUM_SCATTERINGS, double max_distance = TRAJECTORY_BOUNDARY_RSUN * libphysica::natural_units::rSun);
+	Trajectory_Simulator(Celestial_Model& model, unsigned long int max_time_steps = DEFAULT_MAXIMUM_FREE_TIME_STEPS, unsigned long int max_scatterings = DEFAULT_MAXIMUM_SCATTERINGS, double max_distance = TRAJECTORY_BOUNDARY_RSUN * g_body_radius);
 
 	void Fix_PRNG_Seed(unsigned int fixed_seed);
 	void Restore_PRNG_State(const std::string& serialized_state);

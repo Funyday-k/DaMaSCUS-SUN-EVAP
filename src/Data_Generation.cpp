@@ -1059,7 +1059,7 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Celestial_Model& s
 				const double final_radius = trajectory.final_event.Radius();
 				const double final_speed = trajectory.final_event.Speed();
 				record.final_r_rsun = std::isfinite(final_radius)
-				                    ? In_Units(final_radius, rSun)
+				                    ? In_Units(final_radius, g_body_radius)
 				                    : std::numeric_limits<double>::quiet_NaN();
 				record.final_speed_km_s = std::isfinite(final_speed)
 				                        ? In_Units(final_speed, km / sec)
@@ -2194,7 +2194,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 		  << BIN_WIDTH_KM / R_SUN_KM << "\n";
 		f << "# radial_inner_extent_Rsun = " << BIN_MAX_KM / R_SUN_KM << "\n";
 		f << "# radial_domain_max_AU = " << RADIAL_DOMAIN_MAX_AU << "\n";
-		f << "# radial_extent_Rsun = " << RADIAL_DOMAIN_MAX_RSUN << "\n";
+		f << "# radial_extent_Rbody = " << RADIAL_DOMAIN_MAX_RSUN << "\n";
 		f << "# bin_index  r_lower_Rsun  r_upper_Rsun  residence_dt[s]  residence_v2dt[km2/s]  residence_err_dt[s]  residence_err_v2dt[km2/s]\n";
 		const double residence_samples = static_cast<double>(number_of_residence_samples);
 		for(std::size_t b = 0; b < TOTAL_BINS; b++)
@@ -2476,7 +2476,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 			{
 				const double escape_radius_rsun = rec.r_boundary_escape_km / R_SUN_KM;
 				if(!std::isfinite(escape_radius_rsun)
-				   || std::fabs(escape_radius_rsun - In_Units(initial_and_final_radius, rSun)) > 1.0e-10)
+				   || std::fabs(escape_radius_rsun - In_Units(initial_and_final_radius, g_body_radius)) > 1.0e-10)
 					escape_radius_invariant = false;
 			}
 			// Excluded/numerically invalid trajectories intentionally stop
@@ -2588,7 +2588,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 			         << "  \"compiler\": \"" << compiler << "\",\n"
 			         << "  \"mass_GeV\": " << std::scientific << std::setprecision(17) << mass_gev << ",\n"
 			         << "  \"sigma_cm2\": " << sigma_cm2 << ",\n"
-			         << "  \"trajectory_boundary_Rsun\": " << In_Units(initial_and_final_radius, rSun) << ",\n"
+			         << "  \"trajectory_boundary_Rbody\": " << In_Units(initial_and_final_radius, g_body_radius) << ",\n"
 			         << "  \"mpi_size\": " << mpi_processes << ",\n"
 			         << "  \"rng_algorithm\": \"std::mt19937\",\n"
 			         << "  \"base_seed\": " << diagnostic_base_seed << ",\n"

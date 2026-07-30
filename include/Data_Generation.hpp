@@ -165,7 +165,7 @@ class Simulation_Data
 	unsigned int requested_captured_particles;
 	unsigned long int max_trajectories_per_rank;
 	unsigned long int normal_mode_mpi_sync_interval;
-	double initial_and_final_radius = TRAJECTORY_BOUNDARY_RSUN * libphysica::natural_units::rSun;
+	double initial_and_final_radius = TRAJECTORY_BOUNDARY_RSUN * g_body_radius;
 	unsigned int minimum_number_of_scatterings = 1;
 	unsigned long int maximum_number_of_scatterings = DEFAULT_MAXIMUM_SCATTERINGS;
 	unsigned long int maximum_free_time_steps = DEFAULT_MAXIMUM_FREE_TIME_STEPS;

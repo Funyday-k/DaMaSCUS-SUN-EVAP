@@ -87,7 +87,7 @@ double Free_Propagation_Time_Step_Cap(double radius, double speed, double maximu
 
 	// 太阳外近似 Kepler 运动，步长不应大于局域动力学时间的一个固定比例。
 	const double safe_radius = std::max(radius, 1.0 * km);
-	const double dynamical_time = sqrt(safe_radius * safe_radius * safe_radius / (G_Newton * mSun));
+	const double dynamical_time = sqrt(safe_radius * safe_radius * safe_radius / (G_Newton * g_body_mass));
 	if(std::isfinite(dynamical_time) && dynamical_time > 0.0)
 		cap = std::min(cap, 0.1 * dynamical_time);
 
@@ -163,10 +163,10 @@ bool Bound_Kepler_Return_At_Same_Radius(const Event& outward_event, Event& inbou
 	const double speed = outward_event.Speed();
 	const double radial_velocity = Radial_Velocity(outward_event);
 	if(!std::isfinite(radius) || !std::isfinite(speed) || !std::isfinite(radial_velocity)
-	   || radius <= rSun || speed <= 0.0 || radial_velocity <= 0.0)
+	   || radius <= g_body_radius || speed <= 0.0 || radial_velocity <= 0.0)
 		return false;
 
-	const double mu = G_Newton * mSun;
+	const double mu = G_Newton * g_body_mass;
 	const double specific_energy = 0.5 * speed * speed - mu / radius;
 	if(!std::isfinite(specific_energy) || specific_energy >= 0.0)
 		return false;
@@ -391,7 +391,7 @@ bool Surface_Crossing_Fractions(const Event& before, const Event& after, double&
 {
 	double a = 0.0;
 	double b = 0.0;
-	double c = -rSun * rSun;
+	double c = -g_body_radius * g_body_radius;
 	for(unsigned int component = 0; component < 3; component++)
 	{
 		const double displacement = after.position[component] - before.position[component];
@@ -422,11 +422,11 @@ bool Fraction_In_Unit_Interval(double fraction)
 
 double Find_Surface_Crossing_Fraction(const Event& before, const Event& after, double lower, double upper)
 {
-	double r_lower = Radius_At_Fraction(before, after, lower) - rSun;
+	double r_lower = Radius_At_Fraction(before, after, lower) - g_body_radius;
 	for(int iteration = 0; iteration < 60; iteration++)
 	{
 		const double mid = 0.5 * (lower + upper);
-		const double r_mid = Radius_At_Fraction(before, after, mid) - rSun;
+		const double r_mid = Radius_At_Fraction(before, after, mid) - g_body_radius;
 		if((r_lower <= 0.0 && r_mid <= 0.0) || (r_lower >= 0.0 && r_mid >= 0.0))
 		{
 			lower = mid;
@@ -440,8 +440,8 @@ double Find_Surface_Crossing_Fraction(const Event& before, const Event& after, d
 
 bool Solar_Interior_Fraction_Interval(const Event& before, const Event& after, double r_before, double r_after, double& start, double& end)
 {
-	const bool before_inside = r_before < rSun;
-	const bool after_inside = r_after < rSun;
+	const bool before_inside = r_before < g_body_radius;
+	const bool after_inside = r_after < g_body_radius;
 	double first_crossing = 0.0;
 	double second_crossing = 0.0;
 	const bool has_crossings = Surface_Crossing_Fractions(before, after, first_crossing, second_crossing);
@@ -498,7 +498,7 @@ double Scattering_Rate_At_Fraction(const Event& before, const Event& after, doub
 		speed_squared += velocity * velocity;
 	}
 	const double radius = sqrt(std::max(0.0, radius_squared));
-	if(radius >= rSun)
+	if(radius >= g_body_radius)
 		return 0.0;
 	return solar_model.Total_DM_Scattering_Rate(DM, radius, sqrt(std::max(0.0, speed_squared)));
 }
@@ -1186,7 +1186,7 @@ bool Compute_Bound_Kepler_Exterior_Arc(
 	const double angular_momentum_km2_s =
 	    In_Units(outward_event.Angular_Momentum(), km * km / sec);
 	const double mu_km3_s2 =
-	    In_Units(G_Newton * mSun, km * km * km / (sec * sec));
+	    In_Units(G_Newton * g_body_mass, km * km * km / (sec * sec));
 	const double specific_energy_km2_s2 =
 	    0.5 * speed_km_s * speed_km_s - mu_km3_s2 / radius_km;
 	const double semi_major_axis_km =
@@ -1237,7 +1237,7 @@ bool Compute_Bound_Kepler_Exterior_Arc(
 		    / mean_motion_s_inv;
 
 		const double radius = outward_event.Radius();
-		const double mu = G_Newton * mSun;
+		const double mu = G_Newton * g_body_mass;
 		const libphysica::Vector radial_unit = outward_event.position / radius;
 		const libphysica::Vector angular_momentum_vector =
 		    outward_event.position.Cross(outward_event.velocity);
@@ -1425,8 +1425,8 @@ bool Trajectory_Result::Particle_Reflected() const
 	if(bincount.termination_reason != TrajectoryTerminationReason::OutwardEscape)
 		return false;
 	double r	= final_event.Radius();
-	double vesc = sqrt(2 * G_Newton * mSun / r);
-	return r > rSun && final_event.Speed() > vesc && number_of_scatterings > 0;
+	double vesc = sqrt(2 * G_Newton * g_body_mass / r);
+	return r > g_body_radius && final_event.Speed() > vesc && number_of_scatterings > 0;
 }
 
 bool Trajectory_Result::Particle_Free() const
@@ -1451,7 +1451,7 @@ void Trajectory_Result::Print_Summary(Celestial_Model& solar_model, unsigned int
 				  << std::endl
 				  << "Number of scatterings:\t" << number_of_scatterings << std::endl
 				  << "Simulation time [days]:\t" << libphysica::Round(In_Units(final_event.time, day)) << std::endl
-				  << "Final radius [rSun]:\t" << libphysica::Round(In_Units(final_event.Radius(), rSun)) << std::endl
+				  << "Final radius [R_body]:\t" << libphysica::Round(In_Units(final_event.Radius(), g_body_radius)) << std::endl
 				  << "Final speed [km/sec]:\t" << libphysica::Round(In_Units(final_event.Speed(), km / sec)) << std::endl
 				  << "Free particle:\t\t[" << (Particle_Free() ? "x" : " ") << "]" << std::endl
 				  << "Captured:\t\t[" << (Particle_Captured(solar_model) ? "x" : " ") << "]" << std::endl
@@ -1655,7 +1655,7 @@ void Trajectory_Simulator::Record_Diagnostic_Event(
 	record.energy_eV = Capture_Energy_eV(event.Radius(), event.Speed(), DM);
 	record.angular_momentum_km2_s = In_Units(event.Angular_Momentum(), km * km / sec);
 	record.is_bound = record.energy_eV < 0.0 ? 1 : 0;
-	record.inside_sun = event.Radius() < rSun ? 1 : 0;
+	record.inside_sun = event.Radius() < g_body_radius ? 1 : 0;
 	record.candidate_active = std::isfinite(current_bincount.t_final_unbinding_scatter) ? 1 : 0;
 	std::strncpy(record.target_species, target_species == nullptr ? "" : target_species,
 	             sizeof(record.target_species) - 1);
@@ -1926,7 +1926,7 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 		double r_before = particle_propagator.Current_Radius();
 		double v_before = particle_propagator.Current_Speed();
 		double rate_before = 0.0;
-		if(r_before >= rSun)
+		if(r_before >= g_body_radius)
 		{
 			const double step_cap = Free_Propagation_Time_Step_Cap(r_before, v_before, maximum_distance);
 			particle_propagator.time_step = std::min(RK45_Sanitized_Time_Step(particle_propagator.time_step), step_cap);
@@ -1948,9 +1948,9 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 					    std::min(particle_propagator.time_step, boundary_step_cap);
 				}
 			}
-			if(r_before > rSun && radial_velocity_before < 0.0)
+			if(r_before > g_body_radius && radial_velocity_before < 0.0)
 			{
-				const double surface_time_estimate = (r_before - rSun) / (-radial_velocity_before);
+				const double surface_time_estimate = (r_before - g_body_radius) / (-radial_velocity_before);
 				if(std::isfinite(surface_time_estimate) && surface_time_estimate > 0.0)
 					particle_propagator.time_step =
 					    std::min(particle_propagator.time_step, std::max(surface_time_estimate, 1.0e-8 * sec));
@@ -2039,7 +2039,7 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 		double interior_end = 0.0;
 		if(Solar_Interior_Fraction_Interval(event_before, event_after, r_before, r_after, interior_start, interior_end))
 		{
-			if(r_after < rSun && v_after < 0.0)
+			if(r_after < g_body_radius && v_after < 0.0)
 			{
 				std::cerr << "Warning: Negative velocity detected (v = " << v_after << ") at r = " << r_after << ", skipping scattering calculation." << std::endl;
 				break;
@@ -2049,7 +2049,7 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 			double tau_two_piece = 0.0;
 			double delta_tau = 0.0;
 			bool invalid_rate = false;
-			const bool use_cached_start_rate = r_before < rSun && interior_start <= 1.0e-12;
+			const bool use_cached_start_rate = r_before < g_body_radius && interior_start <= 1.0e-12;
 				Build_Optical_Depth_Pieces(event_before,
 				                           event_after,
 				                           interior_start,
@@ -2395,9 +2395,9 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 
 int Trajectory_Simulator::Sample_Target(obscura::DM_Particle& DM, double r, double DM_speed)
 {
-	if(r > rSun)
+	if(r > g_body_radius)
 	{
-		throw std::runtime_error("Sample_Target(): r > rSun.");
+		throw std::runtime_error("Sample_Target(): r exceeds the target-body radius.");
 	}
 	else
 	{
@@ -2594,7 +2594,7 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
 	while(number_of_scatterings < maximum_scatterings)
 	{
 		TrajectoryTerminationReason propagation_reason = Propagate_Freely(current_event, DM);
-		if(propagation_reason == TrajectoryTerminationReason::Scatter && current_event.Radius() < rSun)
+		if(propagation_reason == TrajectoryTerminationReason::Scatter && current_event.Radius() < g_body_radius)
 		{
 			diagnostic_scatter_index = number_of_scatterings + 1;
 			const size_t scatter_pre_event_index = current_diagnostic_events.size();

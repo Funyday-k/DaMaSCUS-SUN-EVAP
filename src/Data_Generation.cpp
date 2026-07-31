@@ -31,6 +31,7 @@
 #include "libphysica/Utilities.hpp"
 
 #include "obscura/Astronomy.hpp"
+#include "MPI_Utilities.hpp"
 #include "Snapshot_Heartbeat.hpp"
 #include "Snapshot_Shared_State.hpp"
 #include "version.hpp"
@@ -1804,48 +1805,14 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 		    << '\n';
 	}
 	const std::string local_invalid_text = local_invalid_stream.str();
-	const int local_invalid_bytes = static_cast<int>(local_invalid_text.size());
-	std::vector<int> invalid_byte_counts(mpi_processes, 0);
-	MPI_Trace_Point(mpi_rank, "before gather invalid ledger byte counts");
-	MPI_Gather(
-	    &local_invalid_bytes,
-	    1,
-	    MPI_INT,
-	    mpi_rank == 0 ? invalid_byte_counts.data() : nullptr,
-	    1,
-	    MPI_INT,
-	    0,
-	    MPI_COMM_WORLD);
-	std::vector<int> invalid_recv_counts;
-	std::vector<int> invalid_displacements;
-	int total_invalid_bytes = 0;
-	std::vector<char> global_invalid_text;
-	if(mpi_rank == 0)
-	{
-		Build_MPI_Gatherv_Layout(
-		    invalid_byte_counts,
-		    1,
-		    invalid_recv_counts,
-		    invalid_displacements,
-		    total_invalid_bytes);
-		global_invalid_text.resize(static_cast<size_t>(total_invalid_bytes));
-	}
-	MPI_Trace_Point(mpi_rank, "before gatherv invalid ledger");
-	MPI_Gatherv(
-	    local_invalid_text.empty() ? nullptr : local_invalid_text.data(),
-	    local_invalid_bytes,
-	    MPI_CHAR,
-	    mpi_rank == 0 && !global_invalid_text.empty() ? global_invalid_text.data() : nullptr,
-	    mpi_rank == 0 ? invalid_recv_counts.data() : nullptr,
-	    mpi_rank == 0 ? invalid_displacements.data() : nullptr,
-	    MPI_CHAR,
-	    0,
-	    MPI_COMM_WORLD);
+	MPI_Trace_Point(mpi_rank, "before gather invalid ledger");
+	const std::string combined_invalid_text =
+	    Gather_MPI_Text_To_Root(local_invalid_text);
+	MPI_Trace_Point(mpi_rank, "after gather invalid ledger");
 	invalid_trajectory_records.clear();
 	if(mpi_rank == 0)
 	{
-		std::string combined(global_invalid_text.begin(), global_invalid_text.end());
-		std::istringstream lines(combined);
+		std::istringstream lines(combined_invalid_text);
 		std::string line;
 		while(std::getline(lines, line))
 		{
@@ -1982,29 +1949,14 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 			                    << '\t' << Encode_PRNG_State(replay.rng_state_before_simulation) << '\n';
 		}
 		const std::string local_replay_text = local_replay_stream.str();
-		const int local_replay_bytes = static_cast<int>(local_replay_text.size());
-		std::vector<int> replay_byte_counts(mpi_processes, 0);
-		MPI_Gather(&local_replay_bytes, 1, MPI_INT,
-		           mpi_rank == 0 ? replay_byte_counts.data() : nullptr, 1, MPI_INT, 0, MPI_COMM_WORLD);
-		std::vector<int> replay_recv_counts;
-		std::vector<int> replay_displacements;
-		int total_replay_bytes = 0;
-		std::vector<char> global_replay_text;
-		if(mpi_rank == 0)
-		{
-			Build_MPI_Gatherv_Layout(replay_byte_counts, 1, replay_recv_counts, replay_displacements, total_replay_bytes);
-			global_replay_text.resize(static_cast<size_t>(total_replay_bytes));
-		}
-		MPI_Gatherv(local_replay_text.empty() ? nullptr : local_replay_text.data(), local_replay_bytes, MPI_CHAR,
-		            mpi_rank == 0 && !global_replay_text.empty() ? global_replay_text.data() : nullptr,
-		            mpi_rank == 0 ? replay_recv_counts.data() : nullptr,
-		            mpi_rank == 0 ? replay_displacements.data() : nullptr,
-		            MPI_CHAR, 0, MPI_COMM_WORLD);
+		MPI_Trace_Point(mpi_rank, "before gather replay ledger");
+		const std::string combined_replay_text =
+		    Gather_MPI_Text_To_Root(local_replay_text);
+		MPI_Trace_Point(mpi_rank, "after gather replay ledger");
 		trajectory_replay_records.clear();
 		if(mpi_rank == 0)
 		{
-			std::string combined(global_replay_text.begin(), global_replay_text.end());
-			std::istringstream lines(combined);
+			std::istringstream lines(combined_replay_text);
 			std::string line;
 			while(std::getline(lines, line))
 			{

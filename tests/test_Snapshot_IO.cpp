@@ -318,6 +318,8 @@ TEST_F(SnapshotIOTest, SharedStatePublishesCurrentTrajectoryProgress)
 	TrajectoryBincount completed;
 	completed.is_captured = true;
 	completed.termination_reason = TrajectoryTerminationReason::OutwardEscape;
+	completed.dt_hist = dt_hist;
+	completed.v2dt_hist = v2dt_hist;
 	shared_state.RecordCompletedTrajectory(completed, true, false, {});
 	TrajectoryBincount failed;
 	failed.termination_reason = TrajectoryTerminationReason::NumericalFailure;
@@ -330,6 +332,11 @@ TEST_F(SnapshotIOTest, SharedStatePublishesCurrentTrajectoryProgress)
 	EXPECT_DOUBLE_EQ(0.0, idle.current_trajectory_simulated_elapsed_sec);
 	EXPECT_EQ(0U, idle.current_trajectory_scatterings);
 	EXPECT_EQ(1U, idle.local_numerical_failures);
+	EXPECT_EQ(1U, idle.bincount_captured_samples);
+	EXPECT_DOUBLE_EQ(1.0, idle.captured_dt_hist[3]);
+	EXPECT_DOUBLE_EQ(4.0, idle.captured_v2dt_hist[3]);
+	EXPECT_DOUBLE_EQ(0.0, idle.current_trajectory_dt_hist[3]);
+	EXPECT_DOUBLE_EQ(0.0, idle.current_trajectory_v2dt_hist[3]);
 }
 
 TEST_F(SnapshotIOTest, TextReportListsEachMpiRankActivity)
@@ -355,6 +362,8 @@ TEST_F(SnapshotIOTest, TextReportListsEachMpiRankActivity)
 	running_captured.current_trajectory_simulated_elapsed_sec = 2500.0;
 	running_captured.current_trajectory_scatterings = 19;
 	running_captured.current_trajectory_captured = 1;
+	running_captured.current_trajectory_dt_hist[TOTAL_BINS - 1] = 42.0;
+	running_captured.current_trajectory_v2dt_hist[TOTAL_BINS - 1] = 84.0;
 
 	SnapshotRankState idle;
 	idle.run_id = run_id;
@@ -381,12 +390,16 @@ TEST_F(SnapshotIOTest, TextReportListsEachMpiRankActivity)
 		snapshot_root, rank_snapshot_dir, 1, interval, 4, run_id, 0.5, 1.0e-40, false);
 	ASSERT_EQ(SnapshotMergeStatus::Merged, merged.status);
 	const std::string report = ReadAll(SnapshotTextFilePath(snapshot_root, 1, interval));
-	// Running trajectories have not passed final validity/domain classification,
-	// so snapshots show their activity without treating them as physical samples.
+	// The completed counters remain unchanged, while the already captured
+	// in-progress trajectory contributes its provisional residence prefix.
 	EXPECT_NE(std::string::npos, report.find("# total_trajectories = 0"));
 	EXPECT_NE(std::string::npos, report.find("# captured_particles = 0"));
 	EXPECT_NE(std::string::npos, report.find("# valid_trajectories = 0"));
-	EXPECT_NE(std::string::npos, report.find("# in_progress_bincount_included = 0"));
+	EXPECT_NE(std::string::npos, report.find("# in_progress_bincount_included = 1"));
+	EXPECT_NE(std::string::npos, report.find("# in_progress_bincount_captured_samples = 1"));
+	EXPECT_NE(std::string::npos, report.find("# in_progress_bincount_is_provisional = 1"));
+	EXPECT_NE(std::string::npos, report.find("# residence_bincount_samples = 1"));
+	EXPECT_NE(std::string::npos, report.find("\t4.2000000000e+01\t8.4000000000e+01\t"));
 	EXPECT_NE(std::string::npos, report.find("# [MPI rank status]"));
 	EXPECT_NE(std::string::npos, report.find(
 		"# rank  state  trajectory_id  trajectory_wall_s  simulated_elapsed_s  scatterings  observed_at_wall_s"));
@@ -398,6 +411,57 @@ TEST_F(SnapshotIOTest, TextReportListsEachMpiRankActivity)
 		"# 2\tidle_or_waiting\t0\t0.0000000000e+00\t0.0000000000e+00\t0\t1.0000000000e+01"));
 	EXPECT_NE(std::string::npos, report.find(
 		"# 3\tdone\t0\t0.0000000000e+00\t0.0000000000e+00\t0\t5.0000000000e+00"));
+}
+
+TEST_F(SnapshotIOTest, CompletedOuterDomainRemovalContributesThroughFivePointTwoAU)
+{
+	const uint64_t run_id = 607;
+	const double interval = 10.0;
+	SnapshotSharedState shared_state;
+	shared_state.Initialize(run_id, 0);
+	shared_state.BeginTrajectory(9001, 0.0);
+
+	TrajectoryBincount removed;
+	removed.is_captured = true;
+	removed.outer_domain_removed = true;
+	removed.termination_reason =
+	    TrajectoryTerminationReason::OuterDomainRemoval;
+	removed.dt_hist[TOTAL_BINS - 1] = 12.5;
+	removed.v2dt_hist[TOTAL_BINS - 1] = 25.0;
+	shared_state.RecordCompletedTrajectory(
+	    removed, true, false, {});
+
+	size_t evaporation_end = 0;
+	const SnapshotRankState checkpoint =
+	    shared_state.CopyForSnapshot(
+	        1, interval, interval, 0, evaporation_end);
+	ASSERT_TRUE(WriteSnapshotRankState(
+	    SnapshotRankCheckpointPath(
+	        rank_snapshot_dir, 0, 1, interval),
+	    checkpoint));
+
+	const SnapshotMergeResult merged = TryWriteSnapshot(
+	    snapshot_root,
+	    rank_snapshot_dir,
+	    1,
+	    interval,
+	    1,
+	    run_id,
+	    0.5,
+	    1.0e-40,
+	    false);
+	ASSERT_EQ(SnapshotMergeStatus::Merged, merged.status);
+	const std::string report =
+	    ReadAll(SnapshotTextFilePath(snapshot_root, 1, interval));
+	EXPECT_NE(
+	    std::string::npos,
+	    report.find("# residence_bincount_samples = 1"));
+	EXPECT_NE(
+	    std::string::npos,
+	    report.find("# in_progress_bincount_included = 0"));
+	EXPECT_NE(
+	    std::string::npos,
+	    report.find("\t1.2500000000e+01\t2.5000000000e+01\t"));
 }
 
 TEST_F(SnapshotIOTest, FourLogicalRanksProgressFromPartialToMergedWithoutDowngrade)

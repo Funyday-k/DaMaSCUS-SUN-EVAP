@@ -165,28 +165,18 @@ Configuration files use libconfig syntax. The most important controls are:
 | `DM_cross_section_nucleon` | DM-nucleon cross section in cm^2. |
 | `DM_cross_section_electron` | DM-electron cross section in cm^2 where relevant. |
 | `maximum_number_of_scatterings` | Per-trajectory computational cutoff. Cutoff-terminated captures are not treated as clean physical evaporation events. |
-
-Normal-mode MPI synchronization uses an automatic batch size selected from the
-DM-nucleon cross section. The selected value is written to output headers as
-`normal_mode_mpi_sync_interval`.
-
-Every normal-mode batch is globally capped by the number of accepted
-evaporation samples still required. The exterior Kepler fast-forward removes
-the dominant long scatter-free tails, so ranks proceed directly to the
-collective progress reduction without speculative tail trajectories.
-`capture_target_overshoot` is therefore guaranteed to remain zero.
-
-| `DM_cross_section_nucleon` range [cm^2] | MPI sync interval per rank |
-| --- | ---: |
-| `>= 1e-35` | 64 |
-| `[1e-36, 1e-35)` | 128 |
-| `[1e-37, 1e-36)` | 1024 |
-| `[1e-38, 1e-37)` | 8192 |
-| `[1e-39, 1e-38)` | 65536 |
-| `< 1e-39` including `1e-40` and below | 1048576 |
 | `snapshot_enabled` | Enables intermediate wall-clock progress reports for parameter-point runs. Disabled automatically in capture mode. |
 | `snapshot_interval` | Positive integer wall-clock spacing, in seconds, for snapshot reports. Defaults to 60 seconds when snapshots are enabled. |
 | `max_trajectory_wall_time_sec` | Optional per-trajectory wall-time guard. Snapshot recorder overhead is excluded from this budget. |
+
+MPI trajectory scheduling uses a dynamic RMA work queue. Every rank claims one
+trajectory at a time and releases its slot immediately on completion, so fast
+ranks continue working without waiting at a per-batch collective for the
+slowest trajectory. The queue maintains
+`accepted_samples + in_flight <= sample_size`; therefore the final exact-target
+tail may temporarily leave excess ranks idle, but
+`capture_target_overshoot` remains zero. Output headers report
+`mpi_scheduler_work_claims` and `mpi_scheduler_peak_in_flight`.
 
 For reproducible MPI runs, a nonzero fixed seed is expanded by rank as
 `base_seed + 1000003 * mpi_rank`. Computational cutoffs are tracked separately
@@ -284,8 +274,11 @@ When snapshots are enabled, intermediate files are written under `snapshot/`:
 - `snapshot_{time}s.txt`: cumulative progress report at the snapshot wall time.
   Its commented `[MPI rank status]` table reports each rank's activity, local
   trajectory ID, trajectory wall time, simulated elapsed time, scattering
-  count, and the rank-local observation time. Status rows remain comments so
-  data readers see only bincount bins.
+  count, and the rank-local observation time. An in-progress trajectory that
+  has already captured contributes its accumulated residence prefix
+  provisionally. If its bound exterior arc crosses the 5.2-AU removal surface,
+  the forced publication includes the one-way residence integral through that
+  crossing. Status rows remain comments so data readers see only bincount bins.
 - `snapshot_{time}s_evaporation_times.txt`: complete valid evaporation events
   first published by that checkpoint, sorted by `lifetime_unbinding_sec`.
   An event committed concurrently with a snapshot boundary is assigned once to

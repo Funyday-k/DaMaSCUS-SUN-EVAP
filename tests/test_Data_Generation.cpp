@@ -385,9 +385,9 @@ TEST(TestDataGeneration, TestDefaultOutputContract)
 		    "# bincount_integration = conservative-hermite-kepler-jupiter-log-v3"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# radial_domain_max_AU = 5.2000000000e+00"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# total_radial_bins = 1612"));
-		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# normal_mode_mpi_sync_interval = 1048576"));
-		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# mpi_sync_rounds = 1"));
-		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# final_mpi_round_trajectories = 1"));
+		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# mpi_scheduler = dynamic_rma_work_queue_v1"));
+		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# mpi_scheduler_work_claims = 1"));
+		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# mpi_scheduler_peak_in_flight = 1"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# capture_target_overshoot = 0"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# total_scatterings = 0"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# simulation_time_seconds = "));

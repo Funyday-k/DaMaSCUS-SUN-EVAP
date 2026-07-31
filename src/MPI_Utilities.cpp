@@ -1,5 +1,6 @@
 #include "MPI_Utilities.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
@@ -27,57 +28,52 @@ std::string Gather_MPI_Text_To_Root(
 
 	const uint64_t local_bytes_u64 =
 	    static_cast<uint64_t>(local_text.size());
-	uint64_t total_bytes_u64 = 0;
-	if(MPI_Allreduce(
+	std::vector<uint64_t> byte_counts_u64(
+	    static_cast<size_t>(mpi_processes),
+	    0);
+	if(MPI_Allgather(
 	       &local_bytes_u64,
-	       &total_bytes_u64,
 	       1,
 	       MPI_UINT64_T,
-	       MPI_SUM,
+	       byte_counts_u64.data(),
+	       1,
+	       MPI_UINT64_T,
 	       communicator)
 	   != MPI_SUCCESS)
 	{
 		throw std::runtime_error(
-		    "Gather_MPI_Text_To_Root(): failed to total rank-local text sizes.");
-	}
-	if(total_bytes_u64
-	   > static_cast<uint64_t>(std::numeric_limits<int>::max()))
-	{
-		throw std::overflow_error(
-		    "Gather_MPI_Text_To_Root(): gathered text exceeds MPI's int count range.");
+		    "Gather_MPI_Text_To_Root(): failed to exchange rank-local text sizes.");
 	}
 
-	// Avoid the zero-count/null-buffer Gatherv path entirely. Intel MPI 2021.6
-	// can return on root while leaving non-root ranks spinning in this case.
+	uint64_t total_bytes_u64 = 0;
+	for(uint64_t rank_bytes : byte_counts_u64)
+	{
+		if(rank_bytes
+		   > static_cast<uint64_t>(std::numeric_limits<int>::max())
+		         - total_bytes_u64)
+		{
+			throw std::overflow_error(
+			    "Gather_MPI_Text_To_Root(): gathered text exceeds MPI's int count range.");
+		}
+		total_bytes_u64 += rank_bytes;
+	}
+
+	// Avoid any zero-count data operation in the all-empty case.
 	if(total_bytes_u64 == 0)
 		return std::string();
 
 	const int local_bytes = static_cast<int>(local_bytes_u64);
 	std::vector<int> byte_counts(
-	    mpi_rank == root ? static_cast<size_t>(mpi_processes) : 0,
+	    static_cast<size_t>(mpi_processes),
 	    0);
-	int ignored_count = 0;
-	if(MPI_Gather(
-	       &local_bytes,
-	       1,
-	       MPI_INT,
-	       mpi_rank == root ? byte_counts.data() : &ignored_count,
-	       1,
-	       MPI_INT,
-	       root,
-	       communicator)
-	   != MPI_SUCCESS)
-	{
-		throw std::runtime_error(
-		    "Gather_MPI_Text_To_Root(): failed to gather rank-local text sizes.");
-	}
-
 	std::vector<int> displacements(
-	    mpi_rank == root ? static_cast<size_t>(mpi_processes) : 0,
+	    static_cast<size_t>(mpi_processes),
 	    0);
-	if(mpi_rank == root)
+	for(int rank = 0; rank < mpi_processes; rank++)
 	{
-		for(int rank = 1; rank < mpi_processes; rank++)
+		byte_counts[static_cast<size_t>(rank)] =
+		    static_cast<int>(byte_counts_u64[static_cast<size_t>(rank)]);
+		if(rank > 0)
 			displacements[static_cast<size_t>(rank)] =
 			    displacements[static_cast<size_t>(rank - 1)]
 			    + byte_counts[static_cast<size_t>(rank - 1)];
@@ -85,31 +81,58 @@ std::string Gather_MPI_Text_To_Root(
 
 	std::vector<char> gathered_text(
 	    mpi_rank == root ? static_cast<size_t>(total_bytes_u64) : 0);
-	char ignored_byte = '\0';
-	const char* send_buffer =
-	    local_bytes > 0 ? local_text.data() : &ignored_byte;
-	char* receive_buffer =
-	    mpi_rank == root ? gathered_text.data() : &ignored_byte;
-	int* receive_counts =
-	    mpi_rank == root ? byte_counts.data() : &ignored_count;
-	int* receive_displacements =
-	    mpi_rank == root ? displacements.data() : &ignored_count;
-
-	if(MPI_Gatherv(
-	       send_buffer,
-	       local_bytes,
-	       MPI_CHAR,
-	       receive_buffer,
-	       receive_counts,
-	       receive_displacements,
-	       MPI_CHAR,
-	       root,
-	       communicator)
-	   != MPI_SUCCESS)
+	constexpr int text_gather_tag = 7319;
+	if(mpi_rank == root)
+	{
+		if(local_bytes > 0)
+		{
+			std::copy(
+			    local_text.begin(),
+			    local_text.end(),
+			    gathered_text.begin()
+			        + displacements[static_cast<size_t>(root)]);
+		}
+		for(int rank = 0; rank < mpi_processes; rank++)
+		{
+			const int rank_bytes =
+			    byte_counts[static_cast<size_t>(rank)];
+			if(rank == root || rank_bytes == 0)
+				continue;
+			if(MPI_Recv(
+			       gathered_text.data()
+			           + displacements[static_cast<size_t>(rank)],
+			       rank_bytes,
+			       MPI_CHAR,
+			       rank,
+			       text_gather_tag,
+			       communicator,
+			       MPI_STATUS_IGNORE)
+			   != MPI_SUCCESS)
+			{
+				throw std::runtime_error(
+				    "Gather_MPI_Text_To_Root(): failed to receive rank-local text.");
+			}
+		}
+	}
+	else if(local_bytes > 0
+	        && MPI_Send(
+	               local_text.data(),
+	               local_bytes,
+	               MPI_CHAR,
+	               root,
+	               text_gather_tag,
+	               communicator)
+	               != MPI_SUCCESS)
 	{
 		throw std::runtime_error(
-		    "Gather_MPI_Text_To_Root(): failed to gather rank-local text.");
+		    "Gather_MPI_Text_To_Root(): failed to send rank-local text.");
 	}
+
+	// Keep later collectives from overtaking ranks that were still blocked in
+	// a send while root received another rank's text.
+	if(MPI_Barrier(communicator) != MPI_SUCCESS)
+		throw std::runtime_error(
+		    "Gather_MPI_Text_To_Root(): failed to synchronize ranks after gathering text.");
 
 	if(mpi_rank != root)
 		return std::string();

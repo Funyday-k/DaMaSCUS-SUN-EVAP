@@ -665,7 +665,11 @@ void Configuration::Print_Summary(int mpi_rank)
 				  << "\tFixed PRNG seed:\t\t" << (fixed_seed == 0 ? "random" : std::to_string(fixed_seed)) << std::endl
 				  << "\tMax scatterings/traj:\t\t" << maximum_number_of_scatterings << std::endl
 				  << "\tTrajectory boundary [R_body]:\t" << TRAJECTORY_BOUNDARY_RSUN << std::endl
-				  << "\tSc. rate interpolation:\t\t" << ((interpolation_points > 0) ? "[x] (Grid: " + std::to_string(interpolation_points) + "×" + std::to_string(interpolation_points) + ")" : "[ ]") << std::endl;
+				                                    << "\tSc. rate interpolation:\t\t"
+				                                    << (((target_body == "Earth") ? (interpolation_points >= 3) : (interpolation_points >= 2))
+				                                                ? "[x] (Grid: " + std::to_string(interpolation_points) + "×" + std::to_string(interpolation_points) + ")"
+				                                                : "[ ]")
+				                                    << std::endl;
 		if(run_mode == "Parameter point" && isoreflection_rings > 1)
 			std::cout << "\tIsoreflection rings:\t\t" << isoreflection_rings << std::endl;
 		else if(run_mode == "Parameter scan")

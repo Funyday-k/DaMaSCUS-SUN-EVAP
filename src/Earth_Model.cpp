@@ -345,12 +345,12 @@ const std::string& Earth_Model::Model_File() const
 
 double Earth_Model::Radius() const
 {
-	return 6371.0 * km;
+	return rEarth;
 }
 
 double Earth_Model::Total_Mass() const
 {
-	return 5.9722e24 * kg;
+	return mEarth;
 }
 
 double Earth_Model::Mass(double r)

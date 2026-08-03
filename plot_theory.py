@@ -1758,35 +1758,27 @@ def capture_rate_rest_limit(earth_data, DM_mass, sigma_SI_p, sigma_SD_p=0.0,
                              cross_section_type=cross_section_type)
 
 
-def Capture_rate_geometric(xi, v_esc, v_d, DM_mass, R_earth):
+def Capture_rate_geometric(xi, v_esc, v_d, DM_mass, R_earth, rho_chi=0.3):
     """
-    Calculate the geometrical capture rate of dark matter by Earth.
+    Calculate the geometrical capture rate.
     
     Formula:
     C_geo = π R² (ρ/m) sqrt(8/(3π)) v_d * xi
     
     Parameters:
         xi      : Xi function value (dimensionless)
-        v_esc   : Escape velocity at surface [km/s] (Earth: 11.2)
-        v_d     : Velocity dispersion parameter [km/s] (sqrt(3/2) * v_earth)
+        v_esc   : Escape velocity at surface [km/s]
+        v_d     : Velocity dispersion parameter [km/s]
         DM_mass : Dark matter mass [GeV]
         R_earth : Earth radius [cm]
-    
-    Returns:
-        C_geo   : Geometrical capture rate [s⁻¹]
+        rho_chi : Local DM density [GeV/cm³] (default 0.3)
     """
-    rho_chi = 0.3  # GeV/cm³
-    
     n_chi = rho_chi / DM_mass
-    
     sigma_geo = np.pi * R_earth**2
-    
     v_d_cm_s = v_d * 1e5
-    
     coeff = np.sqrt(8 / (3 * np.pi))
     
-    C_geo = sigma_geo * n_chi * coeff * v_d_cm_s * xi *(1+ 3/2 * (v_esc / v_d)**2)
-    
+    C_geo = sigma_geo * n_chi * coeff * v_d_cm_s * xi
     return C_geo
     
 def final_capture_rate(C_geo, C_weak):

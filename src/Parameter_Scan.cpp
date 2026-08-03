@@ -198,6 +198,26 @@ void Configuration::Import_Parameter_Scan_Parameter()
 	        std::exit(EXIT_FAILURE);
 	}
 
+	config.lookupValue("annual_modulation", annual_modulation);
+	config.lookupValue("obs_day", obs_day);
+	config.lookupValue("obs_month", obs_month);
+	config.lookupValue("obs_year", obs_year);
+	config.lookupValue("obs_hour", obs_hour);
+	config.lookupValue("obs_minute", obs_minute);
+
+	if(annual_modulation)
+	{
+	        if(obs_month < 1 || obs_month > 12
+	           || obs_day < 1 || obs_day > 31
+	           || obs_hour < 0 || obs_hour > 23
+	           || obs_minute < 0 || obs_minute > 59)
+	        {
+	                std::cerr << "Error in Configuration::Import_Parameter_Scan_Parameter(): "
+	                          << "invalid observation date/time for annual modulation." << std::endl;
+	                std::exit(EXIT_FAILURE);
+	        }
+	}
+
 	capture_mode = (run_mode == "Capture");
 	const bool parameter_scan_mode = (run_mode == "Parameter scan");
 	try

@@ -32,6 +32,8 @@ class Configuration : public obscura::Configuration
 
   public:
 	std::string run_mode, target_body;
+	bool annual_modulation = false;
+	int obs_day = 1, obs_month = 1, obs_year = 2000, obs_hour = 0, obs_minute = 0;
 	unsigned int isoreflection_rings, interpolation_points;
 	unsigned int sample_size, cross_sections, fixed_seed;
 	unsigned int max_trajectories;

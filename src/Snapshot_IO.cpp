@@ -20,7 +20,7 @@ namespace DaMaSCUS_SUN
 namespace
 {
 constexpr uint64_t SNAPSHOT_RANK_STATE_MAGIC = 0x4453534e41503031ULL;
-constexpr uint32_t SNAPSHOT_RANK_STATE_VERSION = 7;
+constexpr uint32_t SNAPSHOT_RANK_STATE_VERSION = 8;
 constexpr uint32_t SNAPSHOT_RANK_STATE_HEADER_BYTES = sizeof(uint64_t) + 2 * sizeof(uint32_t);
 constexpr uint64_t SNAPSHOT_EVAPORATION_EVENTS_PER_CHECKPOINT = 10000000ULL;
 // Only an absurd declared event count is rejected here: ReadSnapshotRankState
@@ -396,7 +396,7 @@ void AccumulateSnapshotReportState(SnapshotReportState& report, const SnapshotRa
 	// state atomically moves the same trajectory into the completed sums and
 	// clears the current histogram, so a checkpoint can never count both forms.
 	// This also covers the boundary race for an outer-domain trajectory: the
-	// analytic one-way arc is force-published through its outward 5.2-AU
+	// analytic one-way arc is force-published through its outward radial-domain
 	// crossing before it is committed as a completed removal.
 	if(state.trajectory_in_progress
 	   && state.current_trajectory_captured)
@@ -629,11 +629,13 @@ bool WriteSnapshotReportFile(
 		file << "#\n";
 		file << "# [Bincount histogram]\n";
 		file << "# base_grid_bins = " << NUM_BINS << "\n";
-		file << "# exterior_log_bins = " << EXTERIOR_LOG_BINS << "\n";
+		file << "# exterior_bins = " << EXTERIOR_BINS << "\n";
 		file << "# total_radial_bins = " << TOTAL_BINS << "\n";
 		file << "# radial_bin_width_Rsun = " << std::scientific << std::setprecision(10)
 		     << BIN_WIDTH_KM / R_SUN_KM << "\n";
-		file << "# exterior_grid = logarithmic\n";
+		file << "# exterior_grid = geometric_width_capped\n";
+		file << "# exterior_bin_growth_factor = " << EXTERIOR_BIN_GROWTH_FACTOR << "\n";
+		file << "# exterior_max_bin_width_Rsun = " << EXTERIOR_MAX_BIN_WIDTH_RSUN << "\n";
 		file << "# radial_domain_max_AU = " << RADIAL_DOMAIN_MAX_AU << "\n";
 		file << "# radial_extent_Rsun = " << RADIAL_DOMAIN_MAX_RSUN << "\n";
 		file << "# in_progress_bincount_included = "

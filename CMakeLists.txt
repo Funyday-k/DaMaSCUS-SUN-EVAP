@@ -41,6 +41,20 @@ option(DAMASCUS_ENABLE_NATIVE_ARCH "Tune the build for the building machine's CP
 option(DAMASCUS_PATCH_LIBPHYSICA_INTERPOLATION
   "Build libphysica's cubic interpolation in Horner form" ON)
 
+# The radial cutoff changes the fixed histogram ABI, so cutoff experiments use
+# separate build directories. EXTERIOR_BINS must be the number of geometric,
+# capped-width shells required to reach the selected cutoff exactly.
+set(DAMASCUS_RADIAL_DOMAIN_MAX_AU "1.0" CACHE STRING
+  "Maximum radius of the captured-orbit residence domain in AU")
+set(DAMASCUS_EXTERIOR_BINS "423" CACHE STRING
+  "Exterior radial bins required by the selected residence-domain cutoff")
+if(NOT DAMASCUS_RADIAL_DOMAIN_MAX_AU MATCHES "^[0-9]+([.][0-9]+)?$")
+  message(FATAL_ERROR "DAMASCUS_RADIAL_DOMAIN_MAX_AU must be a positive number")
+endif()
+if(NOT DAMASCUS_EXTERIOR_BINS MATCHES "^[1-9][0-9]*$")
+  message(FATAL_ERROR "DAMASCUS_EXTERIOR_BINS must be a positive integer")
+endif()
+
 if(DAMASCUS_ENABLE_LTO AND NOT CODE_COVERAGE)
   include(CheckIPOSupported)
   check_ipo_supported(RESULT DAMASCUS_IPO_SUPPORTED OUTPUT DAMASCUS_IPO_OUTPUT)

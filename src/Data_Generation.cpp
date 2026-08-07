@@ -156,7 +156,7 @@ bool Build_Evaporation_Record(const TrajectoryBincount& bincount, int mpi_rank, 
 	rec.boundary_escape_observed = survival_valid && bincount.boundary_escape_observed;
 	rec.survival_valid = survival_valid;
 	rec.numerically_invalid_escape = numerically_invalid_escape;
-	// A 5.2-AU removal is excluded from the evaporation-event sample rather
+	// A radial-domain removal is excluded from the evaporation-event sample rather
 	// than treated as a right-censored evaporation time. Its residence
 	// contribution is retained by Generate_Data().
 	rec.censored = false;
@@ -2023,7 +2023,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 		f << "# mpi_scheduler_work_claims = " << mpi_scheduler_work_claims << "\n";
 		f << "# mpi_scheduler_peak_in_flight = " << mpi_scheduler_peak_in_flight << "\n";
 		f << "# capture_target_overshoot = " << capture_target_overshoot << "\n";
-		f << "# sample_target_type = valid_complete_evaporation_within_5p2_AU\n";
+		f << "# sample_target_type = valid_complete_evaporation_within_radial_domain\n";
 		f << "# invalid_trajectory_records = " << invalid_trajectory_records.size() << "\n";
 		f << "# residence_jackknife_blocks = "
 		  << RESIDENCE_JACKKNIFE_BLOCKS << "\n";
@@ -2137,11 +2137,14 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 		if(excluded_not_captured_particles > 0)
 			f << "# excluded_incomplete_not_captured = " << excluded_not_captured_particles << "\n";
 		f << "# base_grid_bins = " << NUM_BINS << "\n";
-		f << "# exterior_log_bins = " << EXTERIOR_LOG_BINS << "\n";
+		f << "# exterior_bins = " << EXTERIOR_BINS << "\n";
 		f << "# total_radial_bins = " << TOTAL_BINS << "\n";
-		f << "# radial_grid = uniform_inner_log_exterior_v1\n";
+		f << "# radial_grid = uniform_inner_geometric_width_capped_exterior_v2\n";
 		f << "# radial_bin_width_Rsun = " << std::scientific << std::setprecision(10)
 		  << BIN_WIDTH_KM / R_SUN_KM << "\n";
+		f << "# exterior_initial_bin_width_Rsun = " << BIN_WIDTH_KM / R_SUN_KM << "\n";
+		f << "# exterior_bin_growth_factor = " << EXTERIOR_BIN_GROWTH_FACTOR << "\n";
+		f << "# exterior_max_bin_width_Rsun = " << EXTERIOR_MAX_BIN_WIDTH_RSUN << "\n";
 		f << "# radial_inner_extent_Rsun = " << BIN_MAX_KM / R_SUN_KM << "\n";
 		f << "# radial_domain_max_AU = " << RADIAL_DOMAIN_MAX_AU << "\n";
 		f << "# radial_extent_Rsun = " << RADIAL_DOMAIN_MAX_RSUN << "\n";
@@ -2529,7 +2532,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 		{
 			std::ofstream metadata(output_dir + "/run_metadata.json");
 			metadata << "{\n"
-			         << "  \"schema_version\": \"trajectory-diagnostic-v4\",\n"
+			         << "  \"schema_version\": \"trajectory-diagnostic-v5\",\n"
 			         << "  \"run_id\": \"" << diagnostic_run_id << "\",\n"
 			         << "  \"git_branch\": \"" << GIT_BRANCH << "\",\n"
 			         << "  \"git_commit\": \"" << git_commit << "\",\n"
@@ -2550,9 +2553,12 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 			         << "  \"rk_absolute_max_step_s\": " << RK45AbsoluteMaxStepSec() << ",\n"
 			         << "  \"bincount_integration\": \"" << BincountIntegrationScheme() << "\",\n"
 			         << "  \"bincount_dense_position_tolerance_km\": " << BincountDensePositionToleranceKm() << ",\n"
-			         << "  \"radial_grid\": \"uniform_inner_log_exterior_v1\",\n"
+			         << "  \"radial_grid\": \"uniform_inner_geometric_width_capped_exterior_v2\",\n"
 			         << "  \"radial_inner_extent_Rsun\": " << BIN_MAX_KM / R_SUN_KM << ",\n"
-			         << "  \"radial_exterior_log_bins\": " << EXTERIOR_LOG_BINS << ",\n"
+			         << "  \"radial_exterior_bins\": " << EXTERIOR_BINS << ",\n"
+			         << "  \"radial_exterior_initial_bin_width_Rsun\": " << BIN_WIDTH_KM / R_SUN_KM << ",\n"
+			         << "  \"radial_exterior_bin_growth_factor\": " << EXTERIOR_BIN_GROWTH_FACTOR << ",\n"
+			         << "  \"radial_exterior_max_bin_width_Rsun\": " << EXTERIOR_MAX_BIN_WIDTH_RSUN << ",\n"
 			         << "  \"outer_domain_removal_AU\": " << RADIAL_DOMAIN_MAX_AU << ",\n"
 			         << "  \"interpolation_points\": " << trajectory_diagnostic_config.interpolation_points << ",\n"
 			         << "  \"max_optical_depth_step\": " << NormalModeMaxOpticalDepthStep() << ",\n"
@@ -2563,7 +2569,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 			         << "  \"velocity_unit\": \"km/s\",\n"
 			         << "  \"angular_momentum_unit\": \"km^2/s\",\n"
 			         << "  \"bound_exit_period_definition\": \"point-mass osculating Kepler period at a negative-energy outward crossing of 1.1 Rsun\",\n"
-			         << "  \"bound_exit_exterior_time_definition\": \"analytic elapsed time: round trip through apoapsis for contained arcs; one-way to outward 5.2-AU removal for outer-domain arcs\",\n"
+			         << "  \"bound_exit_exterior_time_definition\": \"analytic elapsed time: round trip through apoapsis for contained arcs; one-way to outward radial-domain removal for outer-domain arcs\",\n"
 			         << "  \"n_scatter_total_definition\": \"all trajectory scatters, including scatters before first capture\",\n"
 			         << "  \"stop_conditions\": {\"max_free_steps\": " << maximum_free_time_steps
 			         << ", \"max_scatterings\": " << maximum_number_of_scatterings << "},\n"

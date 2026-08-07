@@ -49,6 +49,13 @@ set_target_properties(lib_damascus_sun PROPERTIES PREFIX "")
 
 target_compile_options(lib_damascus_sun PUBLIC -Wall -pedantic)
 
+# PUBLIC is required because the compile-time histogram size appears in public
+# headers and therefore must agree in the library and every consumer.
+target_compile_definitions(lib_damascus_sun
+	PUBLIC
+		DAMASCUS_SUN_RADIAL_DOMAIN_MAX_AU=${DAMASCUS_RADIAL_DOMAIN_MAX_AU}
+		DAMASCUS_SUN_EXTERIOR_BINS=${DAMASCUS_EXTERIOR_BINS})
+
 target_include_directories(lib_damascus_sun 
     PRIVATE
 		${GENERATED_DIR})

@@ -382,9 +382,19 @@ TEST(TestDataGeneration, TestDefaultOutputContract)
 		EXPECT_TRUE(FileContains(output_dir + "evaporation_times.txt", "P_kepler_first_bound_exit_sec"));
 		EXPECT_TRUE(FileContains(
 		    output_dir + "bincount.txt",
-		    "# bincount_integration = conservative-hermite-kepler-jupiter-log-v3"));
-		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# radial_domain_max_AU = 5.2000000000e+00"));
-		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# total_radial_bins = 1612"));
+		    "# bincount_integration = conservative-hermite-kepler-outer-domain-geometric-capped-v4"));
+		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# radial_domain_max_AU = 1.0000000000e+00"));
+		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# total_radial_bins = 1523"));
+		EXPECT_TRUE(FileContains(
+		    output_dir + "bincount.txt",
+		    "# radial_grid = uniform_inner_geometric_width_capped_exterior_v2"));
+		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# exterior_bins = 423"));
+		EXPECT_TRUE(FileContains(
+		    output_dir + "bincount.txt",
+		    "# exterior_bin_growth_factor = 1.0200000000e+00"));
+		EXPECT_TRUE(FileContains(
+		    output_dir + "bincount.txt",
+		    "# exterior_max_bin_width_Rsun = 1.0000000000e+01"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# mpi_scheduler = dynamic_rma_work_queue_v1"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# mpi_scheduler_work_claims = 1"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# mpi_scheduler_peak_in_flight = 1"));
@@ -435,10 +445,10 @@ TEST(TestDataGeneration, TestTrajectoryDiagnosticOutputContract)
 	data_set.Write_Output_Files(output_dir, DM);
 	if(rank == 0)
 	{
-		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"schema_version\": \"trajectory-diagnostic-v4\""));
+		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"schema_version\": \"trajectory-diagnostic-v5\""));
 		EXPECT_TRUE(FileContains(
 		    output_dir + "run_metadata.json",
-		    "\"bincount_integration\": \"conservative-hermite-kepler-jupiter-log-v3\""));
+		    "\"bincount_integration\": \"conservative-hermite-kepler-outer-domain-geometric-capped-v4\""));
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"interpolation_points\": 20"));
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"evaporation_event_reconciliation\": true"));
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"escape_radius_invariant\": true"));

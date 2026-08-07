@@ -32,12 +32,27 @@ constexpr double AU_KM = 1.495978707e8;  // IAU 2012 exact astronomical unit [km
 constexpr double BIN_WIDTH_KM = R_SUN_KM / 1000.0;  // 0.001 R_sun
 constexpr int NUM_BINS = 1100;  // base grid through 1.1 R_sun
 constexpr double BIN_MAX_KM = NUM_BINS * BIN_WIDTH_KM;
-constexpr double RADIAL_DOMAIN_MAX_AU = 5.2;  // Jupiter-orbit cutoff
+#ifndef DAMASCUS_SUN_RADIAL_DOMAIN_MAX_AU
+#define DAMASCUS_SUN_RADIAL_DOMAIN_MAX_AU 1.0
+#endif
+constexpr double RADIAL_DOMAIN_MAX_AU = DAMASCUS_SUN_RADIAL_DOMAIN_MAX_AU;
 constexpr double RADIAL_DOMAIN_MAX_KM = RADIAL_DOMAIN_MAX_AU * AU_KM;
 constexpr double RADIAL_DOMAIN_MAX_RSUN = RADIAL_DOMAIN_MAX_KM / R_SUN_KM;
-constexpr std::size_t EXTERIOR_LOG_BINS = 512;
+// Exterior shell widths start continuously at the inner-grid width, grow by
+// 2% per shell, and are capped at 10 R_sun. The default 1-AU domain requires
+// 423 shells; alternate compile-time domains supply their matching shell count.
+// The final shell is shortened to end at the selected domain exactly.
+constexpr double EXTERIOR_BIN_GROWTH_FACTOR = 1.02;
+constexpr double EXTERIOR_MAX_BIN_WIDTH_RSUN = 10.0;
+constexpr double EXTERIOR_MAX_BIN_WIDTH_KM =
+    EXTERIOR_MAX_BIN_WIDTH_RSUN * R_SUN_KM;
+constexpr std::size_t EXTERIOR_FIRST_CAPPED_BIN = 466;
+#ifndef DAMASCUS_SUN_EXTERIOR_BINS
+#define DAMASCUS_SUN_EXTERIOR_BINS 423
+#endif
+constexpr std::size_t EXTERIOR_BINS = DAMASCUS_SUN_EXTERIOR_BINS;
 constexpr std::size_t TOTAL_BINS =
-    static_cast<std::size_t>(NUM_BINS) + EXTERIOR_LOG_BINS;
+    static_cast<std::size_t>(NUM_BINS) + EXTERIOR_BINS;
 constexpr unsigned long int DEFAULT_MAXIMUM_FREE_TIME_STEPS = 1000000000000UL;
 constexpr unsigned long int DEFAULT_MAXIMUM_SCATTERINGS = 100000000000000UL;
 constexpr int TRAJECTORY_TERMINATION_REASON_COUNT = 12;
@@ -57,9 +72,10 @@ void Compute_Bincount_Interval_Contributions(
 	const Event& after,
 	std::vector<BincountContribution>& contributions);
 
-// The fixed histogram is uniform through 1.1 R_sun and logarithmic from there
-// to the 5.2-AU Jupiter cutoff. These helpers are the single source of truth
-// for writers, snapshots, and exact exterior Kepler shell integration.
+// The fixed histogram is uniform through 1.1 R_sun. Exterior shell widths
+// grow geometrically from 0.001 R_sun and are capped at 10 R_sun through the
+// configured outer-domain cutoff. These helpers are the single source of truth for
+// writers, snapshots, and exact exterior Kepler shell integration.
 double BincountBinLowerKm(std::size_t bin);
 double BincountBinUpperKm(std::size_t bin);
 int BincountBinIndexKm(double radius_km);
@@ -76,8 +92,8 @@ struct BoundKeplerExteriorArc
 };
 
 // Analytically propagate a negative-specific-energy outward crossing from the
-// 1.1 R_sun matching surface. Orbits contained inside 5.2 AU return to the
-// matching surface; larger orbits terminate at the outward 5.2-AU crossing.
+// 1.1 R_sun matching surface. Orbits contained inside the configured radial
+// domain return to the matching surface; larger orbits terminate at its outward crossing.
 // The returned histogram is a round trip in the first case and a one-way
 // residence contribution in the second.
 bool Compute_Bound_Kepler_Exterior_Arc(const Event& outward_event, BoundKeplerExteriorArc& arc);
@@ -221,7 +237,7 @@ struct TrajectoryBincount
 	double first_bound_exit_exterior_time_sec = std::numeric_limits<double>::quiet_NaN();
 	double last_bound_exit_exterior_time_sec = std::numeric_limits<double>::quiet_NaN();
 	double max_bound_exit_exterior_time_sec = std::numeric_limits<double>::quiet_NaN();
-	bool outer_domain_removed = false;  // true after physical removal at 5.2 AU
+	bool outer_domain_removed = false;  // true after physical removal at the radial-domain boundary
 	TrajectoryTerminationReason termination_reason = TrajectoryTerminationReason::Unknown;
 	TrajectoryNumericalFailureDetail numerical_failure_detail =
 	    TrajectoryNumericalFailureDetail::None;

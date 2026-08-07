@@ -1,5 +1,6 @@
 #include "gtest/gtest.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <limits>
@@ -399,11 +400,42 @@ TEST(TestSimulationTrajectory, TestNumericalBincountClipsAtKeplerBoundary)
 	EXPECT_NEAR(SumBins(aggregate.dt), 1.5, 1.0e-10);
 }
 
-TEST(TestSimulationTrajectory, CompactRadialGridReachesJupiterCutoff)
+TEST(TestSimulationTrajectory, CompactRadialGridReachesConfiguredCutoff)
 {
-	EXPECT_EQ(TOTAL_BINS, static_cast<std::size_t>(NUM_BINS) + EXTERIOR_LOG_BINS);
+	EXPECT_EQ(TOTAL_BINS, static_cast<std::size_t>(NUM_BINS) + EXTERIOR_BINS);
 	EXPECT_DOUBLE_EQ(BincountBinLowerKm(0), 0.0);
 	EXPECT_DOUBLE_EQ(BincountBinLowerKm(NUM_BINS), BIN_MAX_KM);
+	EXPECT_NEAR(
+	    BincountBinUpperKm(NUM_BINS) - BincountBinLowerKm(NUM_BINS),
+	    BIN_WIDTH_KM,
+	    1.0e-12 * BIN_WIDTH_KM);
+	for(std::size_t exterior_bin = 0;
+	    exterior_bin + 1 < EXTERIOR_FIRST_CAPPED_BIN
+	    && exterior_bin + 2 < EXTERIOR_BINS;
+	    exterior_bin++)
+	{
+		const std::size_t bin = static_cast<std::size_t>(NUM_BINS) + exterior_bin;
+		const double width = BincountBinUpperKm(bin) - BincountBinLowerKm(bin);
+		const double next_width =
+		    BincountBinUpperKm(bin + 1) - BincountBinLowerKm(bin + 1);
+		EXPECT_NEAR(
+		    next_width / width,
+		    EXTERIOR_BIN_GROWTH_FACTOR,
+		    1.0e-11);
+	}
+	if(EXTERIOR_BINS > EXTERIOR_FIRST_CAPPED_BIN + 2)
+	{
+		const std::size_t first_capped_bin =
+		    static_cast<std::size_t>(NUM_BINS) + EXTERIOR_FIRST_CAPPED_BIN;
+		EXPECT_NEAR(
+		    BincountBinUpperKm(first_capped_bin) - BincountBinLowerKm(first_capped_bin),
+		    EXTERIOR_MAX_BIN_WIDTH_KM,
+		    1.0e-12 * EXTERIOR_MAX_BIN_WIDTH_KM);
+		EXPECT_NEAR(
+		    BincountBinUpperKm(first_capped_bin + 1) - BincountBinLowerKm(first_capped_bin + 1),
+		    EXTERIOR_MAX_BIN_WIDTH_KM,
+		    1.0e-12 * EXTERIOR_MAX_BIN_WIDTH_KM);
+	}
 	EXPECT_NEAR(
 	    BincountBinUpperKm(TOTAL_BINS - 1),
 	    RADIAL_DOMAIN_MAX_KM,
@@ -413,10 +445,16 @@ TEST(TestSimulationTrajectory, CompactRadialGridReachesJupiterCutoff)
 	          static_cast<int>(TOTAL_BINS - 1));
 	EXPECT_EQ(BincountBinIndexKm(RADIAL_DOMAIN_MAX_KM), -1);
 	for(std::size_t bin = 0; bin < TOTAL_BINS; bin++)
+	{
 		EXPECT_LT(BincountBinLowerKm(bin), BincountBinUpperKm(bin));
+		EXPECT_EQ(BincountBinIndexKm(BincountBinLowerKm(bin)), static_cast<int>(bin));
+	}
+	EXPECT_LE(
+	    BincountBinUpperKm(TOTAL_BINS - 1) - BincountBinLowerKm(TOTAL_BINS - 1),
+	    EXTERIOR_MAX_BIN_WIDTH_KM);
 }
 
-TEST(TestSimulationTrajectory, BoundKeplerExteriorArcUsesCompactLogGrid)
+TEST(TestSimulationTrajectory, BoundKeplerExteriorArcUsesGeometricWidthGrid)
 {
 	const double semi_major_axis = 1.5 * rSun;
 	const double eccentricity = 1.0 / 3.0;
@@ -475,7 +513,7 @@ TEST(TestSimulationTrajectory, BoundKeplerExteriorArcUsesCompactLogGrid)
 	    0.0);
 }
 
-TEST(TestSimulationTrajectory, BoundKeplerExteriorArcFlagsApoapsisBeyondJupiter)
+TEST(TestSimulationTrajectory, BoundKeplerExteriorArcFlagsApoapsisBeyondConfiguredCutoff)
 {
 	const double periapsis = 0.5 * rSun;
 	const double apoapsis = 6.0 * AU;

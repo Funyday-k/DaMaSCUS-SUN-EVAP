@@ -2286,7 +2286,6 @@ def plot_capture_rates_complete_thermal(
         axL = axes[row, 0]
         axL.loglog(DM_masses, C_SI_T, "b-.", lw=2.5, label="SI, T(r)≠0")
         axL.loglog(DM_masses, C_SD_T, "g--", lw=2.5, label="SD, T(r)≠0")
-        axL.loglog(DM_masses, C_e_T, "r-", lw=2.5, label="Electron, T(r)≠0")
 
         axL.loglog(DM_masses, C_SI_0, color="blue", alpha=0.25, ls=":", lw=2.0, label="SI, T=0")
         axL.loglog(DM_masses, C_SD_0, color="green", alpha=0.25, ls=":", lw=2.0, label="SD, T=0")

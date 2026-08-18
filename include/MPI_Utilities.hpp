@@ -25,8 +25,7 @@ enum class MPIWorkStopReason : uint64_t
 {
 	None = 0,
 	MaxTrajectoriesReached = 1,
-	InitialShiftFailureFractionExceeded = 2,
-	InvalidTrajectoryFractionExceeded = 3
+	InitialShiftFailureFractionExceeded = 2
 };
 
 struct MPIWorkOutcome
@@ -71,9 +70,7 @@ class MPIWorkQueue
 	MPIWorkQueue(
 		uint64_t target_samples,
 		uint64_t maximum_trajectories,
-		bool abort_on_invalid_fraction,
 		double initial_shift_abort_fraction,
-		double invalid_abort_fraction,
 		MPI_Comm communicator = MPI_COMM_WORLD);
 	~MPIWorkQueue();
 
@@ -98,9 +95,7 @@ class MPIWorkQueue
 	MPI_Comm communicator_;
 	int mpi_rank_ = 0;
 	int mpi_processes_ = 0;
-	bool abort_on_invalid_fraction_ = false;
 	double initial_shift_abort_fraction_ = 0.0;
-	double invalid_abort_fraction_ = 0.0;
 	mutable MPI_Win window_ = MPI_WIN_NULL;
 	void* root_window_memory_ = nullptr;
 	bool finalized_ = false;

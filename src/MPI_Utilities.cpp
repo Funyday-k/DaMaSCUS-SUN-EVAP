@@ -167,14 +167,10 @@ std::string Gather_MPI_Text_To_Root(
 MPIWorkQueue::MPIWorkQueue(
 	uint64_t target_samples,
 	uint64_t maximum_trajectories,
-	bool abort_on_invalid_fraction,
 	double initial_shift_abort_fraction,
-	double invalid_abort_fraction,
 	MPI_Comm communicator)
 : communicator_(communicator),
-  abort_on_invalid_fraction_(abort_on_invalid_fraction),
-  initial_shift_abort_fraction_(initial_shift_abort_fraction),
-  invalid_abort_fraction_(invalid_abort_fraction)
+  initial_shift_abort_fraction_(initial_shift_abort_fraction)
 {
 	if(target_samples == 0)
 		throw std::invalid_argument(
@@ -183,12 +179,10 @@ MPIWorkQueue::MPIWorkQueue(
 		throw std::invalid_argument(
 		    "MPIWorkQueue(): maximum_trajectories must be positive.");
 	if(!std::isfinite(initial_shift_abort_fraction_)
-	   || initial_shift_abort_fraction_ < 0.0
-	   || !std::isfinite(invalid_abort_fraction_)
-	   || invalid_abort_fraction_ < 0.0)
+	   || initial_shift_abort_fraction_ < 0.0)
 	{
 		throw std::invalid_argument(
-		    "MPIWorkQueue(): abort fractions must be finite and non-negative.");
+		    "MPIWorkQueue(): initial-shift abort fraction must be finite and non-negative.");
 	}
 
 	Check_MPI_Result(
@@ -405,25 +399,12 @@ MPIWorkQueueState MPIWorkQueue::Complete(
 			const double initial_shift_failure_fraction =
 			    static_cast<double>(state.initial_shift_failures)
 			    / attempted;
-			const double invalid_fraction =
-			    static_cast<double>(
-			        state.numerical_failures
-			        + state.computational_truncations)
-			    / attempted;
 			if(initial_shift_failure_fraction
 			   > initial_shift_abort_fraction_)
 			{
 				state.stop_reason = static_cast<uint64_t>(
 				    MPIWorkStopReason::
 				        InitialShiftFailureFractionExceeded);
-			}
-			else if(abort_on_invalid_fraction_
-			        && invalid_fraction
-			           > invalid_abort_fraction_)
-			{
-				state.stop_reason = static_cast<uint64_t>(
-				    MPIWorkStopReason::
-				        InvalidTrajectoryFractionExceeded);
 			}
 		}
 

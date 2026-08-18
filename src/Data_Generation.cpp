@@ -57,7 +57,7 @@ void MPI_Trace_Point(int mpi_rank, const std::string& label)
 }
 
 constexpr double NUMERICAL_FAILURE_WARNING_FRACTION = 1.0e-4;
-constexpr double NUMERICAL_FAILURE_ABORT_FRACTION = 1.0e-2;
+constexpr double INITIAL_SHIFT_FAILURE_ABORT_FRACTION = 1.0e-2;
 
 bool Is_Completed_Evaporation_Record(const EvaporationRecord& rec)
 {
@@ -400,8 +400,6 @@ const char* Stop_Reason_Key(SimulationStopReason reason)
 			return "capture_target_not_reached";
 		case SimulationStopReason::InitialShiftFailureFractionExceeded:
 			return "initial_shift_failure_fraction_exceeded";
-		case SimulationStopReason::InvalidTrajectoryFractionExceeded:
-			return "invalid_trajectory_fraction_exceeded";
 		case SimulationStopReason::None:
 		default:
 			return "none";
@@ -418,8 +416,6 @@ const char* Stop_Reason_Display(SimulationStopReason reason)
 			return "capture target not reached";
 		case SimulationStopReason::InitialShiftFailureFractionExceeded:
 			return "initial shift failure fraction exceeded";
-		case SimulationStopReason::InvalidTrajectoryFractionExceeded:
-			return "numerical/computational invalid-trajectory fraction exceeded";
 		case SimulationStopReason::None:
 		default:
 			return "none";
@@ -878,8 +874,6 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 	early_stop_reason = SimulationStopReason::None;
 
 	unsigned long int global_target_samples = 0;
-	const bool unlimited_trajectory_budget =
-	    maximum_trajectories == std::numeric_limits<uint64_t>::max();
 	const std::vector<double> progress_milestones = {0.0, 0.01, 0.05, 0.10, 0.20, 0.40, 0.60, 0.80, 1.0};
 	size_t next_progress_milestone = 0;
 	bool progress_line_printed = false;
@@ -1241,9 +1235,7 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 	MPIWorkQueue work_queue(
 	    requested_captured_particles,
 	    maximum_trajectories,
-	    unlimited_trajectory_budget,
-	    NUMERICAL_FAILURE_ABORT_FRACTION,
-	    NUMERICAL_FAILURE_ABORT_FRACTION,
+	    INITIAL_SHIFT_FAILURE_ABORT_FRACTION,
 	    MPI_COMM_WORLD);
 	while(true)
 	{
@@ -1293,12 +1285,6 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 			    SimulationStopReason::
 			        InitialShiftFailureFractionExceeded;
 			break;
-		case MPIWorkStopReason::
-		    InvalidTrajectoryFractionExceeded:
-			early_stop_reason =
-			    SimulationStopReason::
-			        InvalidTrajectoryFractionExceeded;
-			break;
 		case MPIWorkStopReason::None:
 		default:
 			break;
@@ -1312,11 +1298,6 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 		    static_cast<double>(
 		        final_work_state.initial_shift_failures)
 		    / attempted;
-		const double invalid_trajectory_fraction =
-		    static_cast<double>(
-		        final_work_state.numerical_failures
-		        + final_work_state.computational_truncations)
-		    / attempted;
 		if(mpi_rank == 0
 		   && final_work_state.stop_reason
 		      == MPIWorkStopReason::
@@ -1327,7 +1308,7 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 			    << "failure fraction "
 			    << initial_shift_failure_fraction
 			    << " exceeds abort threshold "
-			    << NUMERICAL_FAILURE_ABORT_FRACTION
+			    << INITIAL_SHIFT_FAILURE_ABORT_FRACTION
 			    << ". Stopping this run to avoid biased capture "
 			    << "statistics." << std::endl;
 		}
@@ -1344,19 +1325,6 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 			    << NUMERICAL_FAILURE_WARNING_FRACTION
 			    << "." << std::endl;
 			initial_shift_failure_warning_emitted = true;
-		}
-		if(mpi_rank == 0
-		   && final_work_state.stop_reason
-		      == MPIWorkStopReason::
-		          InvalidTrajectoryFractionExceeded)
-		{
-			std::cerr
-			    << "Error in Generate_Data(): invalid trajectory "
-			    << "fraction " << invalid_trajectory_fraction
-			    << " exceeds abort threshold "
-			    << NUMERICAL_FAILURE_ABORT_FRACTION
-			    << " with an unlimited trajectory budget. Stopping "
-			    << "to avoid a non-progressing run." << std::endl;
 		}
 	}
 	capture_target_overshoot = (global_target_samples > requested_captured_particles)

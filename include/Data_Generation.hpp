@@ -154,8 +154,7 @@ enum class SimulationStopReason
 	None = 0,
 	MaxTrajectoriesReached = 1,
 	CaptureTargetNotReached = 2,
-	InitialShiftFailureFractionExceeded = 3,
-	InvalidTrajectoryFractionExceeded = 4
+	InitialShiftFailureFractionExceeded = 3
 };
 
 class Simulation_Data

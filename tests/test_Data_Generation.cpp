@@ -223,7 +223,7 @@ TEST(TestDataGeneration, TestWallTimeCutoffIsNotAnInvalidTrajectory)
 	}
 }
 
-TEST(TestDataGeneration, TestUnlimitedBudgetStopsWhenEveryTrajectoryIsInvalid)
+TEST(TestDataGeneration, TestInvalidTrajectoriesContinueUntilExplicitBudget)
 {
 	Solar_Model SSM;
 	obscura::Standard_Halo_Model SHM;
@@ -233,17 +233,26 @@ TEST(TestDataGeneration, TestUnlimitedBudgetStopsWhenEveryTrajectoryIsInvalid)
 	DM.Set_Sigma_Proton(1.0e-100 * pb);
 	DM.Set_Sigma_Electron(1.0e-100 * pb);
 
-	Simulation_Data data_set(1, 0);
+	Simulation_Data data_set(1, 3);
 	data_set.Configure(2.0 * rSun, 0, 0, 10);
-	data_set.Generate_Data(DM, SSM, SHM, SnapshotConfig(), 20260710, true);
+	data_set.Generate_Data(DM, SSM, SHM, SnapshotConfig(), 20260710);
 
 	int rank = 0;
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-	const std::string output_dir = TestOutputDir("invalid_trajectory_fuse");
+	const std::string output_dir =
+	    TestOutputDir("invalid_trajectory_explicit_budget");
 	data_set.Write_Output_Files(output_dir, DM);
 	if(rank == 0)
 	{
-		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# EARLY_STOP: invalid_trajectory_fraction_exceeded"));
+		EXPECT_TRUE(FileContains(
+		    output_dir + "bincount.txt",
+		    "# EARLY_STOP: max_trajectories_reached"));
+		EXPECT_TRUE(FileContains(
+		    output_dir + "bincount.txt",
+		    "# computational_truncations = 3"));
+		EXPECT_TRUE(FileContains(
+		    output_dir + "bincount.txt",
+		    "# invalid_trajectory_records = 3"));
 		RemoveTestOutputDir(output_dir);
 	}
 }

@@ -114,6 +114,50 @@ int main(int argc, char* argv[])
 		    failures);
 	}
 
+	// A numerical failure is recorded and replaced; it must not stop the queue.
+	MPI_Barrier(MPI_COMM_WORLD);
+	MPIWorkQueue replacement_queue(
+	    4,
+	    8,
+	    1.0,
+	    MPI_COMM_WORLD);
+	bool injected_numerical_failure = false;
+	while(true)
+	{
+		const MPIWorkClaimResult claim =
+		    replacement_queue.TryClaim();
+		if(claim == MPIWorkClaimResult::Stop)
+			break;
+		if(claim == MPIWorkClaimResult::Wait)
+		{
+			std::this_thread::sleep_for(
+			    std::chrono::milliseconds(1));
+			continue;
+		}
+
+		MPIWorkOutcome outcome;
+		if(rank == 0 && !injected_numerical_failure)
+		{
+			outcome.numerical_failure = true;
+			injected_numerical_failure = true;
+		}
+		else
+			outcome.accepted_sample = true;
+		replacement_queue.Complete(outcome);
+	}
+	const MPIWorkQueueState replacement_state =
+	    replacement_queue.Finalize();
+	Check(
+	    replacement_state.work_claims == 5
+	        && replacement_state.completed_trajectories == 5
+	        && replacement_state.accepted_samples == 4
+	        && replacement_state.numerical_failures == 1
+	        && replacement_state.stop_reason
+	           == MPIWorkStopReason::None,
+	    "numerical failure was not recorded and replaced",
+	    rank,
+	    failures);
+
 	// Synthetic imbalance regression: the slow rank claims one long task while
 	// faster ranks immediately recycle their completed slots. Making a non-root
 	// rank slow also verifies that its final RMA completion can reach rank 0
@@ -122,8 +166,6 @@ int main(int argc, char* argv[])
 	MPIWorkQueue work_queue(
 	    8,
 	    64,
-	    false,
-	    1.0,
 	    1.0,
 	    MPI_COMM_WORLD);
 	uint64_t local_completed = 0;

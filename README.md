@@ -199,7 +199,10 @@ tail may temporarily leave excess ranks idle, but
 For reproducible MPI runs, a nonzero fixed seed is expanded by rank as
 `base_seed + 1000003 * mpi_rank`. Computational cutoffs are tracked separately
 from physical right-censoring so that final evaporation-time files contain only
-complete valid unbinding events.
+complete valid unbinding events. Numerical failures and computational
+truncations are recorded and replaced; their accumulated fraction does not
+stop the work queue. Use `max_trajectories` when an explicit attempt budget is
+required.
 
 A trajectory can become physically bound only at a scattering. If an
 uncaptured trajectory acquires negative energy during scatter-free propagation,

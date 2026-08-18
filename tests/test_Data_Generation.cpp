@@ -183,6 +183,46 @@ TEST(TestDataGeneration, TestComputationallyTruncatedNonCaptureIsExcludedFromCap
 	}
 }
 
+TEST(TestDataGeneration, TestWallTimeCutoffIsNotAnInvalidTrajectory)
+{
+	Solar_Model SSM;
+	obscura::Standard_Halo_Model SHM;
+
+	obscura::DM_Particle_SI DM(0.01 * GeV);
+	DM.Set_Low_Mass_Mode(true);
+	DM.Set_Sigma_Proton(1.0e-100 * pb);
+	DM.Set_Sigma_Electron(1.0e-100 * pb);
+
+	Simulation_Data data_set(1, 1);
+	data_set.Configure(2.0 * rSun, 0, 10, 10);
+	SnapshotConfig snapshot_config;
+	snapshot_config.max_trajectory_wall_time_sec = 1.0e-12;
+	data_set.Generate_Data(
+	    DM, SSM, SHM, snapshot_config, 20260818);
+
+	int rank = 0;
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+	const std::string output_dir =
+	    TestOutputDir("wall_time_censor_contract");
+	data_set.Write_Output_Files(output_dir, DM);
+	if(rank == 0)
+	{
+		EXPECT_TRUE(FileContains(
+		    output_dir + "bincount.txt",
+		    "# computational_truncations = 0"));
+		EXPECT_TRUE(FileContains(
+		    output_dir + "bincount.txt",
+		    "# invalid_trajectory_records = 0"));
+		EXPECT_TRUE(FileContains(
+		    output_dir + "bincount.txt",
+		    "# termination_wall_time_limit_uncaptured = 1"));
+		EXPECT_TRUE(FileContains(
+		    output_dir + "invalid_trajectories.tsv",
+		    "# record_count = 0"));
+		RemoveTestOutputDir(output_dir);
+	}
+}
+
 TEST(TestDataGeneration, TestUnlimitedBudgetStopsWhenEveryTrajectoryIsInvalid)
 {
 	Solar_Model SSM;

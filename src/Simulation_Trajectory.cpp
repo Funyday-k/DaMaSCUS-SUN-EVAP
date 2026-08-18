@@ -1427,10 +1427,25 @@ bool TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason reason
 		case TrajectoryTerminationReason::NumericalFailure:
 		case TrajectoryTerminationReason::NonFiniteState:
 		case TrajectoryTerminationReason::SpeedLimit:
-		case TrajectoryTerminationReason::WallTimeLimit:
 		case TrajectoryTerminationReason::MaxFreeSteps:
 		case TrajectoryTerminationReason::MaxScatterings:
 		case TrajectoryTerminationReason::OuterDomainRemoval:
+		case TrajectoryTerminationReason::Unknown:
+			return true;
+		default:
+			return false;
+	}
+}
+
+bool TrajectoryTerminationInvalidatesResidenceBincount(
+	TrajectoryTerminationReason reason)
+{
+	switch(reason)
+	{
+		case TrajectoryTerminationReason::EnergyDriftEscape:
+		case TrajectoryTerminationReason::NumericalFailure:
+		case TrajectoryTerminationReason::NonFiniteState:
+		case TrajectoryTerminationReason::SpeedLimit:
 		case TrajectoryTerminationReason::Unknown:
 			return true;
 		default:
@@ -2749,7 +2764,8 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
 		if(!current_bincount.event_observed)
 		{
 			current_bincount.t_final_unbinding_scatter = std::numeric_limits<double>::quiet_NaN();
-			if(termination_reason != TrajectoryTerminationReason::CaptureMode)
+			if(termination_reason != TrajectoryTerminationReason::CaptureMode
+			   && TrajectoryTerminationInvalidatesSurvival(termination_reason))
 				current_bincount.survival_valid = false;
 		}
 		current_bincount.outer_domain_removed =

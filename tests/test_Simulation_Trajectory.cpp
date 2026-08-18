@@ -563,11 +563,36 @@ TEST(TestSimulationTrajectory, TestSurvivalInvalidTerminationReasons)
 	EXPECT_TRUE(TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason::SpeedLimit));
 	EXPECT_TRUE(TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason::Unknown));
 
-	EXPECT_TRUE(TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason::WallTimeLimit));
+	EXPECT_FALSE(TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason::WallTimeLimit));
 	EXPECT_TRUE(TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason::MaxFreeSteps));
 	EXPECT_TRUE(TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason::MaxScatterings));
 	EXPECT_FALSE(TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason::OutwardEscape));
 	EXPECT_TRUE(TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason::OuterDomainRemoval));
+}
+
+TEST(TestSimulationTrajectory, TestResidenceBincountRejectsOnlyNumericalTerminations)
+{
+	EXPECT_TRUE(TrajectoryTerminationInvalidatesResidenceBincount(
+	    TrajectoryTerminationReason::NumericalFailure));
+	EXPECT_TRUE(TrajectoryTerminationInvalidatesResidenceBincount(
+	    TrajectoryTerminationReason::NonFiniteState));
+	EXPECT_TRUE(TrajectoryTerminationInvalidatesResidenceBincount(
+	    TrajectoryTerminationReason::SpeedLimit));
+	EXPECT_TRUE(TrajectoryTerminationInvalidatesResidenceBincount(
+	    TrajectoryTerminationReason::EnergyDriftEscape));
+	EXPECT_TRUE(TrajectoryTerminationInvalidatesResidenceBincount(
+	    TrajectoryTerminationReason::Unknown));
+
+	EXPECT_FALSE(TrajectoryTerminationInvalidatesResidenceBincount(
+	    TrajectoryTerminationReason::OutwardEscape));
+	EXPECT_FALSE(TrajectoryTerminationInvalidatesResidenceBincount(
+	    TrajectoryTerminationReason::WallTimeLimit));
+	EXPECT_FALSE(TrajectoryTerminationInvalidatesResidenceBincount(
+	    TrajectoryTerminationReason::MaxFreeSteps));
+	EXPECT_FALSE(TrajectoryTerminationInvalidatesResidenceBincount(
+	    TrajectoryTerminationReason::MaxScatterings));
+	EXPECT_FALSE(TrajectoryTerminationInvalidatesResidenceBincount(
+	    TrajectoryTerminationReason::OuterDomainRemoval));
 }
 
 TEST(TestSimulationTrajectory, TestScatter)

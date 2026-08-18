@@ -98,18 +98,16 @@ bool Completed_Outward_Escape(TrajectoryTerminationReason reason)
 
 bool Is_Computational_Truncation(TrajectoryTerminationReason reason)
 {
-	return reason == TrajectoryTerminationReason::WallTimeLimit
-	    || reason == TrajectoryTerminationReason::MaxFreeSteps
+	// A wall-time stop is an intentional observation cutoff: its accepted
+	// captured path remains usable for the residence bincount, and the scheduler
+	// must replace it with a new trajectory rather than count it as invalid work.
+	return reason == TrajectoryTerminationReason::MaxFreeSteps
 	    || reason == TrajectoryTerminationReason::MaxScatterings;
 }
 
 bool Is_Numerical_Termination(TrajectoryTerminationReason reason)
 {
-	return reason == TrajectoryTerminationReason::NumericalFailure
-	    || reason == TrajectoryTerminationReason::NonFiniteState
-	    || reason == TrajectoryTerminationReason::SpeedLimit
-	    || reason == TrajectoryTerminationReason::EnergyDriftEscape
-	    || reason == TrajectoryTerminationReason::Unknown;
+	return TrajectoryTerminationInvalidatesResidenceBincount(reason);
 }
 
 bool Build_Evaporation_Record(const TrajectoryBincount& bincount, int mpi_rank, unsigned long int trajectory_id, double completion_wall_time_sec, EvaporationRecord& rec)
@@ -156,10 +154,13 @@ bool Build_Evaporation_Record(const TrajectoryBincount& bincount, int mpi_rank, 
 	rec.boundary_escape_observed = survival_valid && bincount.boundary_escape_observed;
 	rec.survival_valid = survival_valid;
 	rec.numerically_invalid_escape = numerically_invalid_escape;
-	// A radial-domain removal is excluded from the evaporation-event sample rather
-	// than treated as a right-censored evaporation time. Its residence
-	// contribution is retained by Generate_Data().
-	rec.censored = false;
+	// Wall-time termination is a valid computational censor: its accepted
+	// residence prefix is retained, but no compact evaporation-time event is
+	// emitted. A radial-domain removal remains a separate physical exclusion.
+	rec.censored = survival_valid
+	            && !event_observed
+	            && bincount.termination_reason
+	               == TrajectoryTerminationReason::WallTimeLimit;
 	rec.outer_domain_removed =
 	    bincount.termination_reason == TrajectoryTerminationReason::OuterDomainRemoval;
 	rec.termination_reason = bincount.termination_reason;
@@ -1078,11 +1079,10 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 			    && trajectory.bincount.termination_reason
 			       == TrajectoryTerminationReason::OutwardEscape;
 			const bool accepted_residence_sample =
-			    accepted_evaporation_sample
-			    || (!capture_mode
-			        && trajectory.bincount.is_captured
-			        && trajectory.bincount.termination_reason
-			           == TrajectoryTerminationReason::OuterDomainRemoval);
+			    !capture_mode
+			    && trajectory.bincount.is_captured
+			    && !TrajectoryTerminationInvalidatesResidenceBincount(
+			        trajectory.bincount.termination_reason);
 
 			if(trajectory.bincount.is_captured)
 			{
@@ -1102,6 +1102,14 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 					number_of_outer_domain_removed_particles++;
 					jackknife_outer_domain_removed_counts[
 					    jackknife_block]++;
+				}
+				else if(trajectory.bincount.termination_reason
+				        == TrajectoryTerminationReason::WallTimeLimit)
+				{
+					// This trajectory contributes its accepted residence prefix but
+					// has no observed evaporation time. It is intentionally replaced
+					// by another work-queue claim.
+					number_of_censored_captured_particles++;
 				}
 				else
 				{
@@ -1201,8 +1209,7 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 			if(snapshot_state)
 			{
 				const bool count_as_residence_sample =
-				    trajectory.bincount.is_captured
-				    && accepted_residence_sample;
+				    accepted_residence_sample;
 				const bool physically_classified_uncaptured =
 				    !capture_mode
 				    && completed_outward_escape
@@ -2015,6 +2022,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 		f << "# computational_truncations = " << number_of_computational_truncations << "\n";
 		f << "# accepted_evaporation_samples = " << number_of_complete_evaporation_particles << "\n";
 		f << "# residence_samples = " << number_of_residence_samples << "\n";
+		f << "# censored_captured = " << number_of_censored_captured_particles << "\n";
 		f << "# outer_domain_removed_captured = " << number_of_outer_domain_removed_particles << "\n";
 		f << "# invalid_survival_captured = " << number_of_invalid_survival_captured_particles << "\n";
 		f << "# initial_shift_failures = " << number_of_initial_shift_failures << "\n";

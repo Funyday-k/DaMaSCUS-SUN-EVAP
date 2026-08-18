@@ -181,7 +181,15 @@ double SnapshotProgressPublishWallIntervalSeconds();
 bool SnapshotProgressPublishDue(
     unsigned long int accepted_steps_since_publish, double wall_seconds_since_publish, bool force);
 
+// Wall-time termination is a valid right-censor: it has no observed
+// evaporation event, but the accepted trajectory prefix remains usable.
 bool TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason reason);
+
+// Residence bincounts retain every physically captured trajectory through its
+// last accepted state, including computational censoring and outer-domain
+// removal. Only a numerical failure makes the accumulated path unreliable.
+bool TrajectoryTerminationInvalidatesResidenceBincount(
+	TrajectoryTerminationReason reason);
 
 // Locate the first outward target-radius crossing on the cubic Hermite curve
 // defined by two accepted trajectory states. Positions and velocities use

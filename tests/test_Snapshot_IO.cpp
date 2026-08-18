@@ -413,7 +413,7 @@ TEST_F(SnapshotIOTest, TextReportListsEachMpiRankActivity)
 		"# 3\tdone\t0\t0.0000000000e+00\t0.0000000000e+00\t0\t5.0000000000e+00"));
 }
 
-TEST_F(SnapshotIOTest, CompletedOuterDomainRemovalContributesThroughFivePointTwoAU)
+TEST_F(SnapshotIOTest, CompletedOuterDomainRemovalContributesThroughRadialBoundary)
 {
 	const uint64_t run_id = 607;
 	const double interval = 10.0;
@@ -462,6 +462,43 @@ TEST_F(SnapshotIOTest, CompletedOuterDomainRemovalContributesThroughFivePointTwo
 	EXPECT_NE(
 	    std::string::npos,
 	    report.find("\t1.2500000000e+01\t2.5000000000e+01\t"));
+}
+
+TEST_F(SnapshotIOTest, CompletedCapturedCensoringContributesUnlessNumericallyInvalid)
+{
+	SnapshotSharedState shared_state;
+	shared_state.Initialize(608, 0);
+
+	TrajectoryBincount censored;
+	censored.is_captured = true;
+	censored.termination_reason =
+	    TrajectoryTerminationReason::WallTimeLimit;
+	censored.dt_hist[7] = 3.0;
+	censored.v2dt_hist[7] = 12.0;
+	shared_state.BeginTrajectory(9101, 0.0);
+	shared_state.RecordCompletedTrajectory(
+	    censored, true, false, {});
+
+	TrajectoryBincount failed;
+	failed.is_captured = true;
+	failed.termination_reason =
+	    TrajectoryTerminationReason::NumericalFailure;
+	failed.dt_hist[7] = 100.0;
+	failed.v2dt_hist[7] = 400.0;
+	shared_state.BeginTrajectory(9102, 0.0);
+	// Even an erroneous true from a caller must not admit numerical data.
+	shared_state.RecordCompletedTrajectory(
+	    failed, true, false, {});
+
+	size_t evaporation_end = 0;
+	const SnapshotRankState checkpoint =
+	    shared_state.CopyForSnapshot(
+	        1, 10.0, 10.0, 0, evaporation_end);
+	EXPECT_EQ(2U, checkpoint.local_captured);
+	EXPECT_EQ(1U, checkpoint.local_numerical_failures);
+	EXPECT_EQ(1U, checkpoint.bincount_captured_samples);
+	EXPECT_DOUBLE_EQ(3.0, checkpoint.captured_dt_hist[7]);
+	EXPECT_DOUBLE_EQ(12.0, checkpoint.captured_v2dt_hist[7]);
 }
 
 TEST_F(SnapshotIOTest, FourLogicalRanksProgressFromPartialToMergedWithoutDowngrade)

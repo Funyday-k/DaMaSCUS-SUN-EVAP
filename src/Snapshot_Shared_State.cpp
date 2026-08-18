@@ -5,18 +5,6 @@
 
 namespace DaMaSCUS_SUN
 {
-namespace
-{
-bool IsNumericalTermination(TrajectoryTerminationReason reason)
-{
-	return reason == TrajectoryTerminationReason::NumericalFailure
-	    || reason == TrajectoryTerminationReason::NonFiniteState
-	    || reason == TrajectoryTerminationReason::SpeedLimit
-	    || reason == TrajectoryTerminationReason::EnergyDriftEscape
-	    || reason == TrajectoryTerminationReason::Unknown;
-}
-}
-
 void SnapshotSharedState::Initialize(uint64_t run_id, int rank)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
@@ -138,10 +126,18 @@ void SnapshotSharedState::RecordCompletedTrajectory(
 		captured_particles_++;
 	if(bincount.is_captured || physically_classified_uncaptured)
 		classified_trajectories_++;
-	if(IsNumericalTermination(bincount.termination_reason))
+	if(TrajectoryTerminationInvalidatesResidenceBincount(
+	       bincount.termination_reason))
 		numerical_failures_++;
 
-	if(count_as_residence_sample)
+	// Keep completed snapshot statistics aligned with the final bincount. The
+	// caller selects normal-mode samples, while this guard prevents a numerical
+	// failure from being admitted accidentally. Physical/computational
+	// censoring, including the radial-domain removal, retains its accepted path.
+	if(count_as_residence_sample
+	   && bincount.is_captured
+	   && !TrajectoryTerminationInvalidatesResidenceBincount(
+	       bincount.termination_reason))
 	{
 		bincount_captured_samples_++;
 		for(std::size_t bin = 0; bin < TOTAL_BINS; bin++)

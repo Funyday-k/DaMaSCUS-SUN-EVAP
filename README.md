@@ -221,8 +221,14 @@ reduction:
   apoapsis exceeds 1 AU is propagated analytically to its outward 1-AU
   crossing, marked `outer_domain_removal`, and contributes capture plus
   residence statistics through that crossing. It does not contribute an
-  evaporation-time event. Numerical failures are excluded from residence
-  statistics. Accepted numerical RK intervals are conservatively split using
+  evaporation-time event. Captured trajectories stopped by a wall-time guard
+  retain their accepted residence prefix, are counted as computationally
+  censored, and are replaced by a new trajectory without entering the invalid
+  fraction or the evaporation-time table. Step- and scattering-count guards
+  also retain their accepted residence prefix but remain computational
+  truncations. Numerical failures are excluded from residence statistics.
+  Accepted numerical RK
+  intervals are conservatively split using
   adaptive Hermite dense output. Uncaptured residence histograms are not
   written because capture membership gates every residence contribution.
 - `evaporation_times.txt`: compact complete-event table with

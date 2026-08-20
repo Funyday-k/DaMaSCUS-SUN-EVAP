@@ -91,42 +91,63 @@ int main(int argc, char* argv[])
 
 	try
 	{
-	        if(cfg.target_body == "Earth")
-	        {
-	                celestial_model.reset(new Earth_Model());
-	        }
-	        else if(cfg.target_body == "Sun")
-	        {
-	                const std::string solar_model_data_file =
-	                    Locate_Solar_Model_Data_File(argv[0]);
-	                celestial_model.reset(new Solar_Model(solar_model_data_file));
-	        }
-	        else
-	        {
-	                if(mpi_rank == 0)
-	                        std::cerr << "Error: unsupported target_body: "
-	                                  << cfg.target_body << std::endl;
-	                MPI_Finalize();
-	                return 1;
-	        }
+		if(cfg.target_body == "Earth")
+		{
+			celestial_model.reset(new Earth_Model());
+		}
+		else if(cfg.target_body == "Sun")
+		{
+			const std::string solar_model_data_file =
+				Locate_Solar_Model_Data_File(argv[0]);
+			celestial_model.reset(new Solar_Model(solar_model_data_file));
+		}
+		else
+		{
+			if(mpi_rank == 0)
+				std::cerr << "Error: unsupported target_body: "
+						<< cfg.target_body << std::endl;
 
-	        // Shared engine code uses these values wherever it cannot
-	        // directly receive a Celestial_Model reference.
-	        g_body_radius = celestial_model->Radius();
-	        g_body_mass   = celestial_model->Total_Mass();
-	}
-	catch(const std::exception& error)
-	{
-	        if(mpi_rank == 0)
-	                std::cerr << "Error while initializing "
-	                          << cfg.target_body
-	                          << " model: "
-	                          << error.what()
-	                          << std::endl;
-	        MPI_Finalize();
-	        return 1;
-	}
+			MPI_Finalize();
+			return 1;
+		}
 
+		// Shared engine code uses these values wherever it cannot
+		// directly receive a Celestial_Model reference.
+		g_body_radius = celestial_model->Radius();
+		g_body_mass   = celestial_model->Total_Mass();
+
+		// Explicit runtime confirmation of the selected celestial model.
+		if(mpi_rank == 0)
+		{
+			const char* concrete_model =
+				dynamic_cast<Earth_Model*>(celestial_model.get()) != nullptr
+					? "Earth_Model"
+					: "Solar_Model";
+
+			std::cout << "##############################################################" << std::endl
+					<< "Celestial-model check" << std::endl
+					<< "\tRequested target body: " << cfg.target_body << std::endl
+					<< "\tConcrete model class:  " << concrete_model << std::endl
+					<< "\tModel name:            " << celestial_model->Name() << std::endl
+					<< "\tRadius [km]:           "
+					<< In_Units(g_body_radius, km) << std::endl
+					<< "\tTotal mass [kg]:       "
+					<< In_Units(g_body_mass, kg) << std::endl
+					<< "##############################################################" << std::endl;
+		}
+	}
+catch(const std::exception& error)
+{
+    if(mpi_rank == 0)
+        std::cerr << "Error while initializing "
+                  << cfg.target_body
+                  << " model: "
+                  << error.what()
+                  << std::endl;
+
+    MPI_Finalize();
+    return 1;
+}
 	// Retain the existing call sites below through the common interface.
 	Celestial_Model& SSM = *celestial_model;
 	cfg.Print_Summary(mpi_rank);

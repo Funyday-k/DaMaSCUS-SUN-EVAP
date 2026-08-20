@@ -149,6 +149,24 @@ export DAMASCUS_SUN_SOLAR_MODEL=/absolute/path/model_agss09.dat
 To build and run the test suite, configure separately with
 `-DBUILD_TESTING=ON`, build, then run `ctest --test-dir build --output-on-failure`.
 
+The radial residence domain is a compile-time setting because its bin count is
+part of the fixed histogram layout. Keep alternate cutoffs in separate build
+directories and provide both the cutoff and the matching number of exterior
+shells. The default is `1 AU` with `423` exterior bins. For example, a
+5.2-AU comparison build uses:
+
+```bash
+cmake -S . -B build-5p2au \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_TESTING=OFF \
+  -DDAMASCUS_RADIAL_DOMAIN_MAX_AU=5.2 \
+  -DDAMASCUS_EXTERIOR_BINS=527
+cmake --build build-5p2au --target DaMaSCUS-SUN --parallel
+```
+
+Grid initialization rejects a mismatched bin count when the generated shells
+either stop short of the chosen domain or reach it before the final bin.
+
 ## Configuration
 
 Configuration files use libconfig syntax. The most important controls are:
@@ -156,7 +174,7 @@ Configuration files use libconfig syntax. The most important controls are:
 | Setting | Meaning |
 | --- | --- |
 | `run_mode` | `"Parameter point"` for the main evaporation workflow, `"Capture"` for capture-rate runs, or `"Parameter scan"` for detector-limit scans. |
-| `sample_size` | In normal mode, the exact target number of complete, valid evaporation events whose bound exterior orbit stays within 5.2 AU. Captures physically removed at 5.2 AU contribute residence statistics but not the evaporation-event target. Invalid captures are replaced. In capture mode, this is the exact target number of captures. |
+| `sample_size` | In normal mode, the exact target number of complete, valid evaporation events whose bound exterior orbit stays within the default 1-AU radial domain. Captures physically removed at 1 AU contribute residence statistics but not the evaporation-event target. Invalid captures are replaced. In capture mode, this is the exact target number of captures. |
 | `fixed_seed` | Optional non-negative PRNG seed. `0` or an omitted setting uses nondeterministic seeding; a nonzero value is expanded independently by MPI rank. |
 | `max_trajectories` | Optional hard cap on generated trajectories. `0` or unset means no trajectory-count cap. |
 | `interpolation_points` | Scattering-rate interpolation grid size. `0` disables interpolation; production runs should compare representative values before fixing this. |
@@ -165,33 +183,26 @@ Configuration files use libconfig syntax. The most important controls are:
 | `DM_cross_section_nucleon` | DM-nucleon cross section in cm^2. |
 | `DM_cross_section_electron` | DM-electron cross section in cm^2 where relevant. |
 | `maximum_number_of_scatterings` | Per-trajectory computational cutoff. Cutoff-terminated captures are not treated as clean physical evaporation events. |
-
-Normal-mode MPI synchronization uses an automatic batch size selected from the
-DM-nucleon cross section. The selected value is written to output headers as
-`normal_mode_mpi_sync_interval`.
-
-Every normal-mode batch is globally capped by the number of accepted
-evaporation samples still required. The exterior Kepler fast-forward removes
-the dominant long scatter-free tails, so ranks proceed directly to the
-collective progress reduction without speculative tail trajectories.
-`capture_target_overshoot` is therefore guaranteed to remain zero.
-
-| `DM_cross_section_nucleon` range [cm^2] | MPI sync interval per rank |
-| --- | ---: |
-| `>= 1e-35` | 64 |
-| `[1e-36, 1e-35)` | 128 |
-| `[1e-37, 1e-36)` | 1024 |
-| `[1e-38, 1e-37)` | 8192 |
-| `[1e-39, 1e-38)` | 65536 |
-| `< 1e-39` including `1e-40` and below | 1048576 |
 | `snapshot_enabled` | Enables intermediate wall-clock progress reports for parameter-point runs. Disabled automatically in capture mode. |
 | `snapshot_interval` | Positive integer wall-clock spacing, in seconds, for snapshot reports. Defaults to 60 seconds when snapshots are enabled. |
 | `max_trajectory_wall_time_sec` | Optional per-trajectory wall-time guard. Snapshot recorder overhead is excluded from this budget. |
 
+MPI trajectory scheduling uses a dynamic RMA work queue. Every rank claims one
+trajectory at a time and releases its slot immediately on completion, so fast
+ranks continue working without waiting at a per-batch collective for the
+slowest trajectory. The queue maintains
+`accepted_samples + in_flight <= sample_size`; therefore the final exact-target
+tail may temporarily leave excess ranks idle, but
+`capture_target_overshoot` remains zero. Output headers report
+`mpi_scheduler_work_claims` and `mpi_scheduler_peak_in_flight`.
+
 For reproducible MPI runs, a nonzero fixed seed is expanded by rank as
 `base_seed + 1000003 * mpi_rank`. Computational cutoffs are tracked separately
 from physical right-censoring so that final evaporation-time files contain only
-complete valid unbinding events.
+complete valid unbinding events. Numerical failures and computational
+truncations are recorded and replaced; their accumulated fraction does not
+stop the work queue. Use `max_trajectories` when an explicit attempt budget is
+required.
 
 A trajectory can become physically bound only at a scattering. If an
 uncaptured trajectory acquires negative energy during scatter-free propagation,
@@ -205,14 +216,22 @@ reduction:
 
 - `bincount.txt`: capture-conditioned residence-time and `v^2 dt` radial
   histograms with error estimates. The grid is uniform at `0.001 R_sun`
-  through `1.1 R_sun`
-  and uses 512 fixed logarithmic shells from there to 5.2 AU. Negative-energy
+  through `1.1 R_sun`. From there, shell widths start continuously at
+  `0.001 R_sun` and grow geometrically by 2% per shell toward a global
+  `10 R_sun` width cap. The default 1-AU domain ends before that cap is reached
+  and uses 423 exterior shells. Negative-energy
   exterior Kepler arcs contribute exact shell integrals. A captured orbit whose
-  apoapsis exceeds 5.2 AU is propagated analytically to its outward 5.2-AU
+  apoapsis exceeds 1 AU is propagated analytically to its outward 1-AU
   crossing, marked `outer_domain_removal`, and contributes capture plus
   residence statistics through that crossing. It does not contribute an
-  evaporation-time event. Numerical failures are excluded from residence
-  statistics. Accepted numerical RK intervals are conservatively split using
+  evaporation-time event. Captured trajectories stopped by a wall-time guard
+  retain their accepted residence prefix, are counted as computationally
+  censored, and are replaced by a new trajectory without entering the invalid
+  fraction or the evaporation-time table. Step- and scattering-count guards
+  also retain their accepted residence prefix but remain computational
+  truncations. Numerical failures are excluded from residence statistics.
+  Accepted numerical RK
+  intervals are conservatively split using
   adaptive Hermite dense output. Uncaptured residence histograms are not
   written because capture membership gates every residence contribution.
 - `evaporation_times.txt`: compact complete-event table with
@@ -270,7 +289,7 @@ The bound-exit period is the point-mass osculating Kepler period inferred from
 the negative-energy state at the outward `1.1 R_sun` matching surface. The
 exterior elapsed time is the physically used analytic travel time: through
 apoapsis to the inbound matching surface for contained arcs, or one-way to the
-outward 5.2-AU removal point for outer-domain arcs. These are kept separate
+outward 1-AU removal point for outer-domain arcs. These are kept separate
 because the osculating full period includes a point-mass continuation through
 the solar interior, whereas the simulation uses the extended solar potential
 there.
@@ -284,8 +303,11 @@ When snapshots are enabled, intermediate files are written under `snapshot/`:
 - `snapshot_{time}s.txt`: cumulative progress report at the snapshot wall time.
   Its commented `[MPI rank status]` table reports each rank's activity, local
   trajectory ID, trajectory wall time, simulated elapsed time, scattering
-  count, and the rank-local observation time. Status rows remain comments so
-  data readers see only bincount bins.
+  count, and the rank-local observation time. An in-progress trajectory that
+  has already captured contributes its accumulated residence prefix
+  provisionally. If its bound exterior arc crosses the 1-AU removal surface,
+  the forced publication includes the one-way residence integral through that
+  crossing. Status rows remain comments so data readers see only bincount bins.
 - `snapshot_{time}s_evaporation_times.txt`: complete valid evaporation events
   first published by that checkpoint, sorted by `lifetime_unbinding_sec`.
   An event committed concurrently with a snapshot boundary is assigned once to

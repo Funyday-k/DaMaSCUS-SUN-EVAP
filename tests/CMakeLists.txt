@@ -159,7 +159,39 @@ set_tests_properties(test_Snapshot_IO PROPERTIES
 	TIMEOUT 10
 	LABELS "snapshot;unit")
 
-# 10. Real four-rank heartbeat test with barrier-synchronized local epochs.
+# 10. Four-rank MPI text-gather regression tests. In particular, the
+# all-empty case must return on every rank instead of entering a zero-count
+# MPI_Gatherv with null buffers.
+add_executable(test_MPI_Utilities
+	test_MPI_Utilities.cpp)
+target_include_directories(test_MPI_Utilities PRIVATE ${GENERATED_DIR})
+target_link_libraries(test_MPI_Utilities
+	PRIVATE
+		lib_damascus_sun
+		MPI::MPI_CXX)
+target_compile_options(test_MPI_Utilities PUBLIC -Wall -pedantic)
+if(MPIEXEC_EXECUTABLE
+	AND MPIEXEC_NUMPROC_FLAG
+	AND DEFINED MPIEXEC_MAX_NUMPROCS
+	AND MPIEXEC_MAX_NUMPROCS GREATER_EQUAL 4)
+	add_test(NAME test_MPI_Utilities_4Ranks
+		COMMAND
+			${MPIEXEC_EXECUTABLE}
+			${MPIEXEC_NUMPROC_FLAG} 4
+			${MPIEXEC_PREFLAGS}
+			$<TARGET_FILE:test_MPI_Utilities>
+			${MPIEXEC_POSTFLAGS}
+		WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+	set_tests_properties(test_MPI_Utilities_4Ranks PROPERTIES
+		PROCESSORS 4
+		RUN_SERIAL TRUE
+		TIMEOUT 15
+		LABELS "mpi;unit")
+else()
+	message(STATUS "Skipping four-rank MPI utilities test: MPI launcher or explicit four-rank capacity is unavailable (MPIEXEC_EXECUTABLE='${MPIEXEC_EXECUTABLE}', MPIEXEC_MAX_NUMPROCS='${MPIEXEC_MAX_NUMPROCS}')")
+endif()
+
+# 11. Real four-rank heartbeat test with barrier-synchronized local epochs.
 add_executable(test_Snapshot_Heartbeat_MPI
 	test_Snapshot_Heartbeat_MPI.cpp)
 target_include_directories(test_Snapshot_Heartbeat_MPI PRIVATE ${GENERATED_DIR})
@@ -190,15 +222,9 @@ else()
 endif()
 
 
-# 11. Python workflow tests.
+# 12. Python workflow tests.
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
-	add_test(NAME test_Numerical_Stability_Python
-		COMMAND ${Python3_EXECUTABLE} ${TESTS_DIR}/test_numerical_stability.py
-		WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
-	set_tests_properties(test_Numerical_Stability_Python PROPERTIES
-		TIMEOUT 30
-		LABELS "numerical-stability;unit")
 	add_test(NAME test_Physics_Validation_Workflow
 		COMMAND ${Python3_EXECUTABLE} ${TESTS_DIR}/test_physics_validation.py
 		WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})

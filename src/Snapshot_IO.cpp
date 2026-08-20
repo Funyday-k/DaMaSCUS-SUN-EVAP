@@ -20,7 +20,7 @@ namespace DaMaSCUS_SUN
 namespace
 {
 constexpr uint64_t SNAPSHOT_RANK_STATE_MAGIC = 0x4453534e41503031ULL;
-constexpr uint32_t SNAPSHOT_RANK_STATE_VERSION = 7;
+constexpr uint32_t SNAPSHOT_RANK_STATE_VERSION = 8;
 constexpr uint32_t SNAPSHOT_RANK_STATE_HEADER_BYTES = sizeof(uint64_t) + 2 * sizeof(uint32_t);
 constexpr uint64_t SNAPSHOT_EVAPORATION_EVENTS_PER_CHECKPOINT = 10000000ULL;
 // Only an absurd declared event count is rejected here: ReadSnapshotRankState
@@ -390,9 +390,31 @@ void AccumulateSnapshotReportState(SnapshotReportState& report, const SnapshotRa
 		report.captured_v2dt_sq_hist[bin] += state.captured_v2dt_sq_hist[bin];
 	}
 
-	// In-progress trajectories have not passed the final validity/domain
-	// classification yet. Keep their progress in the rank-status section, but
-	// do not publish provisional residence time into the physical histogram.
+	// Once a trajectory has physically captured, its already accumulated
+	// residence time is useful at the snapshot boundary even if propagation is
+	// still running. Treat that prefix as one provisional sample. The shared
+	// state atomically moves the same trajectory into the completed sums and
+	// clears the current histogram, so a checkpoint can never count both forms.
+	// This also covers the boundary race for an outer-domain trajectory: the
+	// analytic one-way arc is force-published through its outward radial-domain
+	// crossing before it is committed as a completed removal.
+	if(state.trajectory_in_progress
+	   && state.current_trajectory_captured)
+	{
+		report.snapshot_bincount_captured_samples++;
+		report.in_progress_bincount_captured_samples++;
+		for(std::size_t bin = 0; bin < TOTAL_BINS; bin++)
+		{
+			const double dt =
+			    state.current_trajectory_dt_hist[bin];
+			const double v2dt =
+			    state.current_trajectory_v2dt_hist[bin];
+			report.captured_dt_hist[bin] += dt;
+			report.captured_v2dt_hist[bin] += v2dt;
+			report.captured_dt_sq_hist[bin] += dt * dt;
+			report.captured_v2dt_sq_hist[bin] += v2dt * v2dt;
+		}
+	}
 }
 
 SnapshotMergeResult LoadSnapshotReportState(
@@ -607,14 +629,23 @@ bool WriteSnapshotReportFile(
 		file << "#\n";
 		file << "# [Bincount histogram]\n";
 		file << "# base_grid_bins = " << NUM_BINS << "\n";
-		file << "# exterior_log_bins = " << EXTERIOR_LOG_BINS << "\n";
+		file << "# exterior_bins = " << EXTERIOR_BINS << "\n";
 		file << "# total_radial_bins = " << TOTAL_BINS << "\n";
 		file << "# radial_bin_width_Rsun = " << std::scientific << std::setprecision(10)
 		     << BIN_WIDTH_KM / R_SUN_KM << "\n";
-		file << "# exterior_grid = logarithmic\n";
+		file << "# exterior_grid = geometric_width_capped\n";
+		file << "# exterior_bin_growth_factor = " << EXTERIOR_BIN_GROWTH_FACTOR << "\n";
+		file << "# exterior_max_bin_width_Rsun = " << EXTERIOR_MAX_BIN_WIDTH_RSUN << "\n";
 		file << "# radial_domain_max_AU = " << RADIAL_DOMAIN_MAX_AU << "\n";
 		file << "# radial_extent_Rsun = " << RADIAL_DOMAIN_MAX_RSUN << "\n";
-		file << "# in_progress_bincount_included = 0\n";
+		file << "# in_progress_bincount_included = "
+		     << (report.in_progress_bincount_captured_samples > 0 ? 1 : 0)
+		     << "\n";
+		file << "# in_progress_bincount_captured_samples = "
+		     << report.in_progress_bincount_captured_samples << "\n";
+		file << "# in_progress_bincount_is_provisional = "
+		     << (report.in_progress_bincount_captured_samples > 0 ? 1 : 0)
+		     << "\n";
 		file << "# residence_bincount_samples = "
 		     << report.snapshot_bincount_captured_samples << "\n";
 		file << "# bin_index  r_lower_Rsun  r_upper_Rsun  residence_dt[s]  residence_v2dt[km2/s]  residence_err_dt[s]  residence_err_v2dt[km2/s]\n";

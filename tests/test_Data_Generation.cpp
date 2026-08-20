@@ -183,7 +183,7 @@ TEST(TestDataGeneration, TestComputationallyTruncatedNonCaptureIsExcludedFromCap
 	}
 }
 
-TEST(TestDataGeneration, TestUnlimitedBudgetStopsWhenEveryTrajectoryIsInvalid)
+TEST(TestDataGeneration, TestWallTimeCutoffIsNotAnInvalidTrajectory)
 {
 	Solar_Model SSM;
 	obscura::Standard_Halo_Model SHM;
@@ -193,17 +193,66 @@ TEST(TestDataGeneration, TestUnlimitedBudgetStopsWhenEveryTrajectoryIsInvalid)
 	DM.Set_Sigma_Proton(1.0e-100 * pb);
 	DM.Set_Sigma_Electron(1.0e-100 * pb);
 
-	Simulation_Data data_set(1, 0);
-	data_set.Configure(2.0 * rSun, 0, 0, 10);
-	data_set.Generate_Data(DM, SSM, SHM, SnapshotConfig(), 20260710, true);
+	Simulation_Data data_set(1, 1);
+	data_set.Configure(2.0 * rSun, 0, 10, 10);
+	SnapshotConfig snapshot_config;
+	snapshot_config.max_trajectory_wall_time_sec = 1.0e-12;
+	data_set.Generate_Data(
+	    DM, SSM, SHM, snapshot_config, 20260818);
 
 	int rank = 0;
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-	const std::string output_dir = TestOutputDir("invalid_trajectory_fuse");
+	const std::string output_dir =
+	    TestOutputDir("wall_time_censor_contract");
 	data_set.Write_Output_Files(output_dir, DM);
 	if(rank == 0)
 	{
-		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# EARLY_STOP: invalid_trajectory_fraction_exceeded"));
+		EXPECT_TRUE(FileContains(
+		    output_dir + "bincount.txt",
+		    "# computational_truncations = 0"));
+		EXPECT_TRUE(FileContains(
+		    output_dir + "bincount.txt",
+		    "# invalid_trajectory_records = 0"));
+		EXPECT_TRUE(FileContains(
+		    output_dir + "bincount.txt",
+		    "# termination_wall_time_limit_uncaptured = 1"));
+		EXPECT_TRUE(FileContains(
+		    output_dir + "invalid_trajectories.tsv",
+		    "# record_count = 0"));
+		RemoveTestOutputDir(output_dir);
+	}
+}
+
+TEST(TestDataGeneration, TestInvalidTrajectoriesContinueUntilExplicitBudget)
+{
+	Solar_Model SSM;
+	obscura::Standard_Halo_Model SHM;
+
+	obscura::DM_Particle_SI DM(0.01 * GeV);
+	DM.Set_Low_Mass_Mode(true);
+	DM.Set_Sigma_Proton(1.0e-100 * pb);
+	DM.Set_Sigma_Electron(1.0e-100 * pb);
+
+	Simulation_Data data_set(1, 3);
+	data_set.Configure(2.0 * rSun, 0, 0, 10);
+	data_set.Generate_Data(DM, SSM, SHM, SnapshotConfig(), 20260710);
+
+	int rank = 0;
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+	const std::string output_dir =
+	    TestOutputDir("invalid_trajectory_explicit_budget");
+	data_set.Write_Output_Files(output_dir, DM);
+	if(rank == 0)
+	{
+		EXPECT_TRUE(FileContains(
+		    output_dir + "bincount.txt",
+		    "# EARLY_STOP: max_trajectories_reached"));
+		EXPECT_TRUE(FileContains(
+		    output_dir + "bincount.txt",
+		    "# computational_truncations = 3"));
+		EXPECT_TRUE(FileContains(
+		    output_dir + "bincount.txt",
+		    "# invalid_trajectory_records = 3"));
 		RemoveTestOutputDir(output_dir);
 	}
 }
@@ -382,12 +431,22 @@ TEST(TestDataGeneration, TestDefaultOutputContract)
 		EXPECT_TRUE(FileContains(output_dir + "evaporation_times.txt", "P_kepler_first_bound_exit_sec"));
 		EXPECT_TRUE(FileContains(
 		    output_dir + "bincount.txt",
-		    "# bincount_integration = conservative-hermite-kepler-jupiter-log-v3"));
-		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# radial_domain_max_AU = 5.2000000000e+00"));
-		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# total_radial_bins = 1612"));
-		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# normal_mode_mpi_sync_interval = 1048576"));
-		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# mpi_sync_rounds = 1"));
-		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# final_mpi_round_trajectories = 1"));
+		    "# bincount_integration = conservative-hermite-kepler-outer-domain-geometric-capped-v4"));
+		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# radial_domain_max_AU = 1.0000000000e+00"));
+		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# total_radial_bins = 1523"));
+		EXPECT_TRUE(FileContains(
+		    output_dir + "bincount.txt",
+		    "# radial_grid = uniform_inner_geometric_width_capped_exterior_v2"));
+		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# exterior_bins = 423"));
+		EXPECT_TRUE(FileContains(
+		    output_dir + "bincount.txt",
+		    "# exterior_bin_growth_factor = 1.0200000000e+00"));
+		EXPECT_TRUE(FileContains(
+		    output_dir + "bincount.txt",
+		    "# exterior_max_bin_width_Rsun = 1.0000000000e+01"));
+		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# mpi_scheduler = dynamic_rma_work_queue_v1"));
+		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# mpi_scheduler_work_claims = 1"));
+		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# mpi_scheduler_peak_in_flight = 1"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# capture_target_overshoot = 0"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# total_scatterings = 0"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# simulation_time_seconds = "));
@@ -435,10 +494,10 @@ TEST(TestDataGeneration, TestTrajectoryDiagnosticOutputContract)
 	data_set.Write_Output_Files(output_dir, DM);
 	if(rank == 0)
 	{
-		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"schema_version\": \"trajectory-diagnostic-v4\""));
+		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"schema_version\": \"trajectory-diagnostic-v5\""));
 		EXPECT_TRUE(FileContains(
 		    output_dir + "run_metadata.json",
-		    "\"bincount_integration\": \"conservative-hermite-kepler-jupiter-log-v3\""));
+		    "\"bincount_integration\": \"conservative-hermite-kepler-outer-domain-geometric-capped-v4\""));
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"interpolation_points\": 20"));
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"evaporation_event_reconciliation\": true"));
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"escape_radius_invariant\": true"));

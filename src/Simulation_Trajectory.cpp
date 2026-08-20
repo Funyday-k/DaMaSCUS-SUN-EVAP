@@ -56,6 +56,44 @@ constexpr double BINCOUNT_DENSE_POSITION_TOLERANCE_KM = 2.0e-3 * BIN_WIDTH_KM;
 constexpr int BINCOUNT_DENSE_MAX_RECURSION = 20;
 constexpr double BINCOUNT_GAUSS_LEGENDRE_OFFSET = 0.77459666924148337704;
 
+const std::array<double, TOTAL_BINS + 1>& BincountBinEdgesKm()
+{
+	static const std::array<double, TOTAL_BINS + 1> edges = []() {
+		std::array<double, TOTAL_BINS + 1> result{};
+		for(std::size_t bin = 0; bin <= static_cast<std::size_t>(NUM_BINS); bin++)
+			result[bin] = static_cast<double>(bin) * BIN_WIDTH_KM;
+
+		double edge_km = BIN_MAX_KM;
+		double width_km = BIN_WIDTH_KM;
+		for(std::size_t exterior_bin = 0;
+		    exterior_bin < EXTERIOR_BINS;
+		    exterior_bin++)
+		{
+			if(!(edge_km < RADIAL_DOMAIN_MAX_KM))
+				throw std::logic_error(
+				    "EXTERIOR_BINS creates shells beyond the radial domain");
+			const std::size_t lower_index =
+			    static_cast<std::size_t>(NUM_BINS) + exterior_bin;
+			result[lower_index] = edge_km;
+			edge_km = std::min(
+			    RADIAL_DOMAIN_MAX_KM,
+			    edge_km + std::min(width_km, EXTERIOR_MAX_BIN_WIDTH_KM));
+			result[lower_index + 1] = edge_km;
+			width_km = std::min(
+			    EXTERIOR_MAX_BIN_WIDTH_KM,
+			    width_km * EXTERIOR_BIN_GROWTH_FACTOR);
+		}
+		if(edge_km < RADIAL_DOMAIN_MAX_KM)
+			throw std::logic_error(
+			    "EXTERIOR_BINS does not reach the radial domain boundary");
+		// Keep the public radial-domain boundary bit-for-bit identical to the
+		// termination boundary, independent of accumulated roundoff.
+		result[TOTAL_BINS] = RADIAL_DOMAIN_MAX_KM;
+		return result;
+	}();
+	return edges;
+}
+
 struct OpticalDepthPiece
 {
 	double start;
@@ -1134,15 +1172,9 @@ void Compute_Bincount_Interval_Contributions(
 
 double BincountBinLowerKm(std::size_t bin)
 {
-	if(bin <= static_cast<std::size_t>(NUM_BINS))
-		return static_cast<double>(bin) * BIN_WIDTH_KM;
 	if(bin > TOTAL_BINS)
 		return std::numeric_limits<double>::quiet_NaN();
-	const std::size_t exterior_edge = bin - static_cast<std::size_t>(NUM_BINS);
-	const double log_span = log(RADIAL_DOMAIN_MAX_KM / BIN_MAX_KM);
-	return BIN_MAX_KM
-	     * exp(log_span * static_cast<double>(exterior_edge)
-	           / static_cast<double>(EXTERIOR_LOG_BINS));
+	return BincountBinEdgesKm()[bin];
 }
 
 double BincountBinUpperKm(std::size_t bin)
@@ -1155,19 +1187,9 @@ int BincountBinIndexKm(double radius_km)
 	if(!std::isfinite(radius_km) || radius_km < 0.0
 	   || radius_km >= RADIAL_DOMAIN_MAX_KM)
 		return -1;
-	if(radius_km < BIN_MAX_KM)
-		return std::min(
-		    NUM_BINS - 1,
-		    std::max(0, static_cast<int>(floor(radius_km / BIN_WIDTH_KM))));
-
-	const double log_span = log(RADIAL_DOMAIN_MAX_KM / BIN_MAX_KM);
-	const double coordinate =
-	    log(radius_km / BIN_MAX_KM) / log_span
-	    * static_cast<double>(EXTERIOR_LOG_BINS);
-	const std::size_t exterior_bin = std::min<std::size_t>(
-	    EXTERIOR_LOG_BINS - 1,
-	    static_cast<std::size_t>(std::max(0.0, floor(coordinate))));
-	return NUM_BINS + static_cast<int>(exterior_bin);
+	const std::array<double, TOTAL_BINS + 1>& edges = BincountBinEdgesKm();
+	const auto upper = std::upper_bound(edges.begin(), edges.end(), radius_km);
+	return static_cast<int>(std::distance(edges.begin(), upper) - 1);
 }
 
 bool Compute_Bound_Kepler_Exterior_Arc(
@@ -1382,7 +1404,10 @@ double RK45PhaseTolerance() { return 1.0e-7; }
 double RK45AbsoluteMaxStepSec() { return In_Units(RK45_Absolute_Max_Time_Step(), sec); }
 double NormalModeMaxOpticalDepthStep() { return MAX_OPTICAL_DEPTH_STEP; }
 double OpticalDepthRelativeTolerance() { return OPTICAL_DEPTH_RELATIVE_TOLERANCE; }
-const char* BincountIntegrationScheme() { return "conservative-hermite-kepler-jupiter-log-v3"; }
+const char* BincountIntegrationScheme()
+{
+	return "conservative-hermite-kepler-outer-domain-geometric-capped-v4";
+}
 double BincountDensePositionToleranceKm() { return BINCOUNT_DENSE_POSITION_TOLERANCE_KM; }
 double SnapshotProgressPublishWallIntervalSeconds() { return SNAPSHOT_PUBLISH_WALL_INTERVAL_SEC; }
 bool SnapshotProgressPublishDue(
@@ -1402,10 +1427,25 @@ bool TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason reason
 		case TrajectoryTerminationReason::NumericalFailure:
 		case TrajectoryTerminationReason::NonFiniteState:
 		case TrajectoryTerminationReason::SpeedLimit:
-		case TrajectoryTerminationReason::WallTimeLimit:
 		case TrajectoryTerminationReason::MaxFreeSteps:
 		case TrajectoryTerminationReason::MaxScatterings:
 		case TrajectoryTerminationReason::OuterDomainRemoval:
+		case TrajectoryTerminationReason::Unknown:
+			return true;
+		default:
+			return false;
+	}
+}
+
+bool TrajectoryTerminationInvalidatesResidenceBincount(
+	TrajectoryTerminationReason reason)
+{
+	switch(reason)
+	{
+		case TrajectoryTerminationReason::EnergyDriftEscape:
+		case TrajectoryTerminationReason::NumericalFailure:
+		case TrajectoryTerminationReason::NonFiniteState:
+		case TrajectoryTerminationReason::SpeedLimit:
 		case TrajectoryTerminationReason::Unknown:
 			return true;
 		default:
@@ -2724,7 +2764,8 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
 		if(!current_bincount.event_observed)
 		{
 			current_bincount.t_final_unbinding_scatter = std::numeric_limits<double>::quiet_NaN();
-			if(termination_reason != TrajectoryTerminationReason::CaptureMode)
+			if(termination_reason != TrajectoryTerminationReason::CaptureMode
+			   && TrajectoryTerminationInvalidatesSurvival(termination_reason))
 				current_bincount.survival_valid = false;
 		}
 		current_bincount.outer_domain_removed =

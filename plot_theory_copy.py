@@ -1982,7 +1982,7 @@ def load_earth_composition(
         )
 
     return earth_data
-    
+
 def get_base_element_from_sd_key(sd_key):
     """
     Convert SD key like 'Si29', 'Fe57', 'O17', 'H2' -> base element
@@ -5106,7 +5106,10 @@ def print_verified_only_sd_probe_summary(
     probe_masses=(0.7, 2.0, 25.0, 100.0)
 ):
     """
-    Print the same probe-mass summary you already used for interpretation.
+    Print a short decomposition summary at selected probe masses.
+
+    If multiple probe masses map to the same nearest computed DM mass,
+    print that mass point only once.
     """
     DM_masses = np.asarray(DM_masses, dtype=float)
     C_total = np.asarray(C_total, dtype=float)
@@ -5115,29 +5118,60 @@ def print_verified_only_sd_probe_summary(
     C_Si29 = np.asarray(C_Si29, dtype=float)
     C_Na = np.asarray(C_Na, dtype=float)
 
-    print("\n" + "=" * 80)
+    if DM_masses.size == 0:
+        print("=" * 80)
+        print("Verified-only refined SD probe-mass summary")
+        print("=" * 80)
+        print("[WARN] Empty DM mass grid; nothing to print.")
+        return
+
+    # Map each requested probe mass to nearest computed mass index
+    nearest_indices = [
+        int(np.argmin(np.abs(DM_masses - float(m_probe))))
+        for m_probe in probe_masses
+    ]
+
+    # Deduplicate while preserving order
+    unique_indices = []
+    seen = set()
+    for idx in nearest_indices:
+        if idx not in seen:
+            seen.add(idx)
+            unique_indices.append(idx)
+
+    print("=" * 80)
     print("Verified-only refined SD probe-mass summary")
     print("=" * 80)
 
-    for mp in probe_masses:
-        idx = np.argmin(np.abs(DM_masses - mp))
+    for idx in unique_indices:
+        m = DM_masses[idx]
+        ctot = C_total[idx]
 
-        total = C_total[idx]
-        pieces = [
-            ("H",    C_H[idx]),
-            ("Al",   C_Al[idx]),
-            ("Si29", C_Si29[idx]),
-            ("Na",   C_Na[idx]),
-        ]
-        pieces = [(lab, val, (val / total if total > 0.0 else np.nan)) for lab, val in pieces]
-        pieces.sort(key=lambda x: x[1], reverse=True)
+        print(f"m_chi = {m:.6g} GeV")
+        print(f"C_total = {ctot:.6e} s^-1")
 
-        print(f"\nm_chi = {DM_masses[idx]:.4g} GeV")
-        print(f"C_total = {total:.6e} s^-1")
-        for lab, val, frac in pieces:
-            print(f"  {lab:>4s} : {100.0*frac:8.4f}%   (C = {val:.6e})")
+        if ctot > 0.0:
+            pieces = [
+                ("H", C_H[idx]),
+                ("Al", C_Al[idx]),
+                ("Si29", C_Si29[idx]),
+                ("Na", C_Na[idx]),
+            ]
+            pieces.sort(key=lambda x: x[1], reverse=True)
 
+            for label, val in pieces:
+                frac = val / ctot
+                print(f"{label:>6s} : {100.0 * frac:8.4f}%   (C = {val:.6e})")
+        else:
+            print("  [WARN] C_total <= 0 at this mass point.")
 
+    if len(unique_indices) < len(nearest_indices):
+        print("-" * 80)
+        print(
+            f"[INFO] Collapsed {len(nearest_indices)} requested probe masses "
+            f"to {len(unique_indices)} unique computed mass points."
+        )
+        
 def plot_verified_only_refined_sd_baseline(
     earth_data,
     DM_masses,

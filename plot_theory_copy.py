@@ -59,7 +59,9 @@ import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import csv
 
-
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+DEFAULT_EARTH_PREM_PATH = os.path.join(DATA_DIR, "earth_prem.dat")
 
 # ============================================================
 # 1. element data（atomic number、mass number）
@@ -1904,23 +1906,24 @@ def shm_speed_distribution(u, v0=V0_DEFAULT, vesc=VESC_HALO_DEFAULT):
 # Earth composition loader
 # ============================================================
 def load_earth_composition(
-    filepath="data/earth_prem.dat",
-    sd_mode="include_placeholders",
+    filepath=DEFAULT_EARTH_PREM_PATH,
+    sd_mode=None,
     min_mass_fraction=1e-10
 ):
     """
     Read earth_prem.dat and return:
     {
-        "radius": np.array([...])          # km
-        "density": np.array([...])         # g/cm^3
-        "temperature": np.array([...])     # K
+        "radius": np.array([...])              # km
+        "density": np.array([...])             # g/cm^3
+        "temperature": np.array([...])         # K
         "abundances": {elem: np.array([...])}  # ppm by mass
     }
 
     Parameters
     ----------
-    sd_mode : str
-        'verified_only' or 'include_placeholders'
+    sd_mode : str or None
+        If not None, must be 'verified_only' or 'include_placeholders'.
+        When provided, active shell data will also be built.
     """
     with open(filepath, "r", encoding="utf-8") as f:
         lines = f.readlines()
@@ -1969,14 +1972,17 @@ def load_earth_composition(
         "abundances": {k: np.array(v, dtype=float) for k, v in abundances.items()}
     }
 
-    precompute_earth_shells(earth_data)
-    build_active_shell_data(
-        earth_data,
-        min_mass_fraction=min_mass_fraction,
-        sd_mode=sd_mode
-    )
-    return earth_data
+    earth_data = precompute_earth_shells(earth_data)
 
+    if sd_mode is not None:
+        earth_data = build_active_shell_data(
+            earth_data,
+            min_mass_fraction=min_mass_fraction,
+            sd_mode=sd_mode
+        )
+
+    return earth_data
+    
 def get_base_element_from_sd_key(sd_key):
     """
     Convert SD key like 'Si29', 'Fe57', 'O17', 'H2' -> base element
@@ -1995,48 +2001,6 @@ def get_base_element_from_sd_key(sd_key):
     return base_elem
 
 
-def get_sd_spinful_isotopes_for_element(elem):
-    """
-    Return all spinful SD isotope entries associated with a base element.
-
-    Examples
-    --------
-    elem = 'Si' -> ['Si29']
-    elem = 'Fe' -> ['Fe57']
-    elem = 'O'  -> ['O17']
-    elem = 'Al' -> ['Al']
-    """
-    if elem not in ELEMENT_DB:
-        return []
-
-    out = []
-
-    for sd_key, spin_data in SD_SPIN_DB.items():
-        # exact key: 'Al'
-        # isotope-style key: 'Si29', 'Fe57', ...
-        if sd_key == elem:
-            pass
-        elif sd_key.startswith(elem) and sd_key[len(elem):].isdigit():
-            pass
-        else:
-            continue
-
-        J = spin_data.get("J", 0.0)
-        if J <= 0.0:
-            continue
-
-        iso_ab = spin_data.get("isotope_abundance", spin_data.get("abundance", 1.0))
-        A_sd = int(spin_data.get("isotope", round(ELEMENT_DB[elem]["A"])))
-
-        out.append({
-            "sd_key": sd_key,      # e.g. 'Si29', 'Fe57', 'Al'
-            "J": J,
-            "iso_ab": iso_ab,
-            "A_sd": A_sd,
-            "m_t_sd": A_sd * M_U_GEV,
-        })
-
-    return out
 
 def build_active_shell_data(earth_data, min_mass_fraction=1e-10, sd_mode="include_placeholders"):
     """
@@ -2181,6 +2145,7 @@ def precompute_earth_shells(earth_data):
     earth_data["shell_mass_kg"] = shell_mass_kg
     earth_data["M_enc_kg"] = M_enc
     earth_data["v_esc_profile"] = v_esc_km_s
+    return earth_data
 
 # ============================================================
 # Number densities
@@ -4944,6 +4909,7 @@ def run_sd_baseline_constant(
         n_scatter_phi=n_scatter_phi,
         max_workers=max_workers
     )
+    return results
 
 def get_verified_only_active_sd_labels(earth_data):
     """
@@ -5385,23 +5351,6 @@ def plot_verified_only_refined_sd_baseline(
         "log_path": log_path,
     }
 
-    save_sd_baseline_run_info(
-        output_txt=log_path,
-        sigma_SD_p=sigma_SD_p,
-        results=results,
-        u_max=u_max,
-        n_u=n_u,
-        n_t_speed=n_t_speed,
-        n_t_mu=n_t_mu,
-        n_scatter_mu=n_scatter_mu,
-        n_scatter_phi=n_scatter_phi,
-        rho_chi=rho_chi,
-        v0=v0,
-        max_workers=max_workers
-    )
-
-    return results
-
 def build_sd_single_element_earth_data(earth_data, sd_label):
     """
     Build a lightweight copy of earth_data whose SD active shells keep only one SD label,
@@ -5841,7 +5790,7 @@ def save_sd_verified_vs_placeholder_comparison_to_csv(
 
 
 def plot_sd_verified_vs_include_placeholders_comparison(
-    earth_prem_path="data/earth_prem.dat",
+    earth_prem_path=None,
     DM_masses=None,
     sigma_SD_p=1e-40,
     output_root=".",
@@ -5856,6 +5805,8 @@ def plot_sd_verified_vs_include_placeholders_comparison(
     max_workers=None,
     min_mass_fraction=1e-10
 ):
+    if filepath is None:
+        filepath = DEFAULT_EARTH_PREM_PATH
     """
     Compare SD total capture curves between:
         1. verified_only
@@ -6347,7 +6298,7 @@ def diagnose_sd_element_contributions_detailed(
 
 
 def run_include_placeholders_top_contributor_diagnostics(
-    earth_prem_path="data/earth_prem.dat",
+    earth_prem_path=None,
     masses=(5.0, 25.0, 45.0, 70.0, 100.0, 300.0),
     sigma_SD_p=1e-40,
     cross_section_type="constant",
@@ -6365,6 +6316,8 @@ def run_include_placeholders_top_contributor_diagnostics(
     summary_txt="logs/sd_placeholder_diagnostics_summary.txt",
     min_mass_fraction=1e-10
 ):
+    if filepath is None:
+        filepath = DEFAULT_EARTH_PREM_PATH
     """
     Run detailed contributor diagnostics in sd_mode='include_placeholders'
     for selected DM masses.
@@ -10986,11 +10939,12 @@ if __name__ == "__main__":
 
     print("Loading Earth data...")
     earth_data = load_earth_composition(
-        filepath="data/earth_prem.dat",
+        filepath=None,
         sd_mode="verified_only",
         min_mass_fraction=1e-10
     )
-
+    if filepath is None:
+            filepath = DEFAULT_EARTH_PREM_PATH
     print(f"Loaded {len(earth_data['radius'])} layers, {len(earth_data['abundances'])} elements")
     print("[INFO] current working directory:", os.getcwd())
 
@@ -11289,3 +11243,5 @@ if __name__ == "__main__":
     )
 
     print("\nCombined SI / verified-only SD / electron thermal grid production run finished.")
+
+#load_earth_composition

@@ -93,6 +93,7 @@ struct SnapshotReportState
 	uint64_t classified_trajectories = 0;
 	uint64_t numerical_failures = 0;
 	uint64_t snapshot_bincount_captured_samples = 0;
+	uint64_t in_progress_bincount_captured_samples = 0;
 	std::array<double, TOTAL_BINS> captured_dt_hist{};
 	std::array<double, TOTAL_BINS> captured_v2dt_hist{};
 	std::array<double, TOTAL_BINS> captured_dt_sq_hist{};

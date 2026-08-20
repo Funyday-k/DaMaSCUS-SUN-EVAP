@@ -154,8 +154,7 @@ enum class SimulationStopReason
 	None = 0,
 	MaxTrajectoriesReached = 1,
 	CaptureTargetNotReached = 2,
-	InitialShiftFailureFractionExceeded = 3,
-	InvalidTrajectoryFractionExceeded = 4
+	InitialShiftFailureFractionExceeded = 3
 };
 
 class Simulation_Data
@@ -163,8 +162,7 @@ class Simulation_Data
   private:
 	// Configuration
 	unsigned int requested_captured_particles;
-	unsigned long int max_trajectories_per_rank;
-	unsigned long int normal_mode_mpi_sync_interval;
+	uint64_t maximum_trajectories;
 	double initial_and_final_radius = TRAJECTORY_BOUNDARY_RSUN * libphysica::natural_units::rSun;
 	unsigned int minimum_number_of_scatterings = 1;
 	unsigned long int maximum_number_of_scatterings = DEFAULT_MAXIMUM_SCATTERINGS;
@@ -187,8 +185,8 @@ class Simulation_Data
 	unsigned long int number_of_computational_truncations;
 	uint64_t total_number_of_scatterings;
 	double average_number_of_scatterings;
-	unsigned long int mpi_sync_rounds;
-	unsigned long int final_mpi_round_trajectories;
+	uint64_t mpi_scheduler_work_claims;
+	uint64_t mpi_scheduler_peak_in_flight;
 	unsigned long int capture_target_overshoot;
 	double computing_time;
 	bool early_stopped;

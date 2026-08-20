@@ -21,6 +21,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <sys/stat.h>
+#include <thread>
 #include <type_traits>
 #include <unistd.h>
 #include <utility>
@@ -31,6 +32,7 @@
 #include "libphysica/Utilities.hpp"
 
 #include "obscura/Astronomy.hpp"
+#include "MPI_Utilities.hpp"
 #include "Snapshot_Heartbeat.hpp"
 #include "Snapshot_Shared_State.hpp"
 #include "version.hpp"
@@ -54,27 +56,8 @@ void MPI_Trace_Point(int mpi_rank, const std::string& label)
 	std::cerr << "[mpi-trace rank " << mpi_rank << "] " << label << std::endl;
 }
 
-constexpr unsigned long int CAPTURE_MODE_MPI_SYNC_INTERVAL = 32UL;
-constexpr unsigned long int NORMAL_MODE_MPI_SYNC_INTERVAL_FALLBACK = 128UL;
 constexpr double NUMERICAL_FAILURE_WARNING_FRACTION = 1.0e-4;
-constexpr double NUMERICAL_FAILURE_ABORT_FRACTION = 1.0e-2;
-
-unsigned long int Normal_Mode_MPI_Sync_Interval(double sigma_cm2)
-{
-	if(!std::isfinite(sigma_cm2) || sigma_cm2 <= 0.0)
-		return NORMAL_MODE_MPI_SYNC_INTERVAL_FALLBACK;
-	if(sigma_cm2 >= 1.0e-35)
-		return 64UL;
-	if(sigma_cm2 >= 1.0e-36)
-		return 128UL;
-	if(sigma_cm2 >= 1.0e-37)
-		return 1024UL;
-	if(sigma_cm2 >= 1.0e-38)
-		return 8192UL;
-	if(sigma_cm2 >= 1.0e-39)
-		return 65536UL;
-	return 1048576UL;
-}
+constexpr double INITIAL_SHIFT_FAILURE_ABORT_FRACTION = 1.0e-2;
 
 bool Is_Completed_Evaporation_Record(const EvaporationRecord& rec)
 {
@@ -115,18 +98,16 @@ bool Completed_Outward_Escape(TrajectoryTerminationReason reason)
 
 bool Is_Computational_Truncation(TrajectoryTerminationReason reason)
 {
-	return reason == TrajectoryTerminationReason::WallTimeLimit
-	    || reason == TrajectoryTerminationReason::MaxFreeSteps
+	// A wall-time stop is an intentional observation cutoff: its accepted
+	// captured path remains usable for the residence bincount, and the scheduler
+	// must replace it with a new trajectory rather than count it as invalid work.
+	return reason == TrajectoryTerminationReason::MaxFreeSteps
 	    || reason == TrajectoryTerminationReason::MaxScatterings;
 }
 
 bool Is_Numerical_Termination(TrajectoryTerminationReason reason)
 {
-	return reason == TrajectoryTerminationReason::NumericalFailure
-	    || reason == TrajectoryTerminationReason::NonFiniteState
-	    || reason == TrajectoryTerminationReason::SpeedLimit
-	    || reason == TrajectoryTerminationReason::EnergyDriftEscape
-	    || reason == TrajectoryTerminationReason::Unknown;
+	return TrajectoryTerminationInvalidatesResidenceBincount(reason);
 }
 
 bool Build_Evaporation_Record(const TrajectoryBincount& bincount, int mpi_rank, unsigned long int trajectory_id, double completion_wall_time_sec, EvaporationRecord& rec)
@@ -173,10 +154,13 @@ bool Build_Evaporation_Record(const TrajectoryBincount& bincount, int mpi_rank, 
 	rec.boundary_escape_observed = survival_valid && bincount.boundary_escape_observed;
 	rec.survival_valid = survival_valid;
 	rec.numerically_invalid_escape = numerically_invalid_escape;
-	// A 5.2-AU removal is excluded from the evaporation-event sample rather
-	// than treated as a right-censored evaporation time. Its residence
-	// contribution is retained by Generate_Data().
-	rec.censored = false;
+	// Wall-time termination is a valid computational censor: its accepted
+	// residence prefix is retained, but no compact evaporation-time event is
+	// emitted. A radial-domain removal remains a separate physical exclusion.
+	rec.censored = survival_valid
+	            && !event_observed
+	            && bincount.termination_reason
+	               == TrajectoryTerminationReason::WallTimeLimit;
 	rec.outer_domain_removed =
 	    bincount.termination_reason == TrajectoryTerminationReason::OuterDomainRemoval;
 	rec.termination_reason = bincount.termination_reason;
@@ -416,8 +400,6 @@ const char* Stop_Reason_Key(SimulationStopReason reason)
 			return "capture_target_not_reached";
 		case SimulationStopReason::InitialShiftFailureFractionExceeded:
 			return "initial_shift_failure_fraction_exceeded";
-		case SimulationStopReason::InvalidTrajectoryFractionExceeded:
-			return "invalid_trajectory_fraction_exceeded";
 		case SimulationStopReason::None:
 		default:
 			return "none";
@@ -434,8 +416,6 @@ const char* Stop_Reason_Display(SimulationStopReason reason)
 			return "capture target not reached";
 		case SimulationStopReason::InitialShiftFailureFractionExceeded:
 			return "initial shift failure fraction exceeded";
-		case SimulationStopReason::InvalidTrajectoryFractionExceeded:
-			return "numerical/computational invalid-trajectory fraction exceeded";
 		case SimulationStopReason::None:
 		default:
 			return "none";
@@ -667,7 +647,10 @@ bool TrajectoryTraceSelected(uint64_t trace_seed, int rank, uint64_t trajectory_
 
 Simulation_Data::Simulation_Data(unsigned int sample_size, unsigned int max_trajectories, double u_min, unsigned int iso_rings)
 : requested_captured_particles(sample_size),
-  normal_mode_mpi_sync_interval(NORMAL_MODE_MPI_SYNC_INTERVAL_FALLBACK),
+  maximum_trajectories(
+      max_trajectories == 0
+      ? std::numeric_limits<uint64_t>::max()
+      : static_cast<uint64_t>(max_trajectories)),
   number_of_trajectories(0), number_of_free_particles(0), number_of_reflected_particles(0), number_of_captured_particles(0),
   number_of_completed_outward_escapes(0),
   number_of_complete_evaporation_particles(0), number_of_residence_samples(0),
@@ -677,7 +660,8 @@ Simulation_Data::Simulation_Data(unsigned int sample_size, unsigned int max_traj
   number_of_initial_shift_failures(0), number_of_final_reflection_shift_failures(0), number_of_numerical_failures(0),
   number_of_computational_truncations(0),
   total_number_of_scatterings(0), average_number_of_scatterings(0.0),
-  mpi_sync_rounds(0), final_mpi_round_trajectories(0), capture_target_overshoot(0),
+  mpi_scheduler_work_claims(0), mpi_scheduler_peak_in_flight(0),
+  capture_target_overshoot(0),
   computing_time(0.0), early_stopped(false), early_stop_reason(SimulationStopReason::None),
   residence_jackknife_block_dt_hist(
       RESIDENCE_JACKKNIFE_BLOCKS * TOTAL_BINS, 0.0),
@@ -689,12 +673,6 @@ Simulation_Data::Simulation_Data(unsigned int sample_size, unsigned int max_traj
 {
     MPI_Comm_size(MPI_COMM_WORLD, &mpi_processes);
     MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
-
-	if(max_trajectories == 0)
-		max_trajectories_per_rank = std::numeric_limits<unsigned long int>::max();  // no limit
-	else
-		max_trajectories_per_rank = (max_trajectories + mpi_processes - 1) / mpi_processes;
-
 }
 
 void Simulation_Data::Configure(double initial_radius, unsigned int min_scattering, unsigned long int max_scattering, unsigned long int max_free_steps)
@@ -731,7 +709,6 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 		if(mpi_thread_level < MPI_THREAD_FUNNELED)
 			throw std::runtime_error("snapshot heartbeat requires MPI_THREAD_FUNNELED or stronger thread support");
 	}
-	normal_mode_mpi_sync_interval = capture_mode ? 0UL : Normal_Mode_MPI_Sync_Interval(In_Units(DM.Sigma_Proton(), cm * cm));
 	diagnostic_base_seed = fixed_seed;
 	diagnostic_run_id = 0;
 	if(evaporation_diagnostics_enabled && mpi_rank == 0)
@@ -896,10 +873,7 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 	early_stopped = false;
 	early_stop_reason = SimulationStopReason::None;
 
-	unsigned long int local_target_samples = 0;
 	unsigned long int global_target_samples = 0;
-	const bool unlimited_trajectory_budget =
-	    max_trajectories_per_rank == std::numeric_limits<unsigned long int>::max();
 	const std::vector<double> progress_milestones = {0.0, 0.01, 0.05, 0.10, 0.20, 0.40, 0.60, 0.80, 1.0};
 	size_t next_progress_milestone = 0;
 	bool progress_line_printed = false;
@@ -937,63 +911,8 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 	};
 	print_progress_update(global_target_samples, true);
 
-	const unsigned long int mpi_sync_interval = capture_mode ? CAPTURE_MODE_MPI_SYNC_INTERVAL : normal_mode_mpi_sync_interval;
-	auto select_trajectory_batch = [&](unsigned long int remaining_samples, unsigned long int& total_assigned)
+	auto simulate_one_trajectory = [&]() -> MPIWorkOutcome
 	{
-		total_assigned = 0;
-		unsigned long int local_round_capacity = 0;
-		if(local_total < max_trajectories_per_rank)
-		{
-			const unsigned long int local_capacity = max_trajectories_per_rank - local_total;
-			local_round_capacity = std::min(local_capacity, mpi_sync_interval);
-		}
-
-		std::vector<unsigned long int> round_capacities(mpi_processes, 0);
-		MPI_Allgather(&local_round_capacity, 1, MPI_UNSIGNED_LONG, round_capacities.data(), 1, MPI_UNSIGNED_LONG, MPI_COMM_WORLD);
-
-		unsigned long int total_round_capacity = 0;
-		for(const auto capacity : round_capacities)
-			total_round_capacity += capacity;
-		if(total_round_capacity == 0)
-			return 0UL;
-
-		// A trajectory can contribute at most one accepted target sample.
-		// Limiting every round to the remaining target guarantees that the final
-		// global batch cannot overshoot even when invalid or radial-domain
-		// exclusions require replacement trajectories.
-		const unsigned long int attempt_budget =
-		    std::min(remaining_samples, total_round_capacity);
-		unsigned long int local_batch = 0;
-		for(int rank = 0; rank < mpi_processes; rank++)
-		{
-			if(total_assigned >= attempt_budget)
-				break;
-			const unsigned long int assigned = std::min(round_capacities[rank], attempt_budget - total_assigned);
-			if(rank == mpi_rank)
-				local_batch = assigned;
-			total_assigned += assigned;
-		}
-		return local_batch;
-	};
-
-	while(global_target_samples < requested_captured_particles)
-	{
-		const unsigned long int remaining_samples =
-		    requested_captured_particles - global_target_samples;
-		unsigned long int assigned_trajectories = 0;
-		const unsigned long int local_trajectories_this_round =
-		    select_trajectory_batch(remaining_samples, assigned_trajectories);
-		if(assigned_trajectories == 0)
-		{
-			early_stopped = true;
-			early_stop_reason = SimulationStopReason::MaxTrajectoriesReached;
-			break;
-		}
-		mpi_sync_rounds++;
-		final_mpi_round_trajectories = assigned_trajectories;
-
-		auto simulate_one_trajectory = [&]()
-		{
 			const unsigned long int trajectory_id = local_total + 1;
 			const bool trace_selected = trajectory_diagnostic_config.events_enabled
 			                         && Diagnostic_Trace_Selected(trajectory_diagnostic_config.trace_seed,
@@ -1154,22 +1073,22 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 			    && trajectory.bincount.termination_reason
 			       == TrajectoryTerminationReason::OutwardEscape;
 			const bool accepted_residence_sample =
-			    accepted_evaporation_sample
-			    || (!capture_mode
-			        && trajectory.bincount.is_captured
-			        && trajectory.bincount.termination_reason
-			           == TrajectoryTerminationReason::OuterDomainRemoval);
+			    !capture_mode
+			    && trajectory.bincount.is_captured
+			    && !TrajectoryTerminationInvalidatesResidenceBincount(
+			        trajectory.bincount.termination_reason);
 
 			if(trajectory.bincount.is_captured)
 			{
 				number_of_captured_particles++;
 				jackknife_captured_counts[jackknife_block]++;
 				if(capture_mode)
-					local_target_samples++;
+				{
+					// Capture itself is the accepted target in this mode.
+				}
 				else if(accepted_evaporation_sample)
 				{
 					number_of_complete_evaporation_particles++;
-					local_target_samples++;
 				}
 				else if(trajectory.bincount.termination_reason
 				        == TrajectoryTerminationReason::OuterDomainRemoval)
@@ -1177,6 +1096,14 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 					number_of_outer_domain_removed_particles++;
 					jackknife_outer_domain_removed_counts[
 					    jackknife_block]++;
+				}
+				else if(trajectory.bincount.termination_reason
+				        == TrajectoryTerminationReason::WallTimeLimit)
+				{
+					// This trajectory contributes its accepted residence prefix but
+					// has no observed evaporation time. It is intentionally replaced
+					// by another work-queue claim.
+					number_of_censored_captured_particles++;
 				}
 				else
 				{
@@ -1276,8 +1203,7 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 			if(snapshot_state)
 			{
 				const bool count_as_residence_sample =
-				    trajectory.bincount.is_captured
-				    && accepted_residence_sample;
+				    accepted_residence_sample;
 				const bool physically_classified_uncaptured =
 				    !capture_mode
 				    && completed_outward_escape
@@ -1288,70 +1214,118 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 					physically_classified_uncaptured,
 					trajectory_snapshot_evaporation_events);
 			}
+
+			MPIWorkOutcome outcome;
+			outcome.accepted_sample =
+			    capture_mode
+			    ? trajectory.bincount.is_captured
+			    : accepted_evaporation_sample;
+			outcome.initial_shift_failure = !initial_shift_ok;
+			outcome.numerical_failure =
+			    !initial_shift_ok
+			    || (initial_shift_ok
+			        && Is_Numerical_Termination(
+			           trajectory.bincount.termination_reason));
+			outcome.computational_truncation =
+			    Is_Computational_Truncation(
+			        trajectory.bincount.termination_reason);
+			return outcome;
 		};
 
-		for(unsigned long int trajectory_in_round = 0; trajectory_in_round < local_trajectories_this_round; trajectory_in_round++)
-			simulate_one_trajectory();
-
-		const std::array<unsigned long int, 5> local_progress = {
-		    local_target_samples, number_of_trajectories, number_of_initial_shift_failures,
-		    number_of_numerical_failures, number_of_computational_truncations};
-		std::array<unsigned long int, 5> global_progress = {{0, 0, 0, 0, 0}};
-		MPI_Allreduce(local_progress.data(), global_progress.data(), static_cast<int>(global_progress.size()), MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
-		global_target_samples = global_progress[0];
-		const unsigned long int global_attempted_trajectories = global_progress[1];
-		const unsigned long int global_initial_shift_failures = global_progress[2];
-		const unsigned long int global_numerical_failures = global_progress[3];
-		const unsigned long int global_computational_truncations = global_progress[4];
-
-		if(global_attempted_trajectories > 0)
+	MPIWorkQueue work_queue(
+	    requested_captured_particles,
+	    maximum_trajectories,
+	    INITIAL_SHIFT_FAILURE_ABORT_FRACTION,
+	    MPI_COMM_WORLD);
+	while(true)
+	{
+		MPIWorkQueueState observed;
+		const MPIWorkClaimResult claim =
+		    work_queue.TryClaim(&observed);
+		global_target_samples =
+		    static_cast<unsigned long int>(
+		        observed.accepted_samples);
+		if(claim == MPIWorkClaimResult::Stop)
+			break;
+		if(claim == MPIWorkClaimResult::Wait)
 		{
-			const double initial_shift_failure_fraction =
-			    static_cast<double>(global_initial_shift_failures) / static_cast<double>(global_attempted_trajectories);
-			if(initial_shift_failure_fraction > NUMERICAL_FAILURE_ABORT_FRACTION)
-			{
-				if(mpi_rank == 0)
-					std::cerr << "Error in Generate_Data(): initial Kepler shift failure fraction "
-					          << initial_shift_failure_fraction
-					          << " exceeds abort threshold "
-					          << NUMERICAL_FAILURE_ABORT_FRACTION
-					          << ". Stopping this run to avoid biased capture statistics." << std::endl;
-				early_stopped = true;
-				early_stop_reason = SimulationStopReason::InitialShiftFailureFractionExceeded;
-				break;
-			}
-			if(!initial_shift_failure_warning_emitted
-			   && initial_shift_failure_fraction > NUMERICAL_FAILURE_WARNING_FRACTION)
-			{
-				if(mpi_rank == 0)
-					std::cerr << "Warning in Generate_Data(): initial Kepler shift failure fraction "
-					          << initial_shift_failure_fraction
-					          << " exceeds warning threshold "
-					          << NUMERICAL_FAILURE_WARNING_FRACTION
-					          << "." << std::endl;
-				initial_shift_failure_warning_emitted = true;
-			}
-
-			const double invalid_trajectory_fraction =
-			    static_cast<double>(global_numerical_failures + global_computational_truncations)
-			    / static_cast<double>(global_attempted_trajectories);
-			if(unlimited_trajectory_budget
-			   && invalid_trajectory_fraction > NUMERICAL_FAILURE_ABORT_FRACTION)
-			{
-				if(mpi_rank == 0)
-					std::cerr << "Error in Generate_Data(): invalid trajectory fraction "
-					          << invalid_trajectory_fraction
-					          << " exceeds abort threshold "
-					          << NUMERICAL_FAILURE_ABORT_FRACTION
-					          << " with an unlimited trajectory budget. Stopping to avoid a non-progressing run."
-					          << std::endl;
-				early_stopped = true;
-				early_stop_reason = SimulationStopReason::InvalidTrajectoryFractionExceeded;
-				break;
-			}
+			// Only exact-target tail pressure or an exhausted global trajectory
+			// budget can leave a rank without a claim. A short local sleep keeps
+			// polling from consuming a full CPU while active ranks finish.
+			std::this_thread::sleep_for(
+			    std::chrono::milliseconds(1));
+			continue;
 		}
 
+		const MPIWorkQueueState completed =
+		    work_queue.Complete(simulate_one_trajectory());
+		global_target_samples =
+		    static_cast<unsigned long int>(
+		        completed.accepted_samples);
 		print_progress_update(global_target_samples, false);
+	}
+
+	const MPIWorkQueueState final_work_state =
+	    work_queue.Finalize();
+	global_target_samples =
+	    static_cast<unsigned long int>(
+	        final_work_state.accepted_samples);
+	mpi_scheduler_work_claims = final_work_state.work_claims;
+	mpi_scheduler_peak_in_flight =
+	    final_work_state.peak_in_flight;
+	switch(final_work_state.stop_reason)
+	{
+		case MPIWorkStopReason::MaxTrajectoriesReached:
+			early_stop_reason =
+			    SimulationStopReason::MaxTrajectoriesReached;
+			break;
+		case MPIWorkStopReason::
+		    InitialShiftFailureFractionExceeded:
+			early_stop_reason =
+			    SimulationStopReason::
+			        InitialShiftFailureFractionExceeded;
+			break;
+		case MPIWorkStopReason::None:
+		default:
+			break;
+	}
+
+	if(final_work_state.completed_trajectories > 0)
+	{
+		const double attempted = static_cast<double>(
+		    final_work_state.completed_trajectories);
+		const double initial_shift_failure_fraction =
+		    static_cast<double>(
+		        final_work_state.initial_shift_failures)
+		    / attempted;
+		if(mpi_rank == 0
+		   && final_work_state.stop_reason
+		      == MPIWorkStopReason::
+		          InitialShiftFailureFractionExceeded)
+		{
+			std::cerr
+			    << "Error in Generate_Data(): initial Kepler shift "
+			    << "failure fraction "
+			    << initial_shift_failure_fraction
+			    << " exceeds abort threshold "
+			    << INITIAL_SHIFT_FAILURE_ABORT_FRACTION
+			    << ". Stopping this run to avoid biased capture "
+			    << "statistics." << std::endl;
+		}
+		else if(mpi_rank == 0
+		        && !initial_shift_failure_warning_emitted
+		        && initial_shift_failure_fraction
+		           > NUMERICAL_FAILURE_WARNING_FRACTION)
+		{
+			std::cerr
+			    << "Warning in Generate_Data(): initial Kepler shift "
+			    << "failure fraction "
+			    << initial_shift_failure_fraction
+			    << " exceeds warning threshold "
+			    << NUMERICAL_FAILURE_WARNING_FRACTION
+			    << "." << std::endl;
+			initial_shift_failure_warning_emitted = true;
+		}
 	}
 	capture_target_overshoot = (global_target_samples > requested_captured_particles)
 	                         ? global_target_samples - requested_captured_particles
@@ -1804,48 +1778,14 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 		    << '\n';
 	}
 	const std::string local_invalid_text = local_invalid_stream.str();
-	const int local_invalid_bytes = static_cast<int>(local_invalid_text.size());
-	std::vector<int> invalid_byte_counts(mpi_processes, 0);
-	MPI_Trace_Point(mpi_rank, "before gather invalid ledger byte counts");
-	MPI_Gather(
-	    &local_invalid_bytes,
-	    1,
-	    MPI_INT,
-	    mpi_rank == 0 ? invalid_byte_counts.data() : nullptr,
-	    1,
-	    MPI_INT,
-	    0,
-	    MPI_COMM_WORLD);
-	std::vector<int> invalid_recv_counts;
-	std::vector<int> invalid_displacements;
-	int total_invalid_bytes = 0;
-	std::vector<char> global_invalid_text;
-	if(mpi_rank == 0)
-	{
-		Build_MPI_Gatherv_Layout(
-		    invalid_byte_counts,
-		    1,
-		    invalid_recv_counts,
-		    invalid_displacements,
-		    total_invalid_bytes);
-		global_invalid_text.resize(static_cast<size_t>(total_invalid_bytes));
-	}
-	MPI_Trace_Point(mpi_rank, "before gatherv invalid ledger");
-	MPI_Gatherv(
-	    local_invalid_text.empty() ? nullptr : local_invalid_text.data(),
-	    local_invalid_bytes,
-	    MPI_CHAR,
-	    mpi_rank == 0 && !global_invalid_text.empty() ? global_invalid_text.data() : nullptr,
-	    mpi_rank == 0 ? invalid_recv_counts.data() : nullptr,
-	    mpi_rank == 0 ? invalid_displacements.data() : nullptr,
-	    MPI_CHAR,
-	    0,
-	    MPI_COMM_WORLD);
+	MPI_Trace_Point(mpi_rank, "before gather invalid ledger");
+	const std::string combined_invalid_text =
+	    Gather_MPI_Text_To_Root(local_invalid_text);
+	MPI_Trace_Point(mpi_rank, "after gather invalid ledger");
 	invalid_trajectory_records.clear();
 	if(mpi_rank == 0)
 	{
-		std::string combined(global_invalid_text.begin(), global_invalid_text.end());
-		std::istringstream lines(combined);
+		std::istringstream lines(combined_invalid_text);
 		std::string line;
 		while(std::getline(lines, line))
 		{
@@ -1982,29 +1922,14 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 			                    << '\t' << Encode_PRNG_State(replay.rng_state_before_simulation) << '\n';
 		}
 		const std::string local_replay_text = local_replay_stream.str();
-		const int local_replay_bytes = static_cast<int>(local_replay_text.size());
-		std::vector<int> replay_byte_counts(mpi_processes, 0);
-		MPI_Gather(&local_replay_bytes, 1, MPI_INT,
-		           mpi_rank == 0 ? replay_byte_counts.data() : nullptr, 1, MPI_INT, 0, MPI_COMM_WORLD);
-		std::vector<int> replay_recv_counts;
-		std::vector<int> replay_displacements;
-		int total_replay_bytes = 0;
-		std::vector<char> global_replay_text;
-		if(mpi_rank == 0)
-		{
-			Build_MPI_Gatherv_Layout(replay_byte_counts, 1, replay_recv_counts, replay_displacements, total_replay_bytes);
-			global_replay_text.resize(static_cast<size_t>(total_replay_bytes));
-		}
-		MPI_Gatherv(local_replay_text.empty() ? nullptr : local_replay_text.data(), local_replay_bytes, MPI_CHAR,
-		            mpi_rank == 0 && !global_replay_text.empty() ? global_replay_text.data() : nullptr,
-		            mpi_rank == 0 ? replay_recv_counts.data() : nullptr,
-		            mpi_rank == 0 ? replay_displacements.data() : nullptr,
-		            MPI_CHAR, 0, MPI_COMM_WORLD);
+		MPI_Trace_Point(mpi_rank, "before gather replay ledger");
+		const std::string combined_replay_text =
+		    Gather_MPI_Text_To_Root(local_replay_text);
+		MPI_Trace_Point(mpi_rank, "after gather replay ledger");
 		trajectory_replay_records.clear();
 		if(mpi_rank == 0)
 		{
-			std::string combined(global_replay_text.begin(), global_replay_text.end());
-			std::istringstream lines(combined);
+			std::istringstream lines(combined_replay_text);
 			std::string line;
 			while(std::getline(lines, line))
 			{
@@ -2065,15 +1990,16 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 		f << "# computational_truncations = " << number_of_computational_truncations << "\n";
 		f << "# accepted_evaporation_samples = " << number_of_complete_evaporation_particles << "\n";
 		f << "# residence_samples = " << number_of_residence_samples << "\n";
+		f << "# censored_captured = " << number_of_censored_captured_particles << "\n";
 		f << "# outer_domain_removed_captured = " << number_of_outer_domain_removed_particles << "\n";
 		f << "# invalid_survival_captured = " << number_of_invalid_survival_captured_particles << "\n";
 		f << "# initial_shift_failures = " << number_of_initial_shift_failures << "\n";
 		f << "# final_reflection_shift_failures = " << number_of_final_reflection_shift_failures << "\n";
-		f << "# normal_mode_mpi_sync_interval = " << normal_mode_mpi_sync_interval << "\n";
-		f << "# mpi_sync_rounds = " << mpi_sync_rounds << "\n";
-		f << "# final_mpi_round_trajectories = " << final_mpi_round_trajectories << "\n";
+		f << "# mpi_scheduler = dynamic_rma_work_queue_v1\n";
+		f << "# mpi_scheduler_work_claims = " << mpi_scheduler_work_claims << "\n";
+		f << "# mpi_scheduler_peak_in_flight = " << mpi_scheduler_peak_in_flight << "\n";
 		f << "# capture_target_overshoot = " << capture_target_overshoot << "\n";
-		f << "# sample_target_type = valid_complete_evaporation_within_5p2_AU\n";
+		f << "# sample_target_type = valid_complete_evaporation_within_radial_domain\n";
 		f << "# invalid_trajectory_records = " << invalid_trajectory_records.size() << "\n";
 		f << "# residence_jackknife_blocks = "
 		  << RESIDENCE_JACKKNIFE_BLOCKS << "\n";
@@ -2187,11 +2113,14 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 		if(excluded_not_captured_particles > 0)
 			f << "# excluded_incomplete_not_captured = " << excluded_not_captured_particles << "\n";
 		f << "# base_grid_bins = " << NUM_BINS << "\n";
-		f << "# exterior_log_bins = " << EXTERIOR_LOG_BINS << "\n";
+		f << "# exterior_bins = " << EXTERIOR_BINS << "\n";
 		f << "# total_radial_bins = " << TOTAL_BINS << "\n";
-		f << "# radial_grid = uniform_inner_log_exterior_v1\n";
+		f << "# radial_grid = uniform_inner_geometric_width_capped_exterior_v2\n";
 		f << "# radial_bin_width_Rsun = " << std::scientific << std::setprecision(10)
 		  << BIN_WIDTH_KM / R_SUN_KM << "\n";
+		f << "# exterior_initial_bin_width_Rsun = " << BIN_WIDTH_KM / R_SUN_KM << "\n";
+		f << "# exterior_bin_growth_factor = " << EXTERIOR_BIN_GROWTH_FACTOR << "\n";
+		f << "# exterior_max_bin_width_Rsun = " << EXTERIOR_MAX_BIN_WIDTH_RSUN << "\n";
 		f << "# radial_inner_extent_Rsun = " << BIN_MAX_KM / R_SUN_KM << "\n";
 		f << "# radial_domain_max_AU = " << RADIAL_DOMAIN_MAX_AU << "\n";
 		f << "# radial_extent_Rsun = " << RADIAL_DOMAIN_MAX_RSUN << "\n";
@@ -2579,7 +2508,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 		{
 			std::ofstream metadata(output_dir + "/run_metadata.json");
 			metadata << "{\n"
-			         << "  \"schema_version\": \"trajectory-diagnostic-v4\",\n"
+			         << "  \"schema_version\": \"trajectory-diagnostic-v5\",\n"
 			         << "  \"run_id\": \"" << diagnostic_run_id << "\",\n"
 			         << "  \"git_branch\": \"" << GIT_BRANCH << "\",\n"
 			         << "  \"git_commit\": \"" << git_commit << "\",\n"
@@ -2600,9 +2529,12 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 			         << "  \"rk_absolute_max_step_s\": " << RK45AbsoluteMaxStepSec() << ",\n"
 			         << "  \"bincount_integration\": \"" << BincountIntegrationScheme() << "\",\n"
 			         << "  \"bincount_dense_position_tolerance_km\": " << BincountDensePositionToleranceKm() << ",\n"
-			         << "  \"radial_grid\": \"uniform_inner_log_exterior_v1\",\n"
+			         << "  \"radial_grid\": \"uniform_inner_geometric_width_capped_exterior_v2\",\n"
 			         << "  \"radial_inner_extent_Rsun\": " << BIN_MAX_KM / R_SUN_KM << ",\n"
-			         << "  \"radial_exterior_log_bins\": " << EXTERIOR_LOG_BINS << ",\n"
+			         << "  \"radial_exterior_bins\": " << EXTERIOR_BINS << ",\n"
+			         << "  \"radial_exterior_initial_bin_width_Rsun\": " << BIN_WIDTH_KM / R_SUN_KM << ",\n"
+			         << "  \"radial_exterior_bin_growth_factor\": " << EXTERIOR_BIN_GROWTH_FACTOR << ",\n"
+			         << "  \"radial_exterior_max_bin_width_Rsun\": " << EXTERIOR_MAX_BIN_WIDTH_RSUN << ",\n"
 			         << "  \"outer_domain_removal_AU\": " << RADIAL_DOMAIN_MAX_AU << ",\n"
 			         << "  \"interpolation_points\": " << trajectory_diagnostic_config.interpolation_points << ",\n"
 			         << "  \"max_optical_depth_step\": " << NormalModeMaxOpticalDepthStep() << ",\n"
@@ -2613,7 +2545,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 			         << "  \"velocity_unit\": \"km/s\",\n"
 			         << "  \"angular_momentum_unit\": \"km^2/s\",\n"
 			         << "  \"bound_exit_period_definition\": \"point-mass osculating Kepler period at a negative-energy outward crossing of 1.1 Rsun\",\n"
-			         << "  \"bound_exit_exterior_time_definition\": \"analytic elapsed time: round trip through apoapsis for contained arcs; one-way to outward 5.2-AU removal for outer-domain arcs\",\n"
+			         << "  \"bound_exit_exterior_time_definition\": \"analytic elapsed time: round trip through apoapsis for contained arcs; one-way to outward radial-domain removal for outer-domain arcs\",\n"
 			         << "  \"n_scatter_total_definition\": \"all trajectory scatters, including scatters before first capture\",\n"
 			         << "  \"stop_conditions\": {\"max_free_steps\": " << maximum_free_time_steps
 			         << ", \"max_scatterings\": " << maximum_number_of_scatterings << "},\n"
@@ -2879,9 +2811,9 @@ void Simulation_Data::Print_Summary(unsigned int mpi_rank)
 				  << "Reflected particles valid [%]:\t" << libphysica::Round(100.0 * Reflection_Ratio_Valid()) << std::endl
 				  << "Captured particles valid [%]:\t" << libphysica::Round(100.0 * Capture_Ratio_Valid()) << std::endl
 				  << "Captured count:\t\t\t" << number_of_captured_particles << std::endl
-				  << "Normal-mode MPI sync interval:\t" << normal_mode_mpi_sync_interval << std::endl
-				  << "MPI sync rounds:\t\t" << mpi_sync_rounds << std::endl
-				  << "Final MPI round trajectories:\t" << final_mpi_round_trajectories << std::endl
+				  << "MPI scheduler:\t\t\tdynamic RMA work queue" << std::endl
+				  << "MPI work claims:\t\t" << mpi_scheduler_work_claims << std::endl
+				  << "MPI peak in-flight tasks:\t" << mpi_scheduler_peak_in_flight << std::endl
 				  << "Capture target overshoot:\t" << capture_target_overshoot << std::endl
 				  << "Total # of scatterings:\t" << total_number_of_scatterings << std::endl
 				  << "Numerical failure count:\t" << number_of_numerical_failures << std::endl

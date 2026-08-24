@@ -62,3 +62,6 @@ build/
 
 # Simulation output
 Output/
+
+__pycache__/
+*.py[cod]

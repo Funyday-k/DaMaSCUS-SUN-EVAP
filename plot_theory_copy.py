@@ -1608,7 +1608,7 @@ SD_SPIN_DB = {
 G = 6.67430e-11                 # m^3 kg^-1 s^-2
 M_earth = 5.972e24              # kg
 R_earth = 6.371e6               # m
-
+R_EARTH_CM = 6.371e8            # cm
 C_LIGHT_KM_S = 299792.458       # km/s
 M_U_GEV = 0.93149410242         # atomic mass unit in GeV
 M_U_G = 1.66053906660e-24       # atomic mass unit in g
@@ -2340,6 +2340,59 @@ def leggauss_cached(n):
         _GL_CACHE[n] = np.polynomial.legendre.leggauss(n)
     return _GL_CACHE[n]
 
+_SCATTER_GRID_CACHE = {}
+_HALO_GRID_CACHE = {}
+
+
+def scatter_grid_cached(n_scatter_mu, n_scatter_phi):
+    key = (int(n_scatter_mu), int(n_scatter_phi))
+    if key not in _SCATTER_GRID_CACHE:
+        mu_s_nodes, mu_s_weights = leggauss_cached(n_scatter_mu)
+        mu_s = mu_s_nodes[:, None]
+        sin_s = np.sqrt(np.maximum(0.0, 1.0 - mu_s**2))
+        phi_nodes = 2.0 * np.pi * (np.arange(n_scatter_phi) + 0.5) / n_scatter_phi
+        cosphi = np.cos(phi_nodes)[None, :]
+        _SCATTER_GRID_CACHE[key] = (
+            mu_s_nodes, mu_s_weights, mu_s, sin_s, cosphi
+        )
+    return _SCATTER_GRID_CACHE[key]
+
+
+def halo_grid_cached(u_max, n_u, v0, vesc_halo, u_grid_mode, u_min=1e-3):
+    u_min = max(float(u_min), 1e-6)
+
+    key = (
+        float(u_max),
+        int(n_u),
+        float(v0),
+        float(vesc_halo),
+        str(u_grid_mode),
+        u_min,
+    )
+
+    if key not in _HALO_GRID_CACHE:
+        if u_grid_mode == "linear":
+            u_grid = np.linspace(u_min, u_max, n_u)
+
+        elif u_grid_mode == "log":
+            u_grid = np.geomspace(u_min, u_max, n_u)
+
+        elif u_grid_mode == "hybrid":
+            n_low = max(10, n_u // 2)
+            u_split = min(50.0, 0.5 * u_max)
+            u_low = np.geomspace(u_min, u_split, n_low, endpoint=False)
+            n_high = max(2, n_u - len(u_low) + 1)
+            u_high = np.linspace(u_split, u_max, n_high)
+            u_grid = np.unique(np.concatenate([u_low, u_high]))
+
+        else:
+            raise ValueError("u_grid_mode must be 'linear', 'log', or 'hybrid'")
+
+        f_u = shm_speed_distribution(u_grid, v0=v0, vesc=vesc_halo)
+        _HALO_GRID_CACHE[key] = (u_grid, f_u)
+
+    return _HALO_GRID_CACHE[key]
+
 def sigma_capture_average_over_final_state(
     w_km_s,
     u_t_km_s,
@@ -2384,8 +2437,8 @@ def sigma_capture_average_over_final_state(
     """
     # Choose DM direction along +z
     sin_in = np.sqrt(max(0.0, 1.0 - mu_in**2))
-    w_vec = np.array([0.0, 0.0, w_km_s])
-    u_vec = np.array([u_t_km_s * sin_in, 0.0, u_t_km_s * mu_in])
+    w_vec = np.array([0.0, 0.0, w_km_s], dtype=float)
+    u_vec = np.array([u_t_km_s * sin_in, 0.0, u_t_km_s * mu_in], dtype=float)
 
     g_vec = w_vec - u_vec
     g_km_s = np.linalg.norm(g_vec)
@@ -2400,19 +2453,18 @@ def sigma_capture_average_over_final_state(
     V_vec = (m_chi * w_vec + m_t * u_vec) / Mtot
     V_km_s = np.linalg.norm(V_vec)
 
-    # Quadrature in cos(theta*)
-    mu_s_nodes, mu_s_weights = leggauss_cached(n_scatter_mu)
-
-    # Uniform phi* sampling
-    phi_nodes = 2.0 * np.pi * (np.arange(n_scatter_phi) + 0.5) / n_scatter_phi
-    cosphi = np.cos(phi_nodes)[None, :]
+    # Cached scattering-angle grids
+    mu_s_nodes, mu_s_weights, mu_s, sin_s, cosphi = scatter_grid_cached(
+        n_scatter_mu, n_scatter_phi
+    )
 
     # Momentum transfer:
     # q = mu_red * (g/c) * sqrt(2(1-cos theta*))
     q_vals = mu_red * (g_km_s / C_LIGHT_KM_S) * np.sqrt(
         2.0 * np.maximum(0.0, 1.0 - mu_s_nodes)
     )
-    sigma_vals = np.array([sigma_eval(g_km_s, q) for q in q_vals])
+
+    sigma_vals = np.array([sigma_eval(g_km_s, q) for q in q_vals], dtype=float)
 
     # If COM velocity is ~0, final speed is angle-independent
     if V_km_s < 1e-12:
@@ -2425,10 +2477,7 @@ def sigma_capture_average_over_final_state(
     cos_beta = np.clip(cos_beta, -1.0, 1.0)
     sin_beta = np.sqrt(max(0.0, 1.0 - cos_beta**2))
 
-    mu_s = mu_s_nodes[:, None]
-    sin_s = np.sqrt(np.maximum(0.0, 1.0 - mu_s**2))
-
-    # cos(psi) = cos(beta) cos(theta*) + sin(beta) sin(theta*) cos(phi*)
+    # cos(psi): angle between outgoing relative velocity and COM velocity
     cos_psi = cos_beta * mu_s + sin_beta * sin_s * cosphi
 
     # DM final speed squared in lab
@@ -2442,7 +2491,7 @@ def sigma_capture_average_over_final_state(
     cap_frac_vs_mu_s = np.mean(vprime2 <= vesc_km_s**2, axis=1)
 
     # Average over cos(theta*) with factor 1/2
-    return 0.5 * np.sum(mu_s_weights * sigma_vals * cap_frac_vs_mu_s) 
+    return 0.5 * np.sum(mu_s_weights * sigma_vals * cap_frac_vs_mu_s)
 
 def thermal_average_gsigma_capture(
     w_km_s,
@@ -2918,7 +2967,6 @@ def capture_rate_total(
     u_min=1e-3,
     u_grid_mode="log",
     shell_step=1
-
 ):
     """
     Total capture rate:
@@ -2934,37 +2982,25 @@ def capture_rate_total(
     """
     n_chi = rho_chi / DM_mass
 
-    # ------------------------------------------------------------
-    # Build halo-speed grid
-    # ------------------------------------------------------------
-    u_min = max(float(u_min), 1e-6)
-
-    if u_grid_mode == "linear":
-        u_grid = np.linspace(u_min, u_max, n_u)
-
-    elif u_grid_mode == "log":
-        u_grid = np.geomspace(u_min, u_max, n_u)
-
-    elif u_grid_mode == "hybrid":
-        n_low = max(10, n_u // 2)
-        u_split = min(50.0, 0.5 * u_max)
-
-        u_low = np.geomspace(u_min, u_split, n_low, endpoint=False)
-        n_high = max(2, n_u - len(u_low) + 1)
-        u_high = np.linspace(u_split, u_max, n_high)
-
-        u_grid = np.unique(np.concatenate([u_low, u_high]))
-
-    else:
-        raise ValueError("u_grid_mode must be 'linear', 'log', or 'hybrid'")
-
-    f_u = shm_speed_distribution(u_grid, v0=v0, vesc=vesc_halo)
+    # Reuse halo-speed grid and SHM weights when parameters are identical
+    u_grid, f_u = halo_grid_cached(
+        u_max=u_max,
+        n_u=n_u,
+        v0=v0,
+        vesc_halo=vesc_halo,
+        u_grid_mode=u_grid_mode,
+        u_min=u_min,
+    )
 
     total_C = 0.0
 
-    for i in range(0, len(earth_data["radius"]), shell_step):
-        dV = earth_data["shell_volume_cm3"][i]
-        vesc_loc = earth_data["v_esc_profile"][i]
+    shell_volumes = earth_data["shell_volume_cm3"]
+    vesc_profile = earth_data["v_esc_profile"]
+    n_shells = len(earth_data["radius"])
+
+    for i in range(0, n_shells, shell_step):
+        dV = shell_volumes[i]
+        vesc_loc = vesc_profile[i]
 
         integrand = np.zeros_like(u_grid)
 
@@ -8608,12 +8644,9 @@ def compute_one_mass_point_combined_constant_T0(task):
 
     print(f"[worker:combined-constant-T0] start m = {m:.4g} GeV", flush=True)
 
-    c_si_0 = capture_rate_total(
+    common_kwargs = dict(
         earth_data=earth_data,
         DM_mass=m,
-        sigma_SI_p=sigma_SI_p,
-        scattering_type="SI",
-        cross_section_type="constant",
         rho_chi=rho_chi,
         u_max=u_max,
         n_u=n_u,
@@ -8624,45 +8657,26 @@ def compute_one_mass_point_combined_constant_T0(task):
         n_scatter_mu=n_scatter_mu,
         n_scatter_phi=n_scatter_phi,
         shell_step=shell_step,
-        u_grid_mode=u_grid_mode
+        u_grid_mode=u_grid_mode,
+        cross_section_type="constant",
+    )
+
+    c_si_0 = capture_rate_total(
+        **common_kwargs,
+        sigma_SI_p=sigma_SI_p,
+        scattering_type="SI",
     )
 
     c_sd_0 = capture_rate_total(
-        earth_data=earth_data,
-        DM_mass=m,
+        **common_kwargs,
         sigma_SD_p=sigma_SD_p,
         scattering_type="SD",
-        cross_section_type="constant",
-        rho_chi=rho_chi,
-        u_max=u_max,
-        n_u=n_u,
-        v0=v0,
-        include_thermal_targets=False,
-        n_t_speed=n_t_speed,
-        n_t_mu=n_t_mu,
-        n_scatter_mu=n_scatter_mu,
-        n_scatter_phi=n_scatter_phi,
-        shell_step=shell_step,
-        u_grid_mode=u_grid_mode
     )
 
     c_e_0 = capture_rate_total(
-        earth_data=earth_data,
-        DM_mass=m,
+        **common_kwargs,
         sigma_electron=sigma_electron,
         scattering_type="electron",
-        cross_section_type="constant",
-        rho_chi=rho_chi,
-        u_max=u_max,
-        n_u=n_u,
-        v0=v0,
-        include_thermal_targets=False,
-        n_t_speed=n_t_speed,
-        n_t_mu=n_t_mu,
-        n_scatter_mu=n_scatter_mu,
-        n_scatter_phi=n_scatter_phi,
-        shell_step=shell_step,
-        u_grid_mode=u_grid_mode
     )
 
     c_geo = capture_rate_geometric(
@@ -8682,7 +8696,7 @@ def compute_one_mass_point_combined_constant_T0(task):
         "C_e_0": float(c_e_0),
         "C_geo": float(c_geo),
     }
-
+    
 
 def save_combined_constant_T0_results_to_csv(
     DM_masses,
@@ -9281,13 +9295,12 @@ def plot_combined_SI_verified_only_SD_electron_operator_grid_polished(
         "fig_pdf": fig_pdf,
         "log_path": log_path,
     }
-def compute_one_mass_point_combined_operator_grid(task):
+def compute_one_mass_point_combined_thermal_grid(task):
     """
     Worker for one mass point:
-        - SI: constant / v2 / q2, T = 0
-        - verified-only SD: constant / v2 / q2, T = 0
-        - electron: constant / v2 / q2, T = 0
-        - geometric reference
+        - SI / verified-only SD / electron
+        - operators: constant / v2 / q2
+        - compute both T!=0 and T=0
     """
     (
         earth_data,
@@ -9304,11 +9317,10 @@ def compute_one_mass_point_combined_operator_grid(task):
         n_scatter_mu,
         n_scatter_phi,
         shell_step,
-        u_grid_mode,
-        R_earth_cm
+        u_grid_mode
     ) = task
 
-    print(f"[worker:combined-operator-grid] start m = {m:.4g} GeV", flush=True)
+    print(f"[worker:combined-thermal-grid] start m = {m:.4g} GeV", flush=True)
 
     operator_map = {
         "constant": "constant",
@@ -9318,80 +9330,61 @@ def compute_one_mass_point_combined_operator_grid(task):
 
     out = {"m": float(m)}
 
-    for op_tag, cross_type in operator_map.items():
-        c_si = capture_rate_total(
-            earth_data=earth_data,
-            DM_mass=m,
-            sigma_SI_p=sigma_SI_p,
-            scattering_type="SI",
-            cross_section_type=cross_type,
-            rho_chi=rho_chi,
-            u_max=u_max,
-            n_u=n_u,
-            v0=v0,
-            include_thermal_targets=False,
-            n_t_speed=n_t_speed,
-            n_t_mu=n_t_mu,
-            n_scatter_mu=n_scatter_mu,
-            n_scatter_phi=n_scatter_phi,
-            shell_step=shell_step,
-            u_grid_mode=u_grid_mode
-        )
-
-        c_sd = capture_rate_total(
-            earth_data=earth_data,
-            DM_mass=m,
-            sigma_SD_p=sigma_SD_p,
-            scattering_type="SD",
-            cross_section_type=cross_type,
-            rho_chi=rho_chi,
-            u_max=u_max,
-            n_u=n_u,
-            v0=v0,
-            include_thermal_targets=False,
-            n_t_speed=n_t_speed,
-            n_t_mu=n_t_mu,
-            n_scatter_mu=n_scatter_mu,
-            n_scatter_phi=n_scatter_phi,
-            shell_step=shell_step,
-            u_grid_mode=u_grid_mode
-        )
-
-        c_e = capture_rate_total(
-            earth_data=earth_data,
-            DM_mass=m,
-            sigma_electron=sigma_electron,
-            scattering_type="electron",
-            cross_section_type=cross_type,
-            rho_chi=rho_chi,
-            u_max=u_max,
-            n_u=n_u,
-            v0=v0,
-            include_thermal_targets=False,
-            n_t_speed=n_t_speed,
-            n_t_mu=n_t_mu,
-            n_scatter_mu=n_scatter_mu,
-            n_scatter_phi=n_scatter_phi,
-            shell_step=shell_step,
-            u_grid_mode=u_grid_mode
-        )
-
-        out[f"C_SI_{op_tag}"] = float(c_si)
-        out[f"C_SD_{op_tag}"] = float(c_sd)
-        out[f"C_e_{op_tag}"] = float(c_e)
-
-    c_geo = capture_rate_geometric(
+    common_kwargs = dict(
+        earth_data=earth_data,
         DM_mass=m,
-        R_earth_cm=R_earth_cm,
         rho_chi=rho_chi,
+        u_max=u_max,
+        n_u=n_u,
         v0=v0,
-        vesc_surface=11.2
+        n_t_speed=n_t_speed,
+        n_t_mu=n_t_mu,
+        n_scatter_mu=n_scatter_mu,
+        n_scatter_phi=n_scatter_phi,
+        shell_step=shell_step,
+        u_grid_mode=u_grid_mode,
     )
-    out["C_geo"] = float(c_geo)
 
-    print(f"[worker:combined-operator-grid] done  m = {m:.4g} GeV", flush=True)
+    def run_capture(scattering_type, cross_type, include_thermal_targets):
+        kwargs = dict(
+            common_kwargs,
+            scattering_type=scattering_type,
+            cross_section_type=cross_type,
+            include_thermal_targets=include_thermal_targets,
+        )
+
+        if scattering_type == "SI":
+            kwargs["sigma_SI_p"] = sigma_SI_p
+        elif scattering_type == "SD":
+            kwargs["sigma_SD_p"] = sigma_SD_p
+        elif scattering_type == "electron":
+            kwargs["sigma_electron"] = sigma_electron
+        else:
+            raise ValueError(f"Unknown scattering_type: {scattering_type}")
+
+        return float(capture_rate_total(**kwargs))
+
+    channels = [
+        ("SI", "SI"),
+        ("SD", "SD"),
+        ("e", "electron"),
+    ]
+
+    for op_tag, cross_type in operator_map.items():
+        for out_tag, scattering_type in channels:
+            out[f"C_{out_tag}_{op_tag}_T"] = run_capture(
+                scattering_type=scattering_type,
+                cross_type=cross_type,
+                include_thermal_targets=True
+            )
+            out[f"C_{out_tag}_{op_tag}_0"] = run_capture(
+                scattering_type=scattering_type,
+                cross_type=cross_type,
+                include_thermal_targets=False
+            )
+
+    print(f"[worker:combined-thermal-grid] done  m = {m:.4g} GeV", flush=True)
     return out
-
 
 def save_combined_operator_grid_results_to_csv(
     data,
@@ -9549,6 +9542,19 @@ def _set_ratio_panel_ylim(ax, arrays, top_row=False):
 
     ax.set_ylim(y_min, y_max)
 
+_WORKER_EARTH_DATA = None
+
+
+def _init_worker_earth_data(earth_data):
+    global _WORKER_EARTH_DATA
+    _WORKER_EARTH_DATA = earth_data
+
+
+def _run_one_mass_combined_thermal_grid(task):
+    return compute_one_mass_point_combined_thermal_grid((
+        _WORKER_EARTH_DATA,
+        *task
+    ))
 
 def compute_one_mass_point_combined_thermal_grid(task):
     """
@@ -9750,7 +9756,6 @@ def plot_combined_SI_verified_only_SD_electron_thermal_grid(
     tasks = []
     for m in DM_masses:
         tasks.append((
-            earth_data,
             float(m),
             sigma_SI_p,
             sigma_SD_p,
@@ -9766,11 +9771,14 @@ def plot_combined_SI_verified_only_SD_electron_thermal_grid(
             shell_step,
             u_grid_mode
         ))
-
     results = []
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+    with ProcessPoolExecutor(
+        max_workers=max_workers,
+        initializer=_init_worker_earth_data,
+        initargs=(earth_data,),
+    ) as executor:
         futures = [
-            executor.submit(compute_one_mass_point_combined_thermal_grid, task)
+            executor.submit(_run_one_mass_combined_thermal_grid, task)
             for task in tasks
         ]
         for i, fut in enumerate(as_completed(futures), 1):
@@ -11278,4 +11286,4 @@ if __name__ == "__main__":
 
     print("\nCombined SI / verified-only SD / electron thermal grid production run finished.")
 
-#load_earth_composition
+#compute_one_mass_point_combined_thermal_grid

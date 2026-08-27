@@ -44,6 +44,7 @@ add_library(lib_damascus_sun STATIC
 	Simulation_Trajectory.cpp
 	Simulation_Utilities.cpp
 	Celestial_Model.cpp
+	Radial_Binning.cpp
 	Earth_Model.cpp
 	Solar_Model.cpp )
 

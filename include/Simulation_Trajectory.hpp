@@ -16,6 +16,7 @@
 
 #include "Simulation_Utilities.hpp"
 #include "Celestial_Model.hpp"
+#include "Radial_Binning.hpp"
 
 extern std::string g_top_level_dir;  // 从config文件读取的输出目录
 
@@ -67,10 +68,19 @@ struct BincountContribution
 // Conservatively project one accepted trajectory interval onto the radial
 // histogram. The trajectory dynamics are not re-integrated or otherwise
 // changed; this only supplies dense-output quadrature for bincount.
+// Legacy wrapper: uses the historical Sun-sized radial grid.
 void Compute_Bincount_Interval_Contributions(
-	const Event& before,
-	const Event& after,
-	std::vector<BincountContribution>& contributions);
+        const Event& before,
+        const Event& after,
+        std::vector<BincountContribution>& contributions);
+
+// Runtime-grid overload. The grid defines every radial edge used by the
+// dense-output residence-time deposition.
+void Compute_Bincount_Interval_Contributions(
+        const Event& before,
+        const Event& after,
+        const Bincount_Radial_Grid& radial_grid,
+        std::vector<BincountContribution>& contributions);
 
 // The fixed histogram is uniform through 1.1 R_sun. Exterior shell widths
 // grow geometrically from 0.001 R_sun and are capped at 10 R_sun through the
@@ -103,7 +113,17 @@ struct BoundKeplerExteriorArc
 // domain return to the matching surface; larger orbits terminate at its outward crossing.
 // The returned histogram is a round trip in the first case and a one-way
 // residence contribution in the second.
-bool Compute_Bound_Kepler_Exterior_Arc(const Event& outward_event, BoundKeplerExteriorArc& arc);
+// Legacy wrapper: uses the historical Sun-sized radial grid.
+bool Compute_Bound_Kepler_Exterior_Arc(
+        const Event& outward_event,
+        BoundKeplerExteriorArc& arc);
+
+// Runtime-grid overload. The grid supplies exterior shell edges and the
+// outer residence-domain cutoff.
+bool Compute_Bound_Kepler_Exterior_Arc(
+        const Event& outward_event,
+        const Bincount_Radial_Grid& radial_grid,
+        BoundKeplerExteriorArc& arc);
 
 enum class TrajectoryTerminationReason
 {

@@ -14,6 +14,7 @@
 #include "obscura/DM_Particle_Standard.hpp"
 
 #include "Simulation_Trajectory.hpp"
+#include "Solar_Model.hpp"
 #include "Simulation_Utilities.hpp"
 
 using namespace DaMaSCUS_SUN;
@@ -56,6 +57,54 @@ double SumBins(const std::array<double, NUM_BINS>& values)
 		sum += value;
 	return sum;
 }
+}
+
+
+TEST(TestSimulationTrajectory, RuntimeRadialGridUsesEarthScaleForBincount)
+{
+        constexpr double R_EARTH_KM = 6371.0;
+
+        Bincount_Radial_Grid earth_grid(R_EARTH_KM);
+
+        // 500.5 inner-bin widths corresponds to 0.5005 R_earth. It lies
+        // strictly inside Earth bin 500, avoiding any bin-edge ambiguity.
+        const double radius =
+            500.5 * earth_grid.Inner_Bin_Width_Km() * km;
+
+        const Event before(
+            0.0,
+            libphysica::Vector({radius, 0.0, 0.0}),
+            libphysica::Vector({0.0, 0.0, 0.0}));
+
+        const Event after(
+            1.0 * sec,
+            libphysica::Vector({radius, 0.0, 0.0}),
+            libphysica::Vector({0.0, 0.0, 0.0}));
+
+        std::vector<BincountContribution> earth_contributions;
+        Compute_Bincount_Interval_Contributions(
+            before,
+            after,
+            earth_grid,
+            earth_contributions);
+
+        ASSERT_EQ(1u, earth_contributions.size());
+        EXPECT_EQ(500, earth_contributions.front().bin);
+        EXPECT_DOUBLE_EQ(1.0, earth_contributions.front().dt_sec);
+        EXPECT_DOUBLE_EQ(
+            0.0,
+            earth_contributions.front().v2dt_km2_per_sec);
+
+        // The legacy no-grid overload remains Sun-scaled for compatibility.
+        std::vector<BincountContribution> legacy_contributions;
+        Compute_Bincount_Interval_Contributions(
+            before,
+            after,
+            legacy_contributions);
+
+        ASSERT_EQ(1u, legacy_contributions.size());
+        EXPECT_EQ(4, legacy_contributions.front().bin);
+        EXPECT_DOUBLE_EQ(1.0, legacy_contributions.front().dt_sec);
 }
 
 TEST(TestSimulationTrajectory, SnapshotProgressPublicationHasStepAndWallClockBounds)

@@ -751,8 +751,10 @@ class HermiteBincountDepositor
 	HermiteBincountDepositor(
 		const Event& before,
 		const Event& after,
-		std::vector<BincountContribution>& contributions)
+            const Bincount_Radial_Grid& radial_grid,
+            std::vector<BincountContribution>& contributions)
 	: dt_sec_(In_Units(after.time - before.time, sec)),
+	  radial_grid_(radial_grid),
 	  contributions_(contributions)
 	{
 		for(std::size_t component = 0; component < 3; component++)
@@ -816,7 +818,8 @@ class HermiteBincountDepositor
 	Cartesian3 velocity_constant_km_s_{};
 	Cartesian3 velocity_linear_km_s_{};
 	Cartesian3 velocity_quadratic_km_s_{};
-	std::vector<BincountContribution>& contributions_;
+        const Bincount_Radial_Grid& radial_grid_;
+        std::vector<BincountContribution>& contributions_;
 
 	Cartesian3 Position(double fraction) const
 	{
@@ -884,8 +887,11 @@ class HermiteBincountDepositor
 
 	void Append_Contribution(int bin, double start, double end)
 	{
-		if(bin < 0 || bin >= NUM_BINS || !(end > start))
-			return;
+		if(bin < 0
+                   || bin >= static_cast<int>(
+                       radial_grid_.Inner_Bin_Count())
+                   || !(end > start))
+                        return;
 		BincountContribution contribution;
 		contribution.bin = bin;
 		contribution.dt_sec = dt_sec_ * (end - start);
@@ -918,9 +924,10 @@ class HermiteBincountDepositor
 		    chord_start, Cartesian_Scale(chord_midpoint, chord_delta));
 		const double radius_midpoint = Cartesian_Norm(position_midpoint);
 		int bin = -1;
-		if(std::isfinite(radius_midpoint)
-		   && radius_midpoint >= 0.0 && radius_midpoint < BIN_MAX_KM)
-			bin = static_cast<int>(radius_midpoint / BIN_WIDTH_KM);
+                if(std::isfinite(radius_midpoint)
+                   && radius_midpoint >= 0.0
+                   && radius_midpoint < radial_grid_.Inner_Extent_Km())
+                        bin = radial_grid_.Bin_Index_Km(radius_midpoint);
 		const double dense_piece_start =
 		    dense_start + (dense_end - dense_start) * chord_piece_start;
 		const double dense_piece_end =
@@ -978,9 +985,9 @@ class HermiteBincountDepositor
 		const double radius_min = std::min(radius_start, radius_end);
 		const double radius_max = std::max(radius_start, radius_end);
 		const int first_boundary = std::max(
-		    1, static_cast<int>(floor(radius_min / BIN_WIDTH_KM)) + 1);
+		    1, static_cast<int>(floor(radius_min / radial_grid_.Inner_Bin_Width_Km())) + 1);
 		const int last_boundary = std::min(
-		    NUM_BINS, static_cast<int>(floor(radius_max / BIN_WIDTH_KM)));
+		    static_cast<int>(radial_grid_.Inner_Bin_Count()), static_cast<int>(floor(radius_max / radial_grid_.Inner_Bin_Width_Km())));
 		const double quadratic_a = Cartesian_Dot(chord_delta, chord_delta);
 		const double quadratic_b = 2.0 * Cartesian_Dot(chord_start, chord_delta);
 		const int boundary_step = (radius_end >= radius_start) ? 1 : -1;
@@ -993,9 +1000,9 @@ class HermiteBincountDepositor
 		while((boundary_step > 0 && boundary <= boundary_end)
 		      || (boundary_step < 0 && boundary >= boundary_end))
 		{
-			const double target_radius = static_cast<double>(boundary) * BIN_WIDTH_KM;
-			if(target_radius > radius_min + 1.0e-10 * BIN_WIDTH_KM
-			   && target_radius < radius_max - 1.0e-10 * BIN_WIDTH_KM)
+			const double target_radius = static_cast<double>(boundary) * radial_grid_.Inner_Bin_Width_Km();
+			if(target_radius > radius_min + 1.0e-10 * radial_grid_.Inner_Bin_Width_Km()
+			   && target_radius < radius_max - 1.0e-10 * radial_grid_.Inner_Bin_Width_Km())
 			{
 				double root = 0.0;
 				if(Chord_Boundary_Root(
@@ -1040,8 +1047,8 @@ class HermiteBincountDepositor
 		if(chord_length_sqr <= 0.0)
 		{
 			const double radius = Cartesian_Norm(chord_start);
-			const int bin = (std::isfinite(radius) && radius >= 0.0 && radius < BIN_MAX_KM)
-			              ? static_cast<int>(radius / BIN_WIDTH_KM)
+			const int bin = (std::isfinite(radius) && radius >= 0.0 && radius < radial_grid_.Inner_Extent_Km())
+			              ? static_cast<int>(radius / radial_grid_.Inner_Bin_Width_Km())
 			              : -1;
 			Append_Contribution(bin, start, end);
 			return;
@@ -1114,14 +1121,14 @@ class HermiteBincountDepositor
 				    std::min(minimum_radial_projection, Cartesian_Dot(radial_direction, control));
 		}
 		const double margin =
-		    BINCOUNT_DENSE_POSITION_TOLERANCE_KM + 1.0e-10 * BIN_WIDTH_KM;
-		if(midpoint_radius >= BIN_MAX_KM)
+		    (2.0e-3 * radial_grid_.Inner_Bin_Width_Km()) + 1.0e-10 * radial_grid_.Inner_Bin_Width_Km();
+		if(midpoint_radius >= radial_grid_.Inner_Extent_Km())
 			return midpoint_radius > 0.0
-			    && minimum_radial_projection >= BIN_MAX_KM + margin;
+			    && minimum_radial_projection >= radial_grid_.Inner_Extent_Km() + margin;
 
-		const int bin = static_cast<int>(midpoint_radius / BIN_WIDTH_KM);
-		const double lower_radius = static_cast<double>(bin) * BIN_WIDTH_KM;
-		const double upper_radius = static_cast<double>(bin + 1) * BIN_WIDTH_KM;
+		const int bin = static_cast<int>(midpoint_radius / radial_grid_.Inner_Bin_Width_Km());
+		const double lower_radius = static_cast<double>(bin) * radial_grid_.Inner_Bin_Width_Km();
+		const double upper_radius = static_cast<double>(bin + 1) * radial_grid_.Inner_Bin_Width_Km();
 		if(maximum_control_radius >= upper_radius - margin)
 			return false;
 		if(lower_radius > 0.0
@@ -1138,7 +1145,7 @@ class HermiteBincountDepositor
 			return;
 		const double linearity_error = Position_Linearity_Error(start, end);
 		if(std::isfinite(linearity_error)
-		   && linearity_error > BINCOUNT_DENSE_POSITION_TOLERANCE_KM
+		   && linearity_error > (2.0e-3 * radial_grid_.Inner_Bin_Width_Km())
 		   && depth < BINCOUNT_DENSE_MAX_RECURSION)
 		{
 			const double midpoint = 0.5 * (start + end);
@@ -1162,12 +1169,35 @@ bool Find_First_Outward_Hermite_Radius_Crossing(
 }
 
 void Compute_Bincount_Interval_Contributions(
-	const Event& before,
-	const Event& after,
-	std::vector<BincountContribution>& contributions)
+        const Event& before,
+        const Event& after,
+        std::vector<BincountContribution>& contributions)
 {
-	contributions.clear();
-	HermiteBincountDepositor(before, after, contributions).Deposit();
+        // Preserve the historical Sun-grid behavior for existing callers.
+        static const Bincount_Radial_Grid legacy_sun_grid(
+            R_SUN_KM,
+            RADIAL_DOMAIN_MAX_AU);
+
+        Compute_Bincount_Interval_Contributions(
+            before,
+            after,
+            legacy_sun_grid,
+            contributions);
+}
+
+void Compute_Bincount_Interval_Contributions(
+        const Event& before,
+        const Event& after,
+        const Bincount_Radial_Grid& radial_grid,
+        std::vector<BincountContribution>& contributions)
+{
+        contributions.clear();
+
+        HermiteBincountDepositor(
+            before,
+            after,
+            radial_grid,
+            contributions).Deposit();
 }
 
 double BincountBinLowerKm(std::size_t bin)

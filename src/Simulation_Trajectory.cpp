@@ -1223,8 +1223,24 @@ int BincountBinIndexKm(double radius_km)
 }
 
 bool Compute_Bound_Kepler_Exterior_Arc(
-	const Event& outward_event,
-	BoundKeplerExteriorArc& arc)
+        const Event& outward_event,
+        BoundKeplerExteriorArc& arc)
+{
+        // Preserve the historical Sun-grid behavior for existing callers.
+        static const Bincount_Radial_Grid legacy_sun_grid(
+            R_SUN_KM,
+            RADIAL_DOMAIN_MAX_AU);
+
+        return Compute_Bound_Kepler_Exterior_Arc(
+            outward_event,
+            legacy_sun_grid,
+            arc);
+}
+
+bool Compute_Bound_Kepler_Exterior_Arc(
+        const Event& outward_event,
+        const Bincount_Radial_Grid& radial_grid,
+        BoundKeplerExteriorArc& arc)
 {
 	Event inbound_event;
 	double return_time = 0.0;
@@ -1261,22 +1277,22 @@ bool Compute_Bound_Kepler_Exterior_Arc(
 	const double apoapsis_km = In_Units(apoapsis_radius, km);
 	if(!std::isfinite(apoapsis_km) || apoapsis_km < radius_km)
 		return false;
-	arc = BoundKeplerExteriorArc();
+	arc = BoundKeplerExteriorArc(radial_grid.Bin_Count());
 	arc.terminal_event = inbound_event;
 	arc.elapsed_time_sec = In_Units(return_time, sec);
 	arc.kepler_period_sec = 2.0 * M_PI / mean_motion_s_inv;
 	arc.apoapsis_km = apoapsis_km;
 	arc.outer_domain_removed =
-	    apoapsis_km > RADIAL_DOMAIN_MAX_KM * (1.0 + 1.0e-12);
+	    apoapsis_km > radial_grid.Domain_Max_Km() * (1.0 + 1.0e-12);
 	const double integration_limit_km =
-	    arc.outer_domain_removed ? RADIAL_DOMAIN_MAX_KM : apoapsis_km;
+	    arc.outer_domain_removed ? radial_grid.Domain_Max_Km() : apoapsis_km;
 	const double pass_factor = arc.outer_domain_removed ? 1.0 : 2.0;
 	if(arc.outer_domain_removed)
 	{
 		const double cos_e_start = Clamp_Cosine(
 		    (1.0 - radius_km / semi_major_axis_km) / eccentricity);
 		const double cos_e_terminal = Clamp_Cosine(
-		    (1.0 - RADIAL_DOMAIN_MAX_KM / semi_major_axis_km) / eccentricity);
+		    (1.0 - radial_grid.Domain_Max_Km() / semi_major_axis_km) / eccentricity);
 		const double e_start = acos(cos_e_start);
 		const double e_terminal = acos(cos_e_terminal);
 		const double sin_e_start =
@@ -1317,7 +1333,7 @@ bool Compute_Bound_Kepler_Exterior_Arc(
 		axis_y = axis_y / axis_y_norm;
 		axis_x = axis_y.Cross(axis_z).Normalized();
 
-		const double terminal_radius = RADIAL_DOMAIN_MAX_KM * km;
+		const double terminal_radius = radial_grid.Domain_Max_Km() * km;
 		const double cos_true_anomaly = Clamp_Cosine(
 		    (semi_latus_rectum / terminal_radius - 1.0)
 		    / eccentricity_natural);
@@ -1339,16 +1355,17 @@ bool Compute_Bound_Kepler_Exterior_Arc(
 			return false;
 	}
 
-	const int first_bin_index = BincountBinIndexKm(radius_km);
-	if(first_bin_index < NUM_BINS)
+	const int first_bin_index = radial_grid.Bin_Index_Km(radius_km);
+	if(first_bin_index
+           < static_cast<int>(radial_grid.Inner_Bin_Count()))
 		return false;
 	for(std::size_t bin = static_cast<std::size_t>(first_bin_index);
-	    bin < TOTAL_BINS; bin++)
+	    bin < radial_grid.Bin_Count(); bin++)
 	{
 		const double lower_radius_km =
-		    std::max(radius_km, BincountBinLowerKm(bin));
+		    std::max(radius_km, radial_grid.Bin_Lower_Km(bin));
 		const double upper_radius_km =
-		    std::min(integration_limit_km, BincountBinUpperKm(bin));
+		    std::min(integration_limit_km, radial_grid.Bin_Upper_Km(bin));
 		if(!(upper_radius_km > lower_radius_km))
 			break;
 
@@ -1379,6 +1396,8 @@ bool Compute_Bound_Kepler_Exterior_Arc(
 	return std::isfinite(arc.elapsed_time_sec) && arc.elapsed_time_sec > 0.0
 	    && std::isfinite(arc.kepler_period_sec) && arc.kepler_period_sec > 0.0;
 }
+
+
 
 const char* TrajectoryDiagnosticEventTypeKey(TrajectoryDiagnosticEventType type)
 {

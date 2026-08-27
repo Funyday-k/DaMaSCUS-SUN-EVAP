@@ -561,6 +561,95 @@ TEST(TestSimulationTrajectory, BoundKeplerExteriorArcUsesGeometricWidthGrid)
 	    std::accumulate(arc.v2dt_hist.begin(), arc.v2dt_hist.end(), 0.0),
 	    0.0);
 }
+TEST(TestSimulationTrajectory, BoundKeplerExteriorArcUsesRuntimeEarthRadialGrid)
+{
+        // Reuse a known-valid bound solar Kepler orbit. Only the histogram
+        // grid changes here: the runtime Earth grid must determine the
+        // shell layout and vector size.
+        const double semi_major_axis = 1.5 * rSun;
+        const double eccentricity = 1.0 / 3.0;
+        const double boundary_radius = TRAJECTORY_BOUNDARY_RSUN * rSun;
+        const double mu = G_Newton * mSun;
+        const double angular_momentum =
+            std::sqrt(mu * semi_major_axis * (1.0 - eccentricity * eccentricity));
+        const double tangential_speed = angular_momentum / boundary_radius;
+        const double total_speed =
+            std::sqrt(mu * (2.0 / boundary_radius - 1.0 / semi_major_axis));
+        const double radial_speed =
+            std::sqrt(total_speed * total_speed - tangential_speed * tangential_speed);
+
+        Event outward(
+            3.0 * sec,
+            libphysica::Vector({boundary_radius, 0.0, 0.0}),
+            libphysica::Vector({radial_speed, tangential_speed, 0.0}));
+
+		constexpr double earth_radius_km = 6371.0;
+
+        const Bincount_Radial_Grid earth_grid(
+            earth_radius_km,
+            RADIAL_DOMAIN_MAX_AU);
+
+        BoundKeplerExteriorArc earth_arc;
+        ASSERT_TRUE(Compute_Bound_Kepler_Exterior_Arc(
+            outward,
+            earth_grid,
+            earth_arc));
+
+        EXPECT_FALSE(earth_arc.outer_domain_removed);
+        EXPECT_EQ(earth_arc.dt_hist.size(), earth_grid.Bin_Count());
+        EXPECT_EQ(earth_arc.v2dt_hist.size(), earth_grid.Bin_Count());
+        EXPECT_NE(earth_arc.dt_hist.size(), TOTAL_BINS);
+
+        const double boundary_radius_km =
+            In_Units(boundary_radius, km);
+        const int first_bin_index =
+            earth_grid.Bin_Index_Km(boundary_radius_km);
+
+        ASSERT_GE(
+            first_bin_index,
+            static_cast<int>(earth_grid.Inner_Bin_Count()));
+        ASSERT_LT(
+            static_cast<std::size_t>(first_bin_index),
+            earth_grid.Bin_Count());
+
+        // This distinguishes the Earth-scaled grid from the legacy Sun grid.
+        EXPECT_NE(
+            first_bin_index,
+            BincountBinIndexKm(boundary_radius_km));
+
+        const std::size_t first_bin =
+            static_cast<std::size_t>(first_bin_index);
+
+        EXPECT_EQ(
+            std::accumulate(
+                earth_arc.dt_hist.begin(),
+                earth_arc.dt_hist.begin() + first_bin,
+                0.0),
+            0.0);
+
+        EXPECT_GT(earth_arc.dt_hist[first_bin], 0.0);
+        EXPECT_GT(
+            std::accumulate(
+                earth_arc.dt_hist.begin(),
+                earth_arc.dt_hist.end(),
+                0.0),
+            0.0);
+
+        EXPECT_NEAR(
+            std::accumulate(
+                earth_arc.dt_hist.begin(),
+                earth_arc.dt_hist.end(),
+                0.0),
+            earth_arc.elapsed_time_sec,
+            1.0e-10 * earth_arc.elapsed_time_sec);
+
+        EXPECT_GT(
+            std::accumulate(
+                earth_arc.v2dt_hist.begin(),
+                earth_arc.v2dt_hist.end(),
+                0.0),
+            0.0);
+}
 
 TEST(TestSimulationTrajectory, BoundKeplerExteriorArcFlagsApoapsisBeyondConfiguredCutoff)
 {

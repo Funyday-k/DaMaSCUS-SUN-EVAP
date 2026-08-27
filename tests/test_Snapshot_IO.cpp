@@ -292,8 +292,8 @@ TEST_F(SnapshotIOTest, SharedStatePublishesCurrentTrajectoryProgress)
 	SnapshotSharedState shared_state;
 	shared_state.Initialize(501, 4);
 	shared_state.BeginTrajectory(77, 100.0);
-	std::array<double, TOTAL_BINS> dt_hist{};
-	std::array<double, TOTAL_BINS> v2dt_hist{};
+	std::vector<double> dt_hist(TOTAL_BINS, 0.0);
+	std::vector<double> v2dt_hist(TOTAL_BINS, 0.0);
 	dt_hist[3] = 1.0;
 	v2dt_hist[3] = 4.0;
 	dt_hist[4] = 1.5;

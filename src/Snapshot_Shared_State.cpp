@@ -93,13 +93,18 @@ void SnapshotSharedState::MarkCurrentCaptured(bool captured)
 }
 
 void SnapshotSharedState::PublishCurrentTrajectoryProgress(
-	const std::array<double, TOTAL_BINS>& dt_hist,
-	const std::array<double, TOTAL_BINS>& v2dt_hist,
-	double simulated_time_sec)
+    const std::vector<double>& dt_hist,
+    const std::vector<double>& v2dt_hist,
+    double simulated_time_sec)
 {
-	std::lock_guard<std::mutex> lock(mutex_);
-	if(!trajectory_in_progress_)
-		return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if(!trajectory_in_progress_)
+        return;
+
+    // Snapshot binary storage is still the legacy fixed-size format.
+    // Do not truncate a future runtime-sized Earth histogram.
+    if(dt_hist.size() != TOTAL_BINS || v2dt_hist.size() != TOTAL_BINS)
+        return;
 	if(std::isfinite(simulated_time_sec))
 		current_trajectory_simulated_elapsed_sec_ =
 			std::max(0.0, simulated_time_sec - current_trajectory_simulation_start_sec_);
@@ -135,10 +140,12 @@ void SnapshotSharedState::RecordCompletedTrajectory(
 	// failure from being admitted accidentally. Physical/computational
 	// censoring, including the radial-domain removal, retains its accepted path.
 	if(count_as_residence_sample
-	   && bincount.is_captured
-	   && !TrajectoryTerminationInvalidatesResidenceBincount(
-	       bincount.termination_reason))
-	{
+       && bincount.is_captured
+       && !TrajectoryTerminationInvalidatesResidenceBincount(
+           bincount.termination_reason)
+       && bincount.dt_hist.size() == TOTAL_BINS
+       && bincount.v2dt_hist.size() == TOTAL_BINS)
+    {
 		bincount_captured_samples_++;
 		for(std::size_t bin = 0; bin < TOTAL_BINS; bin++)
 		{
@@ -260,9 +267,9 @@ void SnapshotRecorder::UpdateCurrentSimulationTime(double simulated_time_sec)
 }
 
 void SnapshotRecorder::PublishCurrentTrajectoryProgress(
-	const std::array<double, TOTAL_BINS>& dt_hist,
-	const std::array<double, TOTAL_BINS>& v2dt_hist,
-	double simulated_time_sec)
+    const std::vector<double>& dt_hist,
+    const std::vector<double>& v2dt_hist,
+    double simulated_time_sec)
 {
 	state_.PublishCurrentTrajectoryProgress(dt_hist, v2dt_hist, simulated_time_sec);
 }

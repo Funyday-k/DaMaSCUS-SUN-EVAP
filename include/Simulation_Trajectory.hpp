@@ -82,13 +82,20 @@ int BincountBinIndexKm(double radius_km);
 
 struct BoundKeplerExteriorArc
 {
-	Event terminal_event;
-	double elapsed_time_sec = 0.0;
-	double kepler_period_sec = 0.0;
-	double apoapsis_km = 0.0;
-	bool outer_domain_removed = false;
-	std::array<double, TOTAL_BINS> dt_hist{};
-	std::array<double, TOTAL_BINS> v2dt_hist{};
+    explicit BoundKeplerExteriorArc(
+        std::size_t radial_bin_count = TOTAL_BINS)
+    : dt_hist(radial_bin_count, 0.0),
+      v2dt_hist(radial_bin_count, 0.0)
+    {
+    }
+
+    Event terminal_event;
+    double elapsed_time_sec = 0.0;
+    double kepler_period_sec = 0.0;
+    double apoapsis_km = 0.0;
+    bool outer_domain_removed = false;
+    std::vector<double> dt_hist;
+    std::vector<double> v2dt_hist;
 };
 
 // Analytically propagate a negative-specific-energy outward crossing from the
@@ -203,8 +210,15 @@ bool Find_First_Outward_Hermite_Radius_Crossing(
 // Per-trajectory bincount result
 struct TrajectoryBincount
 {
-	std::array<double, TOTAL_BINS> dt_hist{};     // Σ Δt per radial bin
-	std::array<double, TOTAL_BINS> v2dt_hist{};   // Σ v²·Δt per radial bin
+    explicit TrajectoryBincount(
+        std::size_t radial_bin_count = TOTAL_BINS)
+    : dt_hist(radial_bin_count, 0.0),
+      v2dt_hist(radial_bin_count, 0.0)
+    {
+    }
+
+    std::vector<double> dt_hist;     // Σ Δt per radial bin
+    std::vector<double> v2dt_hist;   // Σ v²·Δt per radial bin
 
 	// Capture/evaporation info
 	bool is_captured = false;

@@ -29,9 +29,9 @@ class SnapshotSharedState
 	// keeps the identical per-trajectory accumulation, so publishing it at a
 	// coarse cadence costs one lock per publish rather than one lock per step.
 	void PublishCurrentTrajectoryProgress(
-		const std::array<double, TOTAL_BINS>& dt_hist,
-		const std::array<double, TOTAL_BINS>& v2dt_hist,
-		double simulated_time_sec);
+	        const std::vector<double>& dt_hist,
+	        const std::vector<double>& v2dt_hist,
+	        double simulated_time_sec);
 
 	void RecordCompletedTrajectory(
 		const TrajectoryBincount& bincount,
@@ -95,9 +95,9 @@ class SnapshotRecorder
 		double simulated_time_sec);
 	void UpdateCurrentSimulationTime(double simulated_time_sec);
 	void PublishCurrentTrajectoryProgress(
-		const std::array<double, TOTAL_BINS>& dt_hist,
-		const std::array<double, TOTAL_BINS>& v2dt_hist,
-		double simulated_time_sec);
+	        const std::vector<double>& dt_hist,
+	        const std::vector<double>& v2dt_hist,
+	        double simulated_time_sec);
 	void UpdateCurrentScatterings(uint64_t scatterings);
 	void MarkCurrentCaptured(bool captured);
 

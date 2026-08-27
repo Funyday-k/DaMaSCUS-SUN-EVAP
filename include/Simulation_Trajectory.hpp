@@ -338,6 +338,7 @@ class Trajectory_Simulator
 {
   private:
 	Celestial_Model* celestial_model;
+	Bincount_Radial_Grid bincount_radial_grid;
 	double v_max = 0.75;
 
 	// Per-trajectory bincount accumulation
@@ -399,7 +400,21 @@ class Trajectory_Simulator
 	unsigned int current_mpi_rank;
 	unsigned long int current_trajectory_id;
 
-	Trajectory_Simulator(Celestial_Model& model, unsigned long int max_time_steps = DEFAULT_MAXIMUM_FREE_TIME_STEPS, unsigned long int max_scatterings = DEFAULT_MAXIMUM_SCATTERINGS, double max_distance = TRAJECTORY_BOUNDARY_RSUN * g_body_radius);
+        // Legacy constructor: preserves the historical Sun-sized bincount grid.
+        Trajectory_Simulator(
+            Celestial_Model& model,
+            unsigned long int max_time_steps = DEFAULT_MAXIMUM_FREE_TIME_STEPS,
+            unsigned long int max_scatterings = DEFAULT_MAXIMUM_SCATTERINGS,
+            double max_distance = TRAJECTORY_BOUNDARY_RSUN * g_body_radius);
+
+        // Runtime-grid constructor: uses one grid consistently for Hermite
+        // deposition, Kepler exterior arcs, and trajectory bincount storage.
+        Trajectory_Simulator(
+            Celestial_Model& model,
+            const Bincount_Radial_Grid& radial_grid,
+            unsigned long int max_time_steps,
+            unsigned long int max_scatterings,
+            double max_distance);
 
 	void Fix_PRNG_Seed(unsigned int fixed_seed);
 	void Restore_PRNG_State(const std::string& serialized_state);

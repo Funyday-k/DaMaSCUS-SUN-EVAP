@@ -1567,8 +1567,29 @@ void Trajectory_Result::Print_Summary(Celestial_Model& solar_model, unsigned int
 }
 
 // 2. Simulator
-Trajectory_Simulator::Trajectory_Simulator(Celestial_Model& model, unsigned long int max_time_steps, unsigned long int max_scatterings, double max_distance)
-: celestial_model(&model), has_previous_bincount_event(false),
+Trajectory_Simulator::Trajectory_Simulator(
+        Celestial_Model& model,
+        unsigned long int max_time_steps,
+        unsigned long int max_scatterings,
+        double max_distance)
+: Trajectory_Simulator(
+      model,
+      Bincount_Radial_Grid(R_SUN_KM, RADIAL_DOMAIN_MAX_AU),
+      max_time_steps,
+      max_scatterings,
+      max_distance)
+{
+}
+
+Trajectory_Simulator::Trajectory_Simulator(
+        Celestial_Model& model,
+        const Bincount_Radial_Grid& radial_grid,
+        unsigned long int max_time_steps,
+        unsigned long int max_scatterings,
+        double max_distance)
+: celestial_model(&model),
+  bincount_radial_grid(radial_grid),
+  has_previous_bincount_event(false),
   free_flight_reference_energy_eV(std::numeric_limits<double>::quiet_NaN()), current_ballistic_energy_drift_eV(0.0),
   current_physical_bound_state(false), terminate_on_capture(false), diagnostic_trace_enabled(false),
   diagnostic_event_index(0), diagnostic_scatter_index(0), diagnostic_step_index(0), last_scatter_target_index(-2),
@@ -1657,7 +1678,11 @@ void Trajectory_Simulator::Accumulate_Bincount_Interval(
 		return;
 	if(!current_bincount.is_captured)
 		return;
-	Compute_Bincount_Interval_Contributions(before, after, bincount_contribution_cache);
+	Compute_Bincount_Interval_Contributions(
+            before,
+            after,
+            bincount_radial_grid,
+            bincount_contribution_cache);
 	for(const BincountContribution& contribution : bincount_contribution_cache)
 	{
 		if(contribution.bin < 0
@@ -2378,7 +2403,10 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 					return TrajectoryTerminationReason::NumericalFailure;
 
 				BoundKeplerExteriorArc kepler_arc;
-				if(Compute_Bound_Kepler_Exterior_Arc(boundary_event, kepler_arc))
+				if(Compute_Bound_Kepler_Exterior_Arc(
+                                       boundary_event,
+                                       bincount_radial_grid,
+                                       kepler_arc))
 				{
 					time_steps++;
 					optical_depth_retries = 0;
@@ -2649,7 +2677,8 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
 	long unsigned int number_of_scatterings = 0;
 
 	// Initialize per-trajectory bincount
-	current_bincount = TrajectoryBincount();
+	current_bincount =
+            TrajectoryBincount(bincount_radial_grid.Bin_Count());
 	Reset_Bincount_Anchor(current_event);
 	previous_capture_energy_eV = Capture_Energy_eV(current_event.Radius(), current_event.Speed(), DM);
 	free_flight_reference_energy_eV = previous_capture_energy_eV;

@@ -108,10 +108,21 @@ struct SnapshotReportState
 	uint64_t numerical_failures = 0;
 	uint64_t snapshot_bincount_captured_samples = 0;
 	uint64_t in_progress_bincount_captured_samples = 0;
-	std::array<double, TOTAL_BINS> captured_dt_hist{};
-	std::array<double, TOTAL_BINS> captured_v2dt_hist{};
-	std::array<double, TOTAL_BINS> captured_dt_sq_hist{};
-	std::array<double, TOTAL_BINS> captured_v2dt_sq_hist{};
+
+	// Snapshot merges configure this from the first readable rank state.
+	explicit SnapshotReportState(
+			std::size_t radial_bin_count = 0)
+	: captured_dt_hist(radial_bin_count, 0.0),
+	  captured_v2dt_hist(radial_bin_count, 0.0),
+	  captured_dt_sq_hist(radial_bin_count, 0.0),
+	  captured_v2dt_sq_hist(radial_bin_count, 0.0)
+	{
+	}
+
+	std::vector<double> captured_dt_hist;
+	std::vector<double> captured_v2dt_hist;
+	std::vector<double> captured_dt_sq_hist;
+	std::vector<double> captured_v2dt_sq_hist;
 	std::vector<SnapshotRankedEvaporationEntry> new_evaporation_events;
 	std::vector<RankProgress> rank_progress;
 };

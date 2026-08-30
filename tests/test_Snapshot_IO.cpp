@@ -325,6 +325,58 @@ TEST_F(SnapshotIOTest, BinaryRankStateRoundTripsRuntimeHistogramLength)
     ExpectStatesEqual(expected, actual);
 }
 
+TEST_F(SnapshotIOTest, MergesRuntimeHistogramLength)
+{
+    constexpr std::size_t runtime_bin_count = 7;
+    const uint64_t run_id = 0xE472U;
+    const double interval = 10.0;
+
+    SnapshotRankState state(runtime_bin_count);
+    state.run_id = run_id;
+    state.snapshot_index = 1;
+    state.rank = 0;
+    state.rank_elapsed_wall_sec = interval;
+    state.local_total = 1;
+    state.local_captured = 1;
+    state.local_classified = 1;
+    state.bincount_captured_samples = 1;
+
+    state.captured_dt_hist[6] = 3.5;
+    state.captured_v2dt_hist[6] = 14.0;
+    state.captured_dt_sq_hist[6] = 12.25;
+    state.captured_v2dt_sq_hist[6] = 196.0;
+
+    ASSERT_TRUE(WriteSnapshotRankState(
+        SnapshotRankCheckpointPath(
+            rank_snapshot_dir,
+            0,
+            1,
+            interval),
+        state));
+
+    const SnapshotMergeResult merged = TryWriteSnapshot(
+        snapshot_root,
+        rank_snapshot_dir,
+        1,
+        interval,
+        1,
+        run_id,
+        0.5,
+        1.0e-40,
+        false);
+
+    ASSERT_EQ(SnapshotMergeStatus::Merged, merged.status);
+
+    std::array<double, 4> histogram{};
+    ASSERT_TRUE(ReadHistogramBin(
+        SnapshotTextFilePath(snapshot_root, 1, interval),
+        6,
+        histogram));
+
+    EXPECT_DOUBLE_EQ(3.5, histogram[0]);
+    EXPECT_DOUBLE_EQ(14.0, histogram[1]);
+}
+
 TEST_F(SnapshotIOTest, SharedStateAcceptsRuntimeHistogramLength)
 {
     constexpr std::size_t runtime_bin_count = 7;

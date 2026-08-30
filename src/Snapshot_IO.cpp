@@ -392,6 +392,25 @@ const char* SnapshotRankActivityLabel(const SnapshotReportState::RankProgress& p
 
 void AccumulateSnapshotReportState(SnapshotReportState& report, const SnapshotRankState& state)
 {
+        const std::size_t radial_bin_count =
+            state.captured_dt_hist.size();
+
+        if(report.captured_dt_hist.empty())
+        {
+                report.captured_dt_hist.assign(radial_bin_count, 0.0);
+                report.captured_v2dt_hist.assign(radial_bin_count, 0.0);
+                report.captured_dt_sq_hist.assign(radial_bin_count, 0.0);
+                report.captured_v2dt_sq_hist.assign(radial_bin_count, 0.0);
+        }
+        else if(report.captured_dt_hist.size() != radial_bin_count
+                || report.captured_v2dt_hist.size() != radial_bin_count
+                || report.captured_dt_sq_hist.size() != radial_bin_count
+                || report.captured_v2dt_sq_hist.size() != radial_bin_count)
+        {
+                throw std::runtime_error(
+                    "snapshot merge report histogram bin counts differ between ranks");
+        }
+
 	SnapshotReportState::RankProgress progress;
 	progress.rank = state.rank;
 	progress.done = state.done;
@@ -433,7 +452,7 @@ void AccumulateSnapshotReportState(SnapshotReportState& report, const SnapshotRa
 		}
 	}
 
-	for(std::size_t bin = 0; bin < TOTAL_BINS; bin++)
+	for(std::size_t bin = 0; bin < radial_bin_count; bin++)
 	{
 		report.captured_dt_hist[bin] += state.captured_dt_hist[bin];
 		report.captured_v2dt_hist[bin] += state.captured_v2dt_hist[bin];
@@ -454,7 +473,7 @@ void AccumulateSnapshotReportState(SnapshotReportState& report, const SnapshotRa
 	{
 		report.snapshot_bincount_captured_samples++;
 		report.in_progress_bincount_captured_samples++;
-		for(std::size_t bin = 0; bin < TOTAL_BINS; bin++)
+		for(std::size_t bin = 0; bin < radial_bin_count; bin++)
 		{
 			const double dt =
 			    state.current_trajectory_dt_hist[bin];

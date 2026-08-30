@@ -377,6 +377,76 @@ TEST_F(SnapshotIOTest, MergesRuntimeHistogramLength)
     EXPECT_DOUBLE_EQ(14.0, histogram[1]);
 }
 
+TEST_F(SnapshotIOTest, SnapshotReportUsesRuntimeGridEdges)
+{
+    constexpr double earth_radius_km = 6371.0;
+    const Bincount_Radial_Grid earth_grid(earth_radius_km);
+    const uint64_t run_id = 0xE473U;
+    const double interval = 10.0;
+    const std::size_t bin = earth_grid.Inner_Bin_Count();
+
+    SnapshotRankState state(earth_grid.Bin_Count());
+    state.run_id = run_id;
+    state.snapshot_index = 1;
+    state.rank = 0;
+    state.rank_elapsed_wall_sec = interval;
+    state.local_total = 1;
+    state.local_captured = 1;
+    state.local_classified = 1;
+    state.bincount_captured_samples = 1;
+
+    state.captured_dt_hist[bin] = 2.0;
+    state.captured_v2dt_hist[bin] = 8.0;
+    state.captured_dt_sq_hist[bin] = 4.0;
+    state.captured_v2dt_sq_hist[bin] = 64.0;
+
+    ASSERT_TRUE(WriteSnapshotRankState(
+        SnapshotRankCheckpointPath(
+            rank_snapshot_dir,
+            0,
+            1,
+            interval),
+        state));
+
+    const SnapshotMergeResult merged = TryWriteSnapshot(
+        snapshot_root,
+        rank_snapshot_dir,
+        1,
+        interval,
+        1,
+        run_id,
+        0.5,
+        1.0e-40,
+        earth_grid,
+        false);
+
+    ASSERT_EQ(SnapshotMergeStatus::Merged, merged.status);
+
+    const std::string report =
+        ReadAll(SnapshotTextFilePath(snapshot_root, 1, interval));
+
+    EXPECT_NE(
+        std::string::npos,
+        report.find(
+            "# total_radial_bins = "
+            + std::to_string(earth_grid.Bin_Count())));
+    EXPECT_NE(
+        std::string::npos,
+        report.find(
+            "# bin_index  r_lower_Rbody  r_upper_Rbody"));
+    EXPECT_EQ(std::string::npos, report.find("r_lower_Rsun"));
+    EXPECT_EQ(std::string::npos, report.find("r_upper_Rsun"));
+
+    std::array<double, 4> histogram{};
+    ASSERT_TRUE(ReadHistogramBin(
+        SnapshotTextFilePath(snapshot_root, 1, interval),
+        static_cast<int>(bin),
+        histogram));
+
+    EXPECT_DOUBLE_EQ(2.0, histogram[0]);
+    EXPECT_DOUBLE_EQ(8.0, histogram[1]);
+}
+
 TEST_F(SnapshotIOTest, SharedStateAcceptsRuntimeHistogramLength)
 {
     constexpr std::size_t runtime_bin_count = 7;

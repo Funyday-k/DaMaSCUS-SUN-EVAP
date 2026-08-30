@@ -165,6 +165,20 @@ SnapshotMergeResult TryWriteSnapshot(
 	double sigma_cm2,
 	bool allow_partial);
 
+// Runtime-grid overload: report bin edges and metadata are
+// derived from radial_grid rather than the historical Sun grid.
+SnapshotMergeResult TryWriteSnapshot(
+	const std::string& snapshot_root,
+	const std::string& rank_snapshot_dir,
+	int snapshot_index,
+	double interval_seconds,
+	int mpi_processes,
+	uint64_t run_id,
+	double mass_gev,
+	double sigma_cm2,
+	const Bincount_Radial_Grid& radial_grid,
+	bool allow_partial);
+
 SnapshotMergeResult TryWriteSnapshotCached(
 	const std::string& snapshot_root,
 	const std::string& rank_snapshot_dir,
@@ -175,6 +189,21 @@ SnapshotMergeResult TryWriteSnapshotCached(
 	double mass_gev,
 	double sigma_cm2,
 	SnapshotMergeCache& cache,
+	bool allow_partial);
+
+// Runtime-grid overload used by explicit callers and later
+// by SnapshotHeartbeat.
+SnapshotMergeResult TryWriteSnapshotCached(
+	const std::string& snapshot_root,
+	const std::string& rank_snapshot_dir,
+	int snapshot_index,
+	double interval_seconds,
+	int mpi_processes,
+	uint64_t run_id,
+	double mass_gev,
+	double sigma_cm2,
+	SnapshotMergeCache& cache,
+	const Bincount_Radial_Grid& radial_grid,
 	bool allow_partial);
 
 bool WriteMissedSnapshotMarker(

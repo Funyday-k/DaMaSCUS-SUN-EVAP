@@ -650,9 +650,21 @@ bool WriteSnapshotReportFile(
 	uint64_t run_id,
 	double mass_gev,
 	double sigma_cm2,
+	const Bincount_Radial_Grid& radial_grid,
 	const SnapshotReportState& report,
 	const SnapshotMergeResult& merge_result)
 {
+	const std::size_t radial_bin_count =
+		report.captured_dt_hist.size();
+
+	if(radial_bin_count == 0
+	   || report.captured_v2dt_hist.size() != radial_bin_count
+	   || report.captured_dt_sq_hist.size() != radial_bin_count
+	   || report.captured_v2dt_sq_hist.size() != radial_bin_count
+	   || radial_grid.Bin_Count() != radial_bin_count)
+		return false;
+
+
 	if(merge_result.status != SnapshotMergeStatus::Merged
 	   && SnapshotTextFileIsMerged(SnapshotTextFilePath(snapshot_root, snapshot_index, interval_seconds), run_id))
 		return true;
@@ -698,16 +710,31 @@ bool WriteSnapshotReportFile(
 		    static_cast<double>(report.snapshot_bincount_captured_samples);
 		file << "#\n";
 		file << "# [Bincount histogram]\n";
-		file << "# base_grid_bins = " << NUM_BINS << "\n";
-		file << "# exterior_bins = " << EXTERIOR_BINS << "\n";
-		file << "# total_radial_bins = " << TOTAL_BINS << "\n";
-		file << "# radial_bin_width_Rsun = " << std::scientific << std::setprecision(10)
-		     << BIN_WIDTH_KM / R_SUN_KM << "\n";
+		file << "# body_radius_km = "
+		     << std::scientific << std::setprecision(10)
+		     << radial_grid.Body_Radius_Km() << "\n";
+		file << "# inner_grid_bins = "
+		     << radial_grid.Inner_Bin_Count() << "\n";
+		file << "# total_radial_bins = "
+		     << radial_bin_count << "\n";
+		file << "# radial_inner_bin_width_Rbody = "
+		     << radial_grid.Inner_Bin_Width_Km()
+		            / radial_grid.Body_Radius_Km() << "\n";
+		file << "# radial_inner_extent_Rbody = "
+		     << radial_grid.Inner_Extent_Km()
+		            / radial_grid.Body_Radius_Km() << "\n";
 		file << "# exterior_grid = geometric_width_capped\n";
-		file << "# exterior_bin_growth_factor = " << EXTERIOR_BIN_GROWTH_FACTOR << "\n";
-		file << "# exterior_max_bin_width_Rsun = " << EXTERIOR_MAX_BIN_WIDTH_RSUN << "\n";
-		file << "# radial_domain_max_AU = " << RADIAL_DOMAIN_MAX_AU << "\n";
-		file << "# radial_extent_Rsun = " << RADIAL_DOMAIN_MAX_RSUN << "\n";
+		file << "# exterior_bin_growth_factor = "
+		     << radial_grid.Exterior_Growth_Factor() << "\n";
+		file << "# exterior_max_bin_width_Rbody = "
+		     << radial_grid.Exterior_Max_Bin_Width_Km()
+		            / radial_grid.Body_Radius_Km() << "\n";
+		file << "# radial_domain_max_AU = "
+		     << radial_grid.Domain_Max_Km()
+		            / BINCOUNT_RADIAL_GRID_AU_KM << "\n";
+		file << "# radial_extent_Rbody = "
+		     << radial_grid.Domain_Max_Km()
+		            / radial_grid.Body_Radius_Km() << "\n";
 		file << "# in_progress_bincount_included = "
 		     << (report.in_progress_bincount_captured_samples > 0 ? 1 : 0)
 		     << "\n";
@@ -718,7 +745,7 @@ bool WriteSnapshotReportFile(
 		     << "\n";
 		file << "# residence_bincount_samples = "
 		     << report.snapshot_bincount_captured_samples << "\n";
-		file << "# bin_index  r_lower_Rsun  r_upper_Rsun  residence_dt[s]  residence_v2dt[km2/s]  residence_err_dt[s]  residence_err_v2dt[km2/s]\n";
+		file << "# bin_index  r_lower_Rbody  r_upper_Rbody  residence_dt[s]  residence_v2dt[km2/s]  residence_err_dt[s]  residence_err_v2dt[km2/s]\n";
 		for(std::size_t bin = 0; bin < report.captured_dt_hist.size(); bin++)
 		{
 			const double residence_err_dt =
@@ -727,8 +754,10 @@ bool WriteSnapshotReportFile(
 			    SnapshotBinError(report.captured_v2dt_hist[bin], report.captured_v2dt_sq_hist[bin], snapshot_residence_samples);
 
 			file << bin << "\t" << std::scientific << std::setprecision(10)
-			     << BincountBinLowerKm(bin) / R_SUN_KM << "\t"
-			     << BincountBinUpperKm(bin) / R_SUN_KM << "\t"
+			     << radial_grid.Bin_Lower_Km(bin)
+			     <<        / radial_grid.Body_Radius_Km() << "\\t"
+			     << radial_grid.Bin_Upper_Km(bin)
+			     <<        / radial_grid.Body_Radius_Km() << "\\t"
 			     << report.captured_dt_hist[bin] << "\t" << report.captured_v2dt_hist[bin]
 			     << "\t" << residence_err_dt << "\t" << residence_err_v2dt << "\n";
 		}
@@ -1042,6 +1071,35 @@ SnapshotMergeResult TryWriteSnapshot(
 	double sigma_cm2,
 	bool allow_partial)
 {
+	static const Bincount_Radial_Grid legacy_sun_grid(
+		R_SUN_KM,
+		RADIAL_DOMAIN_MAX_AU);
+
+	return TryWriteSnapshot(
+		snapshot_root,
+		rank_snapshot_dir,
+		snapshot_index,
+		interval_seconds,
+		mpi_processes,
+		run_id,
+		mass_gev,
+		sigma_cm2,
+		legacy_sun_grid,
+		allow_partial);
+}
+
+SnapshotMergeResult TryWriteSnapshot(
+	const std::string& snapshot_root,
+	const std::string& rank_snapshot_dir,
+	int snapshot_index,
+	double interval_seconds,
+	int mpi_processes,
+	uint64_t run_id,
+	double mass_gev,
+	double sigma_cm2,
+	const Bincount_Radial_Grid& radial_grid,
+	bool allow_partial)
+{
 	SnapshotMergeCache cache;
 	return TryWriteSnapshotCached(
 		snapshot_root,
@@ -1052,6 +1110,7 @@ SnapshotMergeResult TryWriteSnapshot(
 		run_id,
 		mass_gev,
 		sigma_cm2,
+		radial_grid,
 		cache,
 		allow_partial);
 }
@@ -1066,6 +1125,37 @@ SnapshotMergeResult TryWriteSnapshotCached(
 	double mass_gev,
 	double sigma_cm2,
 	SnapshotMergeCache& cache,
+	bool allow_partial)
+{
+	static const Bincount_Radial_Grid legacy_sun_grid(
+		R_SUN_KM,
+		RADIAL_DOMAIN_MAX_AU);
+
+	return TryWriteSnapshotCached(
+		snapshot_root,
+		rank_snapshot_dir,
+		snapshot_index,
+		interval_seconds,
+		mpi_processes,
+		run_id,
+		mass_gev,
+		sigma_cm2,
+		legacy_sun_grid,
+		cache,
+		allow_partial);
+}
+
+SnapshotMergeResult TryWriteSnapshotCached(
+	const std::string& snapshot_root,
+	const std::string& rank_snapshot_dir,
+	int snapshot_index,
+	double interval_seconds,
+	int mpi_processes,
+	uint64_t run_id,
+	double mass_gev,
+	double sigma_cm2,
+	SnapshotMergeCache& cache,
+	const Bincount_Radial_Grid& radial_grid,
 	bool allow_partial)
 {
 	SnapshotMergeResult merged_result;
@@ -1084,7 +1174,16 @@ SnapshotMergeResult TryWriteSnapshotCached(
 	if(result.status == SnapshotMergeStatus::Partial && !allow_partial)
 		return result;
 
-	if(!WriteSnapshotReportFile(snapshot_root, snapshot_index, interval_seconds, run_id, mass_gev, sigma_cm2, cache.report, result))
+	if(!WriteSnapshotReportFile(
+           snapshot_root,
+           snapshot_index,
+           interval_seconds,
+           run_id,
+           mass_gev,
+           sigma_cm2,
+           radial_grid,
+           cache.report,
+           result))
 	{
 		result.status = SnapshotMergeStatus::NoRanksReady;
 		return result;

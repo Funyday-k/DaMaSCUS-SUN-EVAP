@@ -15,7 +15,10 @@ namespace DaMaSCUS_SUN
 class SnapshotSharedState
 {
   public:
-	void Initialize(uint64_t run_id, int rank);
+        // Default construction preserves the historical Sun-sized snapshot
+        // histogram. Runtime-grid callers can provide a body-specific count.
+        explicit SnapshotSharedState(
+                std::size_t radial_bin_count = TOTAL_BINS);void Initialize(uint64_t run_id, int rank);
 	void BeginTrajectory(uint64_t trajectory_id, double initial_simulated_time_sec = 0.0);
 	void AddCurrentBincountInterval(
 		const std::vector<BincountContribution>& contributions,
@@ -67,8 +70,9 @@ class SnapshotSharedState
 	double current_trajectory_simulation_start_sec_ = 0.0;
 	double current_trajectory_simulated_elapsed_sec_ = 0.0;
 	uint64_t current_trajectory_scatterings_ = 0;
-	std::array<double, TOTAL_BINS> current_dt_hist_{};
-	std::array<double, TOTAL_BINS> current_v2dt_hist_{};
+	std::size_t radial_bin_count_;
+	std::vector<double> current_dt_hist_;
+	std::vector<double> current_v2dt_hist_;
 
 	uint64_t completed_trajectories_ = 0;
 	uint64_t captured_particles_ = 0;
@@ -76,10 +80,10 @@ class SnapshotSharedState
 	uint64_t numerical_failures_ = 0;
 	uint64_t bincount_captured_samples_ = 0;
 
-	std::array<double, TOTAL_BINS> captured_dt_hist_{};
-	std::array<double, TOTAL_BINS> captured_v2dt_hist_{};
-	std::array<double, TOTAL_BINS> captured_dt_sq_hist_{};
-	std::array<double, TOTAL_BINS> captured_v2dt_sq_hist_{};
+	std::vector<double> captured_dt_hist_;
+	std::vector<double> captured_v2dt_hist_;
+	std::vector<double> captured_dt_sq_hist_;
+	std::vector<double> captured_v2dt_sq_hist_;
 
 	std::vector<SnapshotEvaporationProgressEntry> evaporation_events_;
 };

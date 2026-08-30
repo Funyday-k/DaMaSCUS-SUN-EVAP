@@ -325,6 +325,70 @@ TEST_F(SnapshotIOTest, BinaryRankStateRoundTripsRuntimeHistogramLength)
     ExpectStatesEqual(expected, actual);
 }
 
+TEST_F(SnapshotIOTest, SharedStateAcceptsRuntimeHistogramLength)
+{
+    constexpr std::size_t runtime_bin_count = 7;
+
+    SnapshotSharedState shared_state(runtime_bin_count);
+    shared_state.Initialize(701, 0);
+    shared_state.BeginTrajectory(91, 10.0);
+
+    std::vector<double> dt_hist(runtime_bin_count, 0.0);
+    std::vector<double> v2dt_hist(runtime_bin_count, 0.0);
+    dt_hist[6] = 2.5;
+    v2dt_hist[6] = 10.0;
+
+    shared_state.PublishCurrentTrajectoryProgress(
+        dt_hist,
+        v2dt_hist,
+        12.0);
+    shared_state.MarkCurrentCaptured(true);
+
+    std::size_t evaporation_end = 0;
+    const SnapshotRankState running =
+        shared_state.CopyForSnapshot(
+            1,
+            10.0,
+            10.0,
+            0,
+            evaporation_end);
+
+    ASSERT_EQ(
+        runtime_bin_count,
+        running.current_trajectory_dt_hist.size());
+    ASSERT_EQ(
+        runtime_bin_count,
+        running.current_trajectory_v2dt_hist.size());
+    EXPECT_DOUBLE_EQ(2.5, running.current_trajectory_dt_hist[6]);
+    EXPECT_DOUBLE_EQ(10.0, running.current_trajectory_v2dt_hist[6]);
+
+    TrajectoryBincount completed(runtime_bin_count);
+    completed.is_captured = true;
+    completed.termination_reason =
+        TrajectoryTerminationReason::OutwardEscape;
+    completed.dt_hist = dt_hist;
+    completed.v2dt_hist = v2dt_hist;
+
+    shared_state.RecordCompletedTrajectory(
+        completed,
+        true,
+        false,
+        {});
+
+    const SnapshotRankState final_state =
+        shared_state.CopyFinal(20.0, 0);
+
+    ASSERT_EQ(
+        runtime_bin_count,
+        final_state.captured_dt_hist.size());
+    ASSERT_EQ(
+        runtime_bin_count,
+        final_state.captured_v2dt_hist.size());
+    EXPECT_EQ(1U, final_state.bincount_captured_samples);
+    EXPECT_DOUBLE_EQ(2.5, final_state.captured_dt_hist[6]);
+    EXPECT_DOUBLE_EQ(10.0, final_state.captured_v2dt_hist[6]);
+}
+
 TEST_F(SnapshotIOTest, SharedStatePublishesCurrentTrajectoryProgress)
 {
 	SnapshotSharedState shared_state;

@@ -287,6 +287,44 @@ TEST_F(SnapshotIOTest, BinaryRankStateRoundTripsAndRejectsCorruption)
 	EXPECT_FALSE(ReadSnapshotRankState(path, run_id, actual));
 }
 
+TEST_F(SnapshotIOTest, BinaryRankStateRoundTripsRuntimeHistogramLength)
+{
+    constexpr std::size_t runtime_bin_count = 7;
+    const uint64_t run_id = 0xE471U;
+
+    SnapshotRankState expected(runtime_bin_count);
+    expected.run_id = run_id;
+    expected.snapshot_index = 2;
+    expected.rank = 1;
+    expected.local_total = 3;
+    expected.local_classified = 3;
+    expected.rank_elapsed_wall_sec = 20.0;
+
+    expected.current_trajectory_dt_hist[6] = 1.25;
+    expected.current_trajectory_v2dt_hist[6] = 5.0;
+    expected.captured_dt_hist[4] = 3.5;
+    expected.captured_v2dt_hist[4] = 14.0;
+    expected.captured_dt_sq_hist[4] = 12.25;
+    expected.captured_v2dt_sq_hist[4] = 196.0;
+
+    const std::string path =
+        rank_snapshot_dir + "runtime_histogram.bin";
+
+    ASSERT_TRUE(WriteSnapshotRankState(path, expected));
+
+    SnapshotRankState actual;
+    ASSERT_TRUE(ReadSnapshotRankState(path, run_id, actual));
+
+    EXPECT_EQ(runtime_bin_count, actual.current_trajectory_dt_hist.size());
+    EXPECT_EQ(runtime_bin_count, actual.current_trajectory_v2dt_hist.size());
+    EXPECT_EQ(runtime_bin_count, actual.captured_dt_hist.size());
+    EXPECT_EQ(runtime_bin_count, actual.captured_v2dt_hist.size());
+    EXPECT_EQ(runtime_bin_count, actual.captured_dt_sq_hist.size());
+    EXPECT_EQ(runtime_bin_count, actual.captured_v2dt_sq_hist.size());
+
+    ExpectStatesEqual(expected, actual);
+}
+
 TEST_F(SnapshotIOTest, SharedStatePublishesCurrentTrajectoryProgress)
 {
 	SnapshotSharedState shared_state;

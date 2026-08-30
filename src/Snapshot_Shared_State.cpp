@@ -228,14 +228,25 @@ SnapshotRankState SnapshotSharedState::CopyLocked(
 			std::chrono::steady_clock::now() - current_trajectory_wall_start_).count();
 		state.current_trajectory_simulated_elapsed_sec = current_trajectory_simulated_elapsed_sec_;
 		state.current_trajectory_scatterings = current_trajectory_scatterings_;
-		state.current_trajectory_dt_hist = current_dt_hist_;
-		state.current_trajectory_v2dt_hist = current_v2dt_hist_;
+		state.current_trajectory_dt_hist.assign(
+		    current_dt_hist_.begin(),
+		    current_dt_hist_.end());
+		state.current_trajectory_v2dt_hist.assign(
+		    current_v2dt_hist_.begin(),
+		    current_v2dt_hist_.end());
 	}
-	state.captured_dt_hist = captured_dt_hist_;
-	state.captured_v2dt_hist = captured_v2dt_hist_;
-	state.captured_dt_sq_hist = captured_dt_sq_hist_;
-	state.captured_v2dt_sq_hist = captured_v2dt_sq_hist_;
-
+	state.captured_dt_hist.assign(
+	    captured_dt_hist_.begin(),
+	    captured_dt_hist_.end());
+	state.captured_v2dt_hist.assign(
+	    captured_v2dt_hist_.begin(),
+	    captured_v2dt_hist_.end());
+	state.captured_dt_sq_hist.assign(
+	    captured_dt_sq_hist_.begin(),
+	    captured_dt_sq_hist_.end());
+	state.captured_v2dt_sq_hist.assign(
+	    captured_v2dt_sq_hist_.begin(),
+	    captured_v2dt_sq_hist_.end());
 	evaporation_begin = std::min(evaporation_begin, evaporation_events_.size());
 	evaporation_end = std::min(evaporation_end, evaporation_events_.size());
 	state.new_evaporation_events.reserve(evaporation_end - evaporation_begin);

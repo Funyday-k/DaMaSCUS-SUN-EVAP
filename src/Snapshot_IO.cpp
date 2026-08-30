@@ -61,6 +61,20 @@ void WriteBinaryArray(std::ofstream& file, const std::array<T, N>& values)
 }
 
 template<typename T>
+void WriteBinaryVector(
+        std::ofstream& file,
+        const std::vector<T>& values)
+{
+        if(values.empty())
+                return;
+
+        file.write(
+            reinterpret_cast<const char*>(values.data()),
+            static_cast<std::streamsize>(
+                values.size() * sizeof(T)));
+}
+
+template<typename T>
 void ReadBinaryValue(std::ifstream& file, T& value)
 {
 	file.read(reinterpret_cast<char*>(&value), sizeof(T));
@@ -72,6 +86,20 @@ void ReadBinaryArray(std::ifstream& file, std::array<T, N>& values)
 	file.read(
 	    reinterpret_cast<char*>(values.data()),
 	    static_cast<std::streamsize>(N * sizeof(T)));
+}
+
+template<typename T>
+void ReadBinaryVector(
+        std::ifstream& file,
+        std::vector<T>& values)
+{
+        if(values.empty())
+                return;
+
+        file.read(
+            reinterpret_cast<char*>(values.data()),
+            static_cast<std::streamsize>(
+                values.size() * sizeof(T)));
 }
 
 void WriteSnapshotEvaporationEntryBinary(std::ofstream& file, const SnapshotEvaporationProgressEntry& entry)
@@ -103,8 +131,31 @@ bool IsValidHistogram(const std::array<double, N>& values)
 	});
 }
 
+bool IsValidHistogram(const std::vector<double>& values)
+{
+        return std::all_of(
+            values.begin(),
+            values.end(),
+            [](double value)
+            {
+                    return std::isfinite(value) && value >= 0.0;
+            });
+}
+
 bool IsValidRankState(const SnapshotRankState& state)
 {
+        const std::size_t radial_bin_count =
+            state.current_trajectory_dt_hist.size();
+
+        if(radial_bin_count == 0
+           || state.current_trajectory_v2dt_hist.size()
+                  != radial_bin_count
+           || state.captured_dt_hist.size() != radial_bin_count
+           || state.captured_v2dt_hist.size() != radial_bin_count
+           || state.captured_dt_sq_hist.size() != radial_bin_count
+           || state.captured_v2dt_sq_hist.size() != radial_bin_count)
+                return false;
+
 	if(state.snapshot_index < 0 || state.rank < 0)
 		return false;
 	if((state.done != 0 && state.done != 1)
@@ -755,14 +806,17 @@ bool WriteSnapshotRankState(const std::string& path, const SnapshotRankState& st
 	WriteBinaryValue(file, state.current_trajectory_simulated_elapsed_sec);
 	WriteBinaryValue(file, state.current_trajectory_scatterings);
 	WriteBinaryValue(file, state.current_trajectory_captured);
-	const uint64_t radial_bin_count = TOTAL_BINS;
+	const uint64_t radial_bin_count =
+		static_cast<uint64_t>(
+			state.current_trajectory_dt_hist.size());
+
 	WriteBinaryValue(file, radial_bin_count);
-	WriteBinaryArray(file, state.current_trajectory_dt_hist);
-	WriteBinaryArray(file, state.current_trajectory_v2dt_hist);
-	WriteBinaryArray(file, state.captured_dt_hist);
-	WriteBinaryArray(file, state.captured_v2dt_hist);
-	WriteBinaryArray(file, state.captured_dt_sq_hist);
-	WriteBinaryArray(file, state.captured_v2dt_sq_hist);
+	WriteBinaryVector(file, state.current_trajectory_dt_hist);
+	WriteBinaryVector(file, state.current_trajectory_v2dt_hist);
+	WriteBinaryVector(file, state.captured_dt_hist);
+	WriteBinaryVector(file, state.captured_v2dt_hist);
+	WriteBinaryVector(file, state.captured_dt_sq_hist);
+	WriteBinaryVector(file, state.captured_v2dt_sq_hist);
 	const uint64_t event_count = static_cast<uint64_t>(state.new_evaporation_events.size());
 	WriteBinaryValue(file, event_count);
 	for(const auto& entry : state.new_evaporation_events)
@@ -791,7 +845,7 @@ bool ReadSnapshotRankState(const std::string& path, uint64_t expected_run_id, Sn
 	file.seekg(0, std::ios::end);
 	const std::streamoff file_size_value = file.tellg();
 	const uint64_t minimum_file_size =
-	    SnapshotRankStateFixedBytes() + 6ULL * TOTAL_BINS * sizeof(double);
+	    SnapshotRankStateFixedBytes() + 6ULL * sizeof(double);
 	if(file_size_value < 0 || static_cast<uint64_t>(file_size_value) < minimum_file_size)
 		return false;
 	const uint64_t file_size = static_cast<uint64_t>(file_size_value);
@@ -830,22 +884,68 @@ bool ReadSnapshotRankState(const std::string& path, uint64_t expected_run_id, Sn
 	ReadBinaryValue(file, state.current_trajectory_captured);
 	uint64_t radial_bin_count = 0;
 	ReadBinaryValue(file, radial_bin_count);
-	if(!file || radial_bin_count != TOTAL_BINS)
+
+	constexpr uint64_t histogram_value_count = 6ULL;
+	constexpr uint64_t histogram_value_bytes =
+	    histogram_value_count * sizeof(double);
+
+	if(!file
+	   || radial_bin_count == 0
+	   || radial_bin_count
+	          > static_cast<uint64_t>(
+	              std::numeric_limits<std::size_t>::max())
+	   || radial_bin_count
+	          > std::numeric_limits<uint64_t>::max()
+	                / histogram_value_bytes)
 		return false;
-	ReadBinaryArray(file, state.current_trajectory_dt_hist);
-	ReadBinaryArray(file, state.current_trajectory_v2dt_hist);
-	ReadBinaryArray(file, state.captured_dt_hist);
-	ReadBinaryArray(file, state.captured_v2dt_hist);
-	ReadBinaryArray(file, state.captured_dt_sq_hist);
-	ReadBinaryArray(file, state.captured_v2dt_sq_hist);
+
+	const uint64_t histogram_bytes =
+	    radial_bin_count * histogram_value_bytes;
+
+	if(histogram_bytes
+	       > std::numeric_limits<uint64_t>::max()
+	             - SnapshotRankStateFixedBytes()
+	   || file_size
+	          < SnapshotRankStateFixedBytes()
+	            + histogram_bytes)
+		return false;
+
+	const std::size_t radial_bin_count_size =
+	    static_cast<std::size_t>(radial_bin_count);
+
+	try
+	{
+		state.current_trajectory_dt_hist.assign(
+		    radial_bin_count_size, 0.0);
+		state.current_trajectory_v2dt_hist.assign(
+		    radial_bin_count_size, 0.0);
+		state.captured_dt_hist.assign(
+		    radial_bin_count_size, 0.0);
+		state.captured_v2dt_hist.assign(
+		    radial_bin_count_size, 0.0);
+		state.captured_dt_sq_hist.assign(
+		    radial_bin_count_size, 0.0);
+		state.captured_v2dt_sq_hist.assign(
+		    radial_bin_count_size, 0.0);
+	}
+	catch(const std::exception&)
+	{
+		return false;
+	}
+
+	ReadBinaryVector(file, state.current_trajectory_dt_hist);
+	ReadBinaryVector(file, state.current_trajectory_v2dt_hist);
+	ReadBinaryVector(file, state.captured_dt_hist);
+	ReadBinaryVector(file, state.captured_v2dt_hist);
+	ReadBinaryVector(file, state.captured_dt_sq_hist);
+	ReadBinaryVector(file, state.captured_v2dt_sq_hist);
 
 	uint64_t event_count = 0;
 	ReadBinaryValue(file, event_count);
 	if(!file || event_count > MAX_SNAPSHOT_EVAPORATION_EVENTS)
 		return false;
 	const uint64_t entry_bytes = SnapshotEvaporationEntryBytes();
-	const uint64_t histogram_bytes =
-	    6ULL * radial_bin_count * sizeof(double);
+	// histogram_bytes was validated before vector allocation.
 	if(event_count > (std::numeric_limits<uint64_t>::max()
 	                  - SnapshotRankStateFixedBytes() - histogram_bytes) / entry_bytes)
 		return false;

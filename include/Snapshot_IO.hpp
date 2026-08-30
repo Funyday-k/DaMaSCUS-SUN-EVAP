@@ -46,12 +46,26 @@ struct SnapshotRankState
 	double current_trajectory_simulated_elapsed_sec = 0.0;
 	uint64_t current_trajectory_scatterings = 0;
 	int32_t current_trajectory_captured = 0;
-	std::array<double, TOTAL_BINS> current_trajectory_dt_hist{};
-	std::array<double, TOTAL_BINS> current_trajectory_v2dt_hist{};
-	std::array<double, TOTAL_BINS> captured_dt_hist{};
-	std::array<double, TOTAL_BINS> captured_v2dt_hist{};
-	std::array<double, TOTAL_BINS> captured_dt_sq_hist{};
-	std::array<double, TOTAL_BINS> captured_v2dt_sq_hist{};
+
+	// Default construction preserves the historical Sun-sized snapshot
+	// layout. Runtime-grid callers may provide a different bin count.
+	explicit SnapshotRankState(
+			std::size_t radial_bin_count = TOTAL_BINS)
+	: current_trajectory_dt_hist(radial_bin_count, 0.0),
+	  current_trajectory_v2dt_hist(radial_bin_count, 0.0),
+	  captured_dt_hist(radial_bin_count, 0.0),
+	  captured_v2dt_hist(radial_bin_count, 0.0),
+	  captured_dt_sq_hist(radial_bin_count, 0.0),
+	  captured_v2dt_sq_hist(radial_bin_count, 0.0)
+	{
+	}
+
+	std::vector<double> current_trajectory_dt_hist;
+	std::vector<double> current_trajectory_v2dt_hist;
+	std::vector<double> captured_dt_hist;
+	std::vector<double> captured_v2dt_hist;
+	std::vector<double> captured_dt_sq_hist;
+	std::vector<double> captured_v2dt_sq_hist;
 	std::vector<SnapshotEvaporationProgressEntry> new_evaporation_events;
 };
 

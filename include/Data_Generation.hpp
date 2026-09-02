@@ -78,7 +78,7 @@ struct CompactEvaporationEvent
 	uint64_t trajectory_id = 0;
 	double completion_wall_time_sec = 0.0;
 	double lifetime_unbinding = -1.0;
-	double r_capture_rsun = -1.0;
+	double r_capture_rbody = -1.0;
 	double E_capture_eV = 0.0;
 	double dE_capture_eV = 0.0;
 	uint64_t number_of_bound_exterior_arcs = 0;
@@ -128,11 +128,11 @@ struct InvalidTrajectoryRecord
 	uint64_t number_of_recaptures = 0;
 	double t_capture_s = std::numeric_limits<double>::quiet_NaN();
 	double t_termination_s = std::numeric_limits<double>::quiet_NaN();
-	double final_r_rsun = std::numeric_limits<double>::quiet_NaN();
+	double final_r_rbody = std::numeric_limits<double>::quiet_NaN();
 	double final_vr_km_s = std::numeric_limits<double>::quiet_NaN();
 	double final_speed_km_s = std::numeric_limits<double>::quiet_NaN();
 	double final_energy_eV = std::numeric_limits<double>::quiet_NaN();
-	double max_r_after_capture_rsun = std::numeric_limits<double>::quiet_NaN();
+	double max_r_after_capture_rbody = std::numeric_limits<double>::quiet_NaN();
 	double max_free_energy_drift_eV = 0.0;
 	double max_free_energy_drift_rel = 0.0;
 	double failure_energy_before_step_eV = std::numeric_limits<double>::quiet_NaN();

@@ -20,7 +20,7 @@ namespace DaMaSCUS_SUN
 namespace
 {
 constexpr uint64_t SNAPSHOT_RANK_STATE_MAGIC = 0x4453534e41503031ULL;
-constexpr uint32_t SNAPSHOT_RANK_STATE_VERSION = 8;
+constexpr uint32_t SNAPSHOT_RANK_STATE_VERSION = 9;
 constexpr uint32_t SNAPSHOT_RANK_STATE_HEADER_BYTES = sizeof(uint64_t) + 2 * sizeof(uint32_t);
 constexpr uint64_t SNAPSHOT_EVAPORATION_EVENTS_PER_CHECKPOINT = 10000000ULL;
 // Only an absurd declared event count is rejected here: ReadSnapshotRankState
@@ -107,7 +107,7 @@ void WriteSnapshotEvaporationEntryBinary(std::ofstream& file, const SnapshotEvap
 	WriteBinaryValue(file, entry.trajectory_id);
 	WriteBinaryValue(file, entry.completion_wall_time_sec);
 	WriteBinaryValue(file, entry.lifetime_unbinding_sec);
-	WriteBinaryValue(file, entry.r_capture_rsun);
+	WriteBinaryValue(file, entry.r_capture_rbody);
 	WriteBinaryValue(file, entry.E_capture_eV);
 	WriteBinaryValue(file, entry.dE_capture_eV);
 }
@@ -117,7 +117,7 @@ void ReadSnapshotEvaporationEntryBinary(std::ifstream& file, SnapshotEvaporation
 	ReadBinaryValue(file, entry.trajectory_id);
 	ReadBinaryValue(file, entry.completion_wall_time_sec);
 	ReadBinaryValue(file, entry.lifetime_unbinding_sec);
-	ReadBinaryValue(file, entry.r_capture_rsun);
+	ReadBinaryValue(file, entry.r_capture_rbody);
 	ReadBinaryValue(file, entry.E_capture_eV);
 	ReadBinaryValue(file, entry.dE_capture_eV);
 }
@@ -207,8 +207,8 @@ bool IsValidEvaporationEvents(const std::vector<SnapshotEvaporationProgressEntry
 		   || entry.completion_wall_time_sec < 0.0
 		   || !std::isfinite(entry.lifetime_unbinding_sec)
 		   || entry.lifetime_unbinding_sec < 0.0
-		   || !std::isfinite(entry.r_capture_rsun)
-		   || entry.r_capture_rsun < -1.0
+		   || !std::isfinite(entry.r_capture_rbody)
+		   || entry.r_capture_rbody < -1.0
 		   || !std::isfinite(entry.E_capture_eV)
 		   || !std::isfinite(entry.dE_capture_eV)
 		   || entry.completion_wall_time_sec < previous_completion_time)
@@ -225,7 +225,7 @@ CompactEvaporationEvent MakeLogEvent(int rank, const SnapshotEvaporationProgress
 	event.trajectory_id = entry.trajectory_id;
 	event.completion_wall_time_sec = entry.completion_wall_time_sec;
 	event.lifetime_unbinding = entry.lifetime_unbinding_sec;
-	event.r_capture_rsun = entry.r_capture_rsun;
+	event.r_capture_rbody = entry.r_capture_rbody;
 	event.E_capture_eV = entry.E_capture_eV;
 	event.dE_capture_eV = entry.dE_capture_eV;
 	return event;
@@ -286,21 +286,21 @@ bool EvaporationEventOrder(const CompactEvaporationEvent& lhs, const CompactEvap
 void WriteEvaporationLogEvent(std::ostream& file, const CompactEvaporationEvent& event)
 {
 	file << event.rank << "\t" << event.trajectory_id << "\t" << std::scientific << std::setprecision(10)
-	     << event.lifetime_unbinding << "\t" << event.r_capture_rsun
+	     << event.lifetime_unbinding << "\t" << event.r_capture_rbody
 	     << "\t" << event.E_capture_eV << "\t" << event.dE_capture_eV << "\n";
 }
 
 void WriteEvaporationLogFileHeader(std::ofstream& file, double mass_gev, double sigma_cm2)
 {
 	file << "# DaMaSCUS-SUN snapshot evaporation times\n";
-	file << "# format_version = 4\n";
+        file << "# format_version = 5\n";
 	file << "# DIAGNOSTIC_ONLY = 1\n";
 	file << "# NOT_FOR_FINAL_SURVIVAL_ANALYSIS = 1\n";
 	file << "# completion_time_selected = 1\n";
 	file << "# DM_mass_GeV = " << std::scientific << std::setprecision(6) << mass_gev << "\n";
 	file << "# DM_sigma_cm2 = " << std::scientific << std::setprecision(6) << sigma_cm2 << "\n";
 	file << "# sorted_by = lifetime_unbinding_sec rank trajectory_id\n";
-	file << "# rank trajectory_id lifetime_unbinding_sec r_capture_Rsun E_capture_eV dE_capture_eV\n";
+	file << "# rank trajectory_id lifetime_unbinding_sec r_capture_Rbody E_capture_eV dE_capture_eV\n";
 }
 
 void WriteEvaporationLogEvents(std::ostream& file, const std::vector<CompactEvaporationEvent>& events)
@@ -812,7 +812,7 @@ SnapshotEvaporationProgressEntry MakeSnapshotEvaporationProgressEntry(const Comp
 	entry.trajectory_id = static_cast<uint64_t>(event.trajectory_id);
 	entry.completion_wall_time_sec = event.completion_wall_time_sec;
 	entry.lifetime_unbinding_sec = event.lifetime_unbinding;
-	entry.r_capture_rsun = event.r_capture_rsun;
+	entry.r_capture_rbody = event.r_capture_rbody;
 	entry.E_capture_eV = event.E_capture_eV;
 	entry.dE_capture_eV = event.dE_capture_eV;
 	return entry;

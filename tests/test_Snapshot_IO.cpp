@@ -192,7 +192,7 @@ void ExpectStatesEqual(const SnapshotRankState& expected, const SnapshotRankStat
 		EXPECT_EQ(expected.new_evaporation_events[index].trajectory_id, actual.new_evaporation_events[index].trajectory_id);
 		EXPECT_DOUBLE_EQ(expected.new_evaporation_events[index].completion_wall_time_sec, actual.new_evaporation_events[index].completion_wall_time_sec);
 		EXPECT_DOUBLE_EQ(expected.new_evaporation_events[index].lifetime_unbinding_sec, actual.new_evaporation_events[index].lifetime_unbinding_sec);
-		EXPECT_DOUBLE_EQ(expected.new_evaporation_events[index].r_capture_rsun, actual.new_evaporation_events[index].r_capture_rsun);
+		EXPECT_DOUBLE_EQ(expected.new_evaporation_events[index].r_capture_rbody, actual.new_evaporation_events[index].r_capture_rbody);
 		EXPECT_DOUBLE_EQ(expected.new_evaporation_events[index].E_capture_eV, actual.new_evaporation_events[index].E_capture_eV);
 		EXPECT_DOUBLE_EQ(expected.new_evaporation_events[index].dE_capture_eV, actual.new_evaporation_events[index].dE_capture_eV);
 	}
@@ -795,6 +795,12 @@ TEST_F(SnapshotIOTest, FourLogicalRanksProgressFromPartialToMergedWithoutDowngra
 
 	const std::string merged_report = ReadAll(report_path);
 	const std::string merged_evaporation = ReadAll(evaporation_path);
+    EXPECT_NE(
+        std::string::npos,
+        merged_evaporation.find("r_capture_Rbody"));
+    EXPECT_EQ(
+        std::string::npos,
+        merged_evaporation.find("r_capture_Rsun"));
 	EXPECT_NE(std::string::npos, merged_report.find("# snapshot_status = merged"));
 	EXPECT_NE(std::string::npos, merged_report.find("# ready_ranks = 0,1,2,3"));
 	EXPECT_NE(std::string::npos, merged_report.find("# missing_ranks = \n"));

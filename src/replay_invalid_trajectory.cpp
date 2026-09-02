@@ -211,7 +211,7 @@ int main(int argc, char* argv[])
 		    << (replay.bincount.event_observed ? 1 : 0) << "\n"
 		    << "replay_scatterings="
 		    << replay.number_of_scatterings << "\n"
-		    << "replay_final_r_Rsun="
+		    << "replay_final_r_Rbody="
 		    << In_Units(final_radius, g_body_radius) << "\n"
 		    << "replay_final_vr_km_s="
 		    << In_Units(final_radial_velocity, km / sec) << "\n"

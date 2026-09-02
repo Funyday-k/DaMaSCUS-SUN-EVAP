@@ -430,7 +430,7 @@ TEST(TestDataGeneration, TestDefaultOutputContract)
 		    output_dir + "residence_jackknife_blocks.tsv",
 		    "# block_0_attempted = "));
 		EXPECT_TRUE(FileContains(output_dir + "invalid_trajectories.tsv", "# record_count = 0"));
-		EXPECT_TRUE(FileContains(output_dir + "evaporation_times.txt", "# format_version = 5"));
+		EXPECT_TRUE(FileContains(output_dir + "evaporation_times.txt", "# format_version = 6"));
 		EXPECT_TRUE(FileContains(output_dir + "evaporation_times.txt", "P_kepler_first_bound_exit_sec"));
 		EXPECT_TRUE(FileContains(
 		    output_dir + "bincount.txt",
@@ -560,7 +560,22 @@ TEST(TestDataGeneration, TestTrajectoryDiagnosticOutputContract)
 	data_set.Write_Output_Files(output_dir, DM);
 	if(rank == 0)
 	{
-		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"schema_version\": \"trajectory-diagnostic-v5\""));
+		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"schema_version\": \"trajectory-diagnostic-v6\""));
+            EXPECT_TRUE(FileContains(
+                output_dir + "run_metadata.json",
+                "\"length_unit\": \"Rbody\""));
+            EXPECT_TRUE(FileContains(
+                output_dir + "evaporation_times.txt",
+                "r_capture_Rbody"));
+            EXPECT_TRUE(FileContains(
+                output_dir + "invalid_trajectories.tsv",
+                "final_r_Rbody"));
+            EXPECT_TRUE(FileContains(
+                output_dir + "trajectory_summary.tsv",
+                "r_capture_Rbody"));
+            EXPECT_TRUE(FileContains(
+                output_dir + "trajectory_events.tsv",
+                "r_Rbody"));
 		EXPECT_TRUE(FileContains(
 		    output_dir + "run_metadata.json",
 		    "\"bincount_integration\": \"conservative-hermite-kepler-outer-domain-geometric-capped-v4\""));

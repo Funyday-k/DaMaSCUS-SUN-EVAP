@@ -17,7 +17,7 @@ struct SnapshotEvaporationProgressEntry
 	uint64_t trajectory_id = 0;
 	double completion_wall_time_sec = 0.0;
 	double lifetime_unbinding_sec = -1.0;
-	double r_capture_rsun = -1.0;
+	double r_capture_rbody = -1.0;
 	double E_capture_eV = 0.0;
 	double dE_capture_eV = 0.0;
 };

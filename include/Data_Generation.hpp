@@ -194,13 +194,19 @@ class Simulation_Data
 	bool early_stopped;
 	SimulationStopReason early_stop_reason;
 
-	// Aggregated bincount histograms
-	std::array<double, TOTAL_BINS> captured_dt_hist{};
-	std::array<double, TOTAL_BINS> captured_v2dt_hist{};
+	// One runtime grid is shared by the simulator, snapshots,
+	// aggregation, jackknife storage, and final bincount output.
+	Bincount_Radial_Grid bincount_radial_grid{
+		R_SUN_KM,
+		RADIAL_DOMAIN_MAX_AU};
 
-	// Per-bin sum of squares for error estimation
-	std::array<double, TOTAL_BINS> captured_dt_sq_hist{};      // Σ (per-traj dt)²
-	std::array<double, TOTAL_BINS> captured_v2dt_sq_hist{};    // Σ (per-traj v²dt)²
+	// Aggregated runtime-sized bincount histograms.
+	std::vector<double> captured_dt_hist;
+	std::vector<double> captured_v2dt_hist;
+
+	// Per-bin sum of squares for error estimation.
+	std::vector<double> captured_dt_sq_hist;      // Σ (per-traj dt)²
+	std::vector<double> captured_v2dt_sq_hist;    // Σ (per-traj v²dt)²
 	std::vector<double> residence_jackknife_block_dt_hist;
 	std::vector<double> residence_jackknife_block_v2dt_hist;
 	std::array<unsigned long int, RESIDENCE_JACKKNIFE_BLOCKS> jackknife_attempted_counts{};

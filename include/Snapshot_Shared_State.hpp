@@ -18,7 +18,9 @@ class SnapshotSharedState
         // Default construction preserves the historical Sun-sized snapshot
         // histogram. Runtime-grid callers can provide a body-specific count.
         explicit SnapshotSharedState(
-                std::size_t radial_bin_count = TOTAL_BINS);void Initialize(uint64_t run_id, int rank);
+                std::size_t radial_bin_count = TOTAL_BINS);
+
+        void Initialize(uint64_t run_id, int rank);
 	void BeginTrajectory(uint64_t trajectory_id, double initial_simulated_time_sec = 0.0);
 	void AddCurrentBincountInterval(
 		const std::vector<BincountContribution>& contributions,

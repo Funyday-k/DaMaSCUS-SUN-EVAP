@@ -2435,7 +2435,10 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 						      > current_bincount.max_bound_exit_exterior_time_sec)
 							current_bincount.max_bound_exit_exterior_time_sec =
 							    kepler_arc.elapsed_time_sec;
-						for(std::size_t bin = NUM_BINS; bin < TOTAL_BINS; bin++)
+						for(std::size_t bin =
+						        bincount_radial_grid.Inner_Bin_Count();
+						    bin < bincount_radial_grid.Bin_Count();
+						    bin++)
 						{
 							current_bincount.dt_hist[bin] += kepler_arc.dt_hist[bin];
 							current_bincount.v2dt_hist[bin] += kepler_arc.v2dt_hist[bin];
@@ -2449,10 +2452,10 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 						if(current_bincount.is_captured)
 						{
 							if(!std::isfinite(current_bincount.max_radius_after_capture_km)
-							   || RADIAL_DOMAIN_MAX_KM
+							   || bincount_radial_grid.Domain_Max_Km()
 							      > current_bincount.max_radius_after_capture_km)
 								current_bincount.max_radius_after_capture_km =
-								    RADIAL_DOMAIN_MAX_KM;
+								    bincount_radial_grid.Domain_Max_Km();
 							current_bincount.t_last_bound = In_Units(current_event.time, sec);
 						}
 						Maybe_Publish_Snapshot_Progress(

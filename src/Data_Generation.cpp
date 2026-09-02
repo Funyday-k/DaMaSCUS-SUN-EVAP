@@ -453,7 +453,8 @@ void Write_Report_Header(
 	double sigma_cm2,
 	uint64_t total_trajectories,
 	uint64_t captured_particles,
-	SimulationStopReason stop_reason)
+	SimulationStopReason stop_reason,
+	const Bincount_Radial_Grid& radial_grid)
 {
 	file << "# DM_mass_GeV = " << std::scientific << std::setprecision(6) << mass_gev << "\n";
 	file << "# DM_sigma_cm2 = " << std::scientific << std::setprecision(6) << sigma_cm2 << "\n";
@@ -462,7 +463,7 @@ void Write_Report_Header(
 	file << "# bincount_integration = " << BincountIntegrationScheme() << "\n";
 	file << "# bincount_dense_position_tolerance_km = "
 	     << std::scientific << std::setprecision(6)
-	     << BincountDensePositionToleranceKm() << "\n";
+	     << BincountDensePositionToleranceKm(radial_grid) << "\n";
 
 	const BinomialRateEstimate raw = Estimate_Binomial_Rate(total_trajectories, captured_particles);
 	file << "# capture_rate_raw = " << std::fixed << std::setprecision(8) << raw.rate << "\n";
@@ -2054,7 +2055,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 	};
 
 	auto write_header = [&](std::ofstream& f) {
-		Write_Report_Header(f, mass_gev, sigma_cm2, number_of_trajectories, number_of_captured_particles, early_stop_reason);
+		Write_Report_Header(f, mass_gev, sigma_cm2, number_of_trajectories, number_of_captured_particles, early_stop_reason, bincount_radial_grid);
 		f << "# valid_trajectories = " << Valid_Trajectories() << "\n";
 		f << "# completed_outward_escapes = " << number_of_completed_outward_escapes << "\n";
 		f << "# unresolved_not_captured_trajectories = " << unresolved_not_captured_trajectories() << "\n";
@@ -2661,7 +2662,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 			         << "  \"rk_phase_tolerance\": " << RK45PhaseTolerance() << ",\n"
 			         << "  \"rk_absolute_max_step_s\": " << RK45AbsoluteMaxStepSec() << ",\n"
 			         << "  \"bincount_integration\": \"" << BincountIntegrationScheme() << "\",\n"
-			         << "  \"bincount_dense_position_tolerance_km\": " << BincountDensePositionToleranceKm() << ",\n"
+			         << "  \"bincount_dense_position_tolerance_km\": " << BincountDensePositionToleranceKm(bincount_radial_grid) << ",\n"
                                    << "  \"radial_grid\": \"uniform_inner_geometric_width_capped_exterior_v2\",\n"
                                    << "  \"radial_body_radius_km\": "
                                    << bincount_radial_grid.Body_Radius_Km()

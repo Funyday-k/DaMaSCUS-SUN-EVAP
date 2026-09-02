@@ -204,6 +204,7 @@ double NormalModeMaxOpticalDepthStep();
 double OpticalDepthRelativeTolerance();
 const char* BincountIntegrationScheme();
 double BincountDensePositionToleranceKm();
+double BincountDensePositionToleranceKm(const Bincount_Radial_Grid& radial_grid);
 double SnapshotProgressPublishWallIntervalSeconds();
 bool SnapshotProgressPublishDue(
     unsigned long int accepted_steps_since_publish, double wall_seconds_since_publish, bool force);

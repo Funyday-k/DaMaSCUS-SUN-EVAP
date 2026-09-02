@@ -582,7 +582,8 @@ void WriteReportHeader(
 	uint64_t classified_trajectories,
 	uint64_t numerical_failures,
 	long long snapshot_time_label,
-	double snapshot_interval_seconds)
+	double snapshot_interval_seconds,
+	const Bincount_Radial_Grid& radial_grid)
 {
 	file << "# snapshot_target_wall_time_s = " << snapshot_time_label << "\n";
 	file << "# snapshot_interval_s = " << std::fixed << std::setprecision(3) << snapshot_interval_seconds << "\n";
@@ -593,7 +594,7 @@ void WriteReportHeader(
 	file << "# bincount_integration = " << BincountIntegrationScheme() << "\n";
 	file << "# bincount_dense_position_tolerance_km = "
 	     << std::scientific << std::setprecision(6)
-	     << BincountDensePositionToleranceKm() << "\n";
+	     << BincountDensePositionToleranceKm(radial_grid) << "\n";
 	file << "# valid_trajectories = " << classified_trajectories << "\n";
 	file << "# numerical_failures = " << numerical_failures << "\n";
 	file << "# unresolved_not_captured_trajectories = "
@@ -691,7 +692,8 @@ bool WriteSnapshotReportFile(
 			report.classified_trajectories,
 			report.numerical_failures,
 			report.snapshot_time_label,
-			report.snapshot_interval_seconds);
+			report.snapshot_interval_seconds,
+			radial_grid);
 
 		file << "#\n";
 		file << "# [MPI rank status]\n";

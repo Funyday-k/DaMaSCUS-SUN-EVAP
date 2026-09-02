@@ -494,6 +494,9 @@ TEST(TestDataGeneration, TestEarthOutputUsesRuntimeRadialGrid)
         {
                 const Bincount_Radial_Grid earth_grid(
                     In_Units(earth.Radius(), km));
+                EXPECT_TRUE(FileContains(
+                    output_dir + "bincount.txt",
+                    "# bincount_dense_position_tolerance_km = 1.274200e-02"));
 
                 EXPECT_TRUE(FileContains(
                     output_dir + "bincount.txt",

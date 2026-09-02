@@ -1458,6 +1458,11 @@ const char* BincountIntegrationScheme()
 	return "conservative-hermite-kepler-outer-domain-geometric-capped-v4";
 }
 double BincountDensePositionToleranceKm() { return BINCOUNT_DENSE_POSITION_TOLERANCE_KM; }
+
+double BincountDensePositionToleranceKm(const Bincount_Radial_Grid& radial_grid)
+{
+    return 2.0e-3 * radial_grid.Inner_Bin_Width_Km();
+}
 double SnapshotProgressPublishWallIntervalSeconds() { return SNAPSHOT_PUBLISH_WALL_INTERVAL_SEC; }
 bool SnapshotProgressPublishDue(
     unsigned long int accepted_steps_since_publish, double wall_seconds_since_publish, bool force)

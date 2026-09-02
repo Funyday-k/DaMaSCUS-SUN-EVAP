@@ -452,6 +452,9 @@ TEST_F(SnapshotIOTest, SnapshotReportUsesRuntimeGridEdges)
 
     const std::string report =
         ReadAll(SnapshotTextFilePath(snapshot_root, 1, interval));
+    EXPECT_NE(
+        std::string::npos,
+        report.find("# bincount_dense_position_tolerance_km = 1.274200e-02"));
 
     EXPECT_NE(
         std::string::npos,

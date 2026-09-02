@@ -19,6 +19,7 @@ namespace DaMaSCUS_SUN
 class SnapshotHeartbeat
 {
   public:
+	// Legacy constructor: preserves the historical Sun-sized radial grid.
 	SnapshotHeartbeat(
 		SnapshotSharedState& shared_state,
 		int mpi_rank,
@@ -29,6 +30,20 @@ class SnapshotHeartbeat
 		double snapshot_interval,
 		double mass_gev,
 		double sigma_cm2);
+
+	// Runtime-grid constructor. The grid is retained for heartbeat retries
+	// and forwarded to the snapshot merge/report writer.
+	SnapshotHeartbeat(
+		SnapshotSharedState& shared_state,
+		int mpi_rank,
+		int mpi_processes,
+		uint64_t run_id,
+		const std::string& snapshot_root,
+		const std::string& rank_snapshot_dir,
+		double snapshot_interval,
+		double mass_gev,
+		double sigma_cm2,
+		const Bincount_Radial_Grid& radial_grid);
 	~SnapshotHeartbeat();
 
 	bool Start(const std::chrono::steady_clock::time_point& epoch);
@@ -58,6 +73,7 @@ class SnapshotHeartbeat
 	double snapshot_interval_;
 	double mass_gev_;
 	double sigma_cm2_;
+	Bincount_Radial_Grid radial_grid_;
 	double missed_tolerance_sec_;
 
 	std::thread worker_;

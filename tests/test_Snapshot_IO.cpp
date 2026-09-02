@@ -249,6 +249,30 @@ TEST_F(SnapshotIOTest, AcceptsOnlyPositiveIntegerSnapshotIntervals)
 		std::invalid_argument);
 }
 
+TEST_F(SnapshotIOTest, HeartbeatAcceptsRuntimeGrid)
+{
+    constexpr double earth_radius_km = 6371.0;
+    const Bincount_Radial_Grid earth_grid(earth_radius_km);
+
+    SnapshotSharedState shared_state(earth_grid.Bin_Count());
+    shared_state.Initialize(0xE474U, 0);
+
+    EXPECT_NO_THROW(
+    {
+        SnapshotHeartbeat heartbeat(
+            shared_state,
+            0,
+            1,
+            0xE474U,
+            snapshot_root,
+            rank_snapshot_dir,
+            10.0,
+            0.5,
+            1.0e-40,
+            earth_grid);
+    });
+}
+
 TEST_F(SnapshotIOTest, BinaryRankStateRoundTripsAndRejectsCorruption)
 {
 	const uint64_t run_id = 0x123456789ULL;
@@ -327,7 +351,10 @@ TEST_F(SnapshotIOTest, BinaryRankStateRoundTripsRuntimeHistogramLength)
 
 TEST_F(SnapshotIOTest, MergesRuntimeHistogramLength)
 {
-    constexpr std::size_t runtime_bin_count = 7;
+    constexpr double earth_radius_km = 6371.0;
+    const Bincount_Radial_Grid runtime_grid(earth_radius_km);
+    const std::size_t runtime_bin_count = runtime_grid.Bin_Count();
+    const std::size_t bin = runtime_bin_count - 1;
     const uint64_t run_id = 0xE472U;
     const double interval = 10.0;
 
@@ -341,10 +368,10 @@ TEST_F(SnapshotIOTest, MergesRuntimeHistogramLength)
     state.local_classified = 1;
     state.bincount_captured_samples = 1;
 
-    state.captured_dt_hist[6] = 3.5;
-    state.captured_v2dt_hist[6] = 14.0;
-    state.captured_dt_sq_hist[6] = 12.25;
-    state.captured_v2dt_sq_hist[6] = 196.0;
+    state.captured_dt_hist[bin] = 3.5;
+    state.captured_v2dt_hist[bin] = 14.0;
+    state.captured_dt_sq_hist[bin] = 12.25;
+    state.captured_v2dt_sq_hist[bin] = 196.0;
 
     ASSERT_TRUE(WriteSnapshotRankState(
         SnapshotRankCheckpointPath(
@@ -363,6 +390,7 @@ TEST_F(SnapshotIOTest, MergesRuntimeHistogramLength)
         run_id,
         0.5,
         1.0e-40,
+        runtime_grid,
         false);
 
     ASSERT_EQ(SnapshotMergeStatus::Merged, merged.status);
@@ -370,7 +398,7 @@ TEST_F(SnapshotIOTest, MergesRuntimeHistogramLength)
     std::array<double, 4> histogram{};
     ASSERT_TRUE(ReadHistogramBin(
         SnapshotTextFilePath(snapshot_root, 1, interval),
-        6,
+        static_cast<int>(bin),
         histogram));
 
     EXPECT_DOUBLE_EQ(3.5, histogram[0]);

@@ -201,10 +201,10 @@ SnapshotMergeResult TryWriteSnapshotCached(
 	int mpi_processes,
 	uint64_t run_id,
 	double mass_gev,
-	double sigma_cm2,
-	SnapshotMergeCache& cache,
-	const Bincount_Radial_Grid& radial_grid,
-	bool allow_partial);
+       double sigma_cm2,
+       const Bincount_Radial_Grid& radial_grid,
+       SnapshotMergeCache& cache,
+       bool allow_partial);
 
 bool WriteMissedSnapshotMarker(
 	const std::string& snapshot_root,

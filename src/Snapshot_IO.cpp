@@ -755,9 +755,9 @@ bool WriteSnapshotReportFile(
 
 			file << bin << "\t" << std::scientific << std::setprecision(10)
 			     << radial_grid.Bin_Lower_Km(bin)
-			     <<        / radial_grid.Body_Radius_Km() << "\\t"
+			     / radial_grid.Body_Radius_Km() << "\t"
 			     << radial_grid.Bin_Upper_Km(bin)
-			     <<        / radial_grid.Body_Radius_Km() << "\\t"
+			     / radial_grid.Body_Radius_Km() << "\t"
 			     << report.captured_dt_hist[bin] << "\t" << report.captured_v2dt_hist[bin]
 			     << "\t" << residence_err_dt << "\t" << residence_err_v2dt << "\n";
 		}
@@ -1146,17 +1146,17 @@ SnapshotMergeResult TryWriteSnapshotCached(
 }
 
 SnapshotMergeResult TryWriteSnapshotCached(
-	const std::string& snapshot_root,
-	const std::string& rank_snapshot_dir,
-	int snapshot_index,
-	double interval_seconds,
-	int mpi_processes,
-	uint64_t run_id,
-	double mass_gev,
-	double sigma_cm2,
-	SnapshotMergeCache& cache,
-	const Bincount_Radial_Grid& radial_grid,
-	bool allow_partial)
+        const std::string& snapshot_root,
+        const std::string& rank_snapshot_dir,
+        int snapshot_index,
+        double interval_seconds,
+        int mpi_processes,
+        uint64_t run_id,
+        double mass_gev,
+        double sigma_cm2,
+        const Bincount_Radial_Grid& radial_grid,
+        SnapshotMergeCache& cache,
+        bool allow_partial)
 {
 	SnapshotMergeResult merged_result;
 	merged_result.status = SnapshotMergeStatus::Merged;

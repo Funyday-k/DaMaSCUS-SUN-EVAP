@@ -826,6 +826,47 @@ TEST(TestSimulationTrajectory, TestUncapturedBoundFreeFlightTerminatesAsNumerica
 	EXPECT_DOUBLE_EQ(result.bincount.t_termination, 0.0);
 }
 
+TEST(TestSimulationTrajectory, TestUncapturedOutwardBoundaryStateTerminatesAsEscape)
+{
+    obscura::DM_Particle_SI DM(0.5 * GeV);
+
+    // Use negligible but nonzero cross sections. This particle begins outside
+    // the trajectory boundary and must terminate before any scattering query.
+    // DM_Particle_SI does not permit sigma_proton = 0 with fixed fn/fp.
+    DM.Set_Sigma_Proton(1.0e-100 * pb);
+    DM.Set_Sigma_Electron(1.0e-100 * pb);
+
+    Solar_Model SSM;
+    const double boundary = 2.0 * rSun;
+    Trajectory_Simulator simulator(SSM, 100, 10, boundary);
+
+    const double radius = 1.01 * boundary;
+    const double unbound_outward_speed =
+        1.1 * SSM.Local_Escape_Speed(radius);
+
+    Event IC(
+        0.0,
+        libphysica::Vector({radius, 0.0, 0.0}),
+        libphysica::Vector({unbound_outward_speed, 0.0, 0.0}));
+
+    Trajectory_Result result = simulator.Simulate(IC, DM, 0);
+
+    EXPECT_EQ(
+        result.bincount.termination_reason,
+        TrajectoryTerminationReason::OutwardEscape);
+    EXPECT_EQ(result.number_of_scatterings, 0UL);
+    EXPECT_FALSE(result.bincount.is_captured);
+    EXPECT_TRUE(result.bincount.survival_valid);
+    EXPECT_FALSE(result.bincount.outer_domain_removed);
+    EXPECT_TRUE(result.Particle_Free());
+    EXPECT_FALSE(result.Particle_Reflected());
+    EXPECT_DOUBLE_EQ(result.bincount.t_termination, 0.0);
+    EXPECT_GT(result.final_event.Radius(), simulator.maximum_distance);
+    EXPECT_GT(
+        result.final_event.position.Dot(result.final_event.velocity),
+        0.0);
+}
+
 TEST(TestSimulationTrajectory, TestSimulate)
 {
 	// ARRANGE

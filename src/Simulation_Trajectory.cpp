@@ -1908,23 +1908,29 @@ bool Trajectory_Simulator::Update_Capture_State(double radius, double speed, dou
 
 TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& current_event, obscura::DM_Particle& DM)
 {
-	if(!current_physical_bound_state
-	   && current_event.Radius() >= maximum_distance
-	   && Radial_Velocity(current_event) > 0.0)
+	auto has_unbound_outward_escape = [&](const Event& event)
 	{
-		const double boundary_energy_eV =
-		    Capture_Energy_eV(
-		        current_event.Radius(),
-		        current_event.Speed(),
-		        DM);
-		const double energy_tolerance_eV =
-		    Boundary_Energy_Tolerance_eV(
-		        free_flight_reference_energy_eV,
-		        DM);
-		if(std::isfinite(boundary_energy_eV)
-		   && boundary_energy_eV >= -energy_tolerance_eV)
-			return TrajectoryTerminationReason::OutwardEscape;
-	}
+	        if(current_physical_bound_state
+	           || event.Radius() < maximum_distance
+	           || Radial_Velocity(event) <= 0.0)
+	                return false;
+
+	        const double boundary_energy_eV =
+	            Capture_Energy_eV(
+	                event.Radius(),
+	                event.Speed(),
+	                DM);
+	        const double energy_tolerance_eV =
+	            Boundary_Energy_Tolerance_eV(
+	                free_flight_reference_energy_eV,
+	                DM);
+
+	        return std::isfinite(boundary_energy_eV)
+	               && boundary_energy_eV >= -energy_tolerance_eV;
+	};
+
+	if(has_unbound_outward_escape(current_event))
+	        return TrajectoryTerminationReason::OutwardEscape;
 
 	auto abort_if_uncaptured_bound = [&](const Event& event)
 	{
@@ -2506,6 +2512,9 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 		current_event.time += time_origin;
 		if(abort_if_uncaptured_bound(current_event))
 			return TrajectoryTerminationReason::NumericalFailure;
+
+		if(has_unbound_outward_escape(current_event))
+		        return TrajectoryTerminationReason::OutwardEscape;
 		if(terminate_on_capture && captured_now)
 			return TrajectoryTerminationReason::CaptureMode;
 

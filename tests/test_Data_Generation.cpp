@@ -16,6 +16,9 @@
 
 #include "obscura/DM_Halo_Models.hpp"
 #include "obscura/DM_Particle_Standard.hpp"
+#include "Earth_Model.hpp"
+#include "Radial_Binning.hpp"
+#include "Solar_Model.hpp"
 
 using namespace DaMaSCUS_SUN;
 using namespace libphysica::natural_units;
@@ -427,7 +430,7 @@ TEST(TestDataGeneration, TestDefaultOutputContract)
 		    output_dir + "residence_jackknife_blocks.tsv",
 		    "# block_0_attempted = "));
 		EXPECT_TRUE(FileContains(output_dir + "invalid_trajectories.tsv", "# record_count = 0"));
-		EXPECT_TRUE(FileContains(output_dir + "evaporation_times.txt", "# format_version = 5"));
+		EXPECT_TRUE(FileContains(output_dir + "evaporation_times.txt", "# format_version = 6"));
 		EXPECT_TRUE(FileContains(output_dir + "evaporation_times.txt", "P_kepler_first_bound_exit_sec"));
 		EXPECT_TRUE(FileContains(
 		    output_dir + "bincount.txt",
@@ -443,7 +446,7 @@ TEST(TestDataGeneration, TestDefaultOutputContract)
 		    "# exterior_bin_growth_factor = 1.0200000000e+00"));
 		EXPECT_TRUE(FileContains(
 		    output_dir + "bincount.txt",
-		    "# exterior_max_bin_width_Rsun = 1.0000000000e+01"));
+		    "# exterior_max_bin_width_Rbody = 1.0000000000e+01"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# mpi_scheduler = dynamic_rma_work_queue_v1"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# mpi_scheduler_work_claims = 1"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# mpi_scheduler_peak_in_flight = 1"));
@@ -463,6 +466,72 @@ TEST(TestDataGeneration, TestDefaultOutputContract)
 		EXPECT_FALSE(FileExists(output_dir + std::string("computation_") + "time_summary.txt"));
 		RemoveTestOutputDir(output_dir);
 	}
+}
+
+TEST(TestDataGeneration, TestEarthOutputUsesRuntimeRadialGrid)
+{
+        Earth_Model earth;
+        obscura::Standard_Halo_Model SHM;
+        obscura::DM_Particle_SI DM(0.01 * GeV);
+
+        DM.Set_Low_Mass_Mode(true);
+        DM.Set_Sigma_Proton(1.0e-100 * pb);
+        DM.Set_Sigma_Electron(1.0e-100 * pb);
+
+        Simulation_Data data_set(1, 1);
+        data_set.Configure(1.1 * earth.Radius(), 0, 100);
+        data_set.Generate_Data(DM, earth, SHM);
+
+        int rank = 0;
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
+        const std::string output_dir =
+            TestOutputDir("earth_runtime_bincount_output");
+
+        data_set.Write_Output_Files(output_dir, DM);
+
+        if(rank == 0)
+        {
+                const Bincount_Radial_Grid earth_grid(
+                    In_Units(earth.Radius(), km));
+                EXPECT_TRUE(FileContains(
+                    output_dir + "bincount.txt",
+                    "# bincount_dense_position_tolerance_km = 1.274200e-02"));
+
+                EXPECT_TRUE(FileContains(
+                    output_dir + "bincount.txt",
+                    "# inner_grid_bins = "
+                    + std::to_string(earth_grid.Inner_Bin_Count())));
+
+                EXPECT_TRUE(FileContains(
+                    output_dir + "bincount.txt",
+                    "# exterior_bins = "
+                    + std::to_string(earth_grid.Exterior_Bin_Count())));
+
+                EXPECT_TRUE(FileContains(
+                    output_dir + "bincount.txt",
+                    "# total_radial_bins = "
+                    + std::to_string(earth_grid.Bin_Count())));
+
+                EXPECT_TRUE(FileContains(
+                    output_dir + "residence_jackknife_blocks.tsv",
+                    "# radial_bins = "
+                    + std::to_string(earth_grid.Bin_Count())));
+
+                EXPECT_TRUE(FileContains(
+                    output_dir + "bincount.txt",
+                    "# bin_index  r_lower_Rbody  r_upper_Rbody"));
+
+                EXPECT_FALSE(FileContains(
+                    output_dir + "bincount.txt",
+                    "r_lower_Rsun"));
+
+                EXPECT_FALSE(FileContains(
+                    output_dir + "bincount.txt",
+                    "r_upper_Rsun"));
+
+                RemoveTestOutputDir(output_dir);
+        }
 }
 
 TEST(TestDataGeneration, TestTrajectoryDiagnosticOutputContract)
@@ -494,7 +563,22 @@ TEST(TestDataGeneration, TestTrajectoryDiagnosticOutputContract)
 	data_set.Write_Output_Files(output_dir, DM);
 	if(rank == 0)
 	{
-		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"schema_version\": \"trajectory-diagnostic-v5\""));
+		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"schema_version\": \"trajectory-diagnostic-v6\""));
+            EXPECT_TRUE(FileContains(
+                output_dir + "run_metadata.json",
+                "\"length_unit\": \"Rbody\""));
+            EXPECT_TRUE(FileContains(
+                output_dir + "evaporation_times.txt",
+                "r_capture_Rbody"));
+            EXPECT_TRUE(FileContains(
+                output_dir + "invalid_trajectories.tsv",
+                "final_r_Rbody"));
+            EXPECT_TRUE(FileContains(
+                output_dir + "trajectory_summary.tsv",
+                "r_capture_Rbody"));
+            EXPECT_TRUE(FileContains(
+                output_dir + "trajectory_events.tsv",
+                "r_Rbody"));
 		EXPECT_TRUE(FileContains(
 		    output_dir + "run_metadata.json",
 		    "\"bincount_integration\": \"conservative-hermite-kepler-outer-domain-geometric-capped-v4\""));

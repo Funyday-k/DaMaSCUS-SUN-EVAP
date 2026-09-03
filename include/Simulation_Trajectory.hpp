@@ -15,7 +15,8 @@
 #include "obscura/DM_Particle.hpp"
 
 #include "Simulation_Utilities.hpp"
-#include "Solar_Model.hpp"
+#include "Celestial_Model.hpp"
+#include "Radial_Binning.hpp"
 
 extern std::string g_top_level_dir;  // 从config文件读取的输出目录
 
@@ -67,10 +68,19 @@ struct BincountContribution
 // Conservatively project one accepted trajectory interval onto the radial
 // histogram. The trajectory dynamics are not re-integrated or otherwise
 // changed; this only supplies dense-output quadrature for bincount.
+// Legacy wrapper: uses the historical Sun-sized radial grid.
 void Compute_Bincount_Interval_Contributions(
-	const Event& before,
-	const Event& after,
-	std::vector<BincountContribution>& contributions);
+        const Event& before,
+        const Event& after,
+        std::vector<BincountContribution>& contributions);
+
+// Runtime-grid overload. The grid defines every radial edge used by the
+// dense-output residence-time deposition.
+void Compute_Bincount_Interval_Contributions(
+        const Event& before,
+        const Event& after,
+        const Bincount_Radial_Grid& radial_grid,
+        std::vector<BincountContribution>& contributions);
 
 // The fixed histogram is uniform through 1.1 R_sun. Exterior shell widths
 // grow geometrically from 0.001 R_sun and are capped at 10 R_sun through the
@@ -82,13 +92,20 @@ int BincountBinIndexKm(double radius_km);
 
 struct BoundKeplerExteriorArc
 {
-	Event terminal_event;
-	double elapsed_time_sec = 0.0;
-	double kepler_period_sec = 0.0;
-	double apoapsis_km = 0.0;
-	bool outer_domain_removed = false;
-	std::array<double, TOTAL_BINS> dt_hist{};
-	std::array<double, TOTAL_BINS> v2dt_hist{};
+    explicit BoundKeplerExteriorArc(
+        std::size_t radial_bin_count = TOTAL_BINS)
+    : dt_hist(radial_bin_count, 0.0),
+      v2dt_hist(radial_bin_count, 0.0)
+    {
+    }
+
+    Event terminal_event;
+    double elapsed_time_sec = 0.0;
+    double kepler_period_sec = 0.0;
+    double apoapsis_km = 0.0;
+    bool outer_domain_removed = false;
+    std::vector<double> dt_hist;
+    std::vector<double> v2dt_hist;
 };
 
 // Analytically propagate a negative-specific-energy outward crossing from the
@@ -96,7 +113,17 @@ struct BoundKeplerExteriorArc
 // domain return to the matching surface; larger orbits terminate at its outward crossing.
 // The returned histogram is a round trip in the first case and a one-way
 // residence contribution in the second.
-bool Compute_Bound_Kepler_Exterior_Arc(const Event& outward_event, BoundKeplerExteriorArc& arc);
+// Legacy wrapper: uses the historical Sun-sized radial grid.
+bool Compute_Bound_Kepler_Exterior_Arc(
+        const Event& outward_event,
+        BoundKeplerExteriorArc& arc);
+
+// Runtime-grid overload. The grid supplies exterior shell edges and the
+// outer residence-domain cutoff.
+bool Compute_Bound_Kepler_Exterior_Arc(
+        const Event& outward_event,
+        const Bincount_Radial_Grid& radial_grid,
+        BoundKeplerExteriorArc& arc);
 
 enum class TrajectoryTerminationReason
 {
@@ -177,6 +204,7 @@ double NormalModeMaxOpticalDepthStep();
 double OpticalDepthRelativeTolerance();
 const char* BincountIntegrationScheme();
 double BincountDensePositionToleranceKm();
+double BincountDensePositionToleranceKm(const Bincount_Radial_Grid& radial_grid);
 double SnapshotProgressPublishWallIntervalSeconds();
 bool SnapshotProgressPublishDue(
     unsigned long int accepted_steps_since_publish, double wall_seconds_since_publish, bool force);
@@ -203,8 +231,15 @@ bool Find_First_Outward_Hermite_Radius_Crossing(
 // Per-trajectory bincount result
 struct TrajectoryBincount
 {
-	std::array<double, TOTAL_BINS> dt_hist{};     // Σ Δt per radial bin
-	std::array<double, TOTAL_BINS> v2dt_hist{};   // Σ v²·Δt per radial bin
+    explicit TrajectoryBincount(
+        std::size_t radial_bin_count = TOTAL_BINS)
+    : dt_hist(radial_bin_count, 0.0),
+      v2dt_hist(radial_bin_count, 0.0)
+    {
+    }
+
+    std::vector<double> dt_hist;     // Σ Δt per radial bin
+    std::vector<double> v2dt_hist;   // Σ v²·Δt per radial bin
 
 	// Capture/evaporation info
 	bool is_captured = false;
@@ -294,16 +329,17 @@ struct Trajectory_Result
 
 	bool Particle_Reflected() const;
 	bool Particle_Free() const;
-	bool Particle_Captured(Solar_Model& solar_model) const;
+	bool Particle_Captured(Celestial_Model& solar_model) const;
 
-	void Print_Summary(Solar_Model& solar_model, unsigned int mpi_rank = 0);
+	void Print_Summary(Celestial_Model& solar_model, unsigned int mpi_rank = 0);
 };
 
 // 2. Simulator
 class Trajectory_Simulator
 {
   private:
-	Solar_Model solar_model;
+	Celestial_Model* celestial_model;
+	Bincount_Radial_Grid bincount_radial_grid;
 	double v_max = 0.75;
 
 	// Per-trajectory bincount accumulation
@@ -365,7 +401,21 @@ class Trajectory_Simulator
 	unsigned int current_mpi_rank;
 	unsigned long int current_trajectory_id;
 
-	Trajectory_Simulator(const Solar_Model& model, unsigned long int max_time_steps = DEFAULT_MAXIMUM_FREE_TIME_STEPS, unsigned long int max_scatterings = DEFAULT_MAXIMUM_SCATTERINGS, double max_distance = TRAJECTORY_BOUNDARY_RSUN * libphysica::natural_units::rSun);
+        // Legacy constructor: preserves the historical Sun-sized bincount grid.
+        Trajectory_Simulator(
+            Celestial_Model& model,
+            unsigned long int max_time_steps = DEFAULT_MAXIMUM_FREE_TIME_STEPS,
+            unsigned long int max_scatterings = DEFAULT_MAXIMUM_SCATTERINGS,
+            double max_distance = TRAJECTORY_BOUNDARY_RSUN * g_body_radius);
+
+        // Runtime-grid constructor: uses one grid consistently for Hermite
+        // deposition, Kepler exterior arcs, and trajectory bincount storage.
+        Trajectory_Simulator(
+            Celestial_Model& model,
+            const Bincount_Radial_Grid& radial_grid,
+            unsigned long int max_time_steps,
+            unsigned long int max_scatterings,
+            double max_distance);
 
 	void Fix_PRNG_Seed(unsigned int fixed_seed);
 	void Restore_PRNG_State(const std::string& serialized_state);
@@ -414,7 +464,7 @@ class Free_Particle_Propagator
 
 	explicit Free_Particle_Propagator(const Event& event);
 
-	bool Runge_Kutta_45_Step(Solar_Model& solar_model);
+	bool Runge_Kutta_45_Step(Celestial_Model& solar_model);
 	bool Runge_Kutta_45_Step(double constant_mass);
 
 	Scalar_State Save_Scalar_State() const;

@@ -14,6 +14,7 @@
 #include "obscura/DM_Particle_Standard.hpp"
 
 #include "Simulation_Trajectory.hpp"
+#include "Solar_Model.hpp"
 #include "Simulation_Utilities.hpp"
 
 using namespace DaMaSCUS_SUN;
@@ -56,6 +57,54 @@ double SumBins(const std::array<double, NUM_BINS>& values)
 		sum += value;
 	return sum;
 }
+}
+
+
+TEST(TestSimulationTrajectory, RuntimeRadialGridUsesEarthScaleForBincount)
+{
+        constexpr double R_EARTH_KM = 6371.0;
+
+        Bincount_Radial_Grid earth_grid(R_EARTH_KM);
+
+        // 500.5 inner-bin widths corresponds to 0.5005 R_earth. It lies
+        // strictly inside Earth bin 500, avoiding any bin-edge ambiguity.
+        const double radius =
+            500.5 * earth_grid.Inner_Bin_Width_Km() * km;
+
+        const Event before(
+            0.0,
+            libphysica::Vector({radius, 0.0, 0.0}),
+            libphysica::Vector({0.0, 0.0, 0.0}));
+
+        const Event after(
+            1.0 * sec,
+            libphysica::Vector({radius, 0.0, 0.0}),
+            libphysica::Vector({0.0, 0.0, 0.0}));
+
+        std::vector<BincountContribution> earth_contributions;
+        Compute_Bincount_Interval_Contributions(
+            before,
+            after,
+            earth_grid,
+            earth_contributions);
+
+        ASSERT_EQ(1u, earth_contributions.size());
+        EXPECT_EQ(500, earth_contributions.front().bin);
+        EXPECT_DOUBLE_EQ(1.0, earth_contributions.front().dt_sec);
+        EXPECT_DOUBLE_EQ(
+            0.0,
+            earth_contributions.front().v2dt_km2_per_sec);
+
+        // The legacy no-grid overload remains Sun-scaled for compatibility.
+        std::vector<BincountContribution> legacy_contributions;
+        Compute_Bincount_Interval_Contributions(
+            before,
+            after,
+            legacy_contributions);
+
+        ASSERT_EQ(1u, legacy_contributions.size());
+        EXPECT_EQ(4, legacy_contributions.front().bin);
+        EXPECT_DOUBLE_EQ(1.0, legacy_contributions.front().dt_sec);
 }
 
 TEST(TestSimulationTrajectory, SnapshotProgressPublicationHasStepAndWallClockBounds)
@@ -512,6 +561,95 @@ TEST(TestSimulationTrajectory, BoundKeplerExteriorArcUsesGeometricWidthGrid)
 	    std::accumulate(arc.v2dt_hist.begin(), arc.v2dt_hist.end(), 0.0),
 	    0.0);
 }
+TEST(TestSimulationTrajectory, BoundKeplerExteriorArcUsesRuntimeEarthRadialGrid)
+{
+        // Reuse a known-valid bound solar Kepler orbit. Only the histogram
+        // grid changes here: the runtime Earth grid must determine the
+        // shell layout and vector size.
+        const double semi_major_axis = 1.5 * rSun;
+        const double eccentricity = 1.0 / 3.0;
+        const double boundary_radius = TRAJECTORY_BOUNDARY_RSUN * rSun;
+        const double mu = G_Newton * mSun;
+        const double angular_momentum =
+            std::sqrt(mu * semi_major_axis * (1.0 - eccentricity * eccentricity));
+        const double tangential_speed = angular_momentum / boundary_radius;
+        const double total_speed =
+            std::sqrt(mu * (2.0 / boundary_radius - 1.0 / semi_major_axis));
+        const double radial_speed =
+            std::sqrt(total_speed * total_speed - tangential_speed * tangential_speed);
+
+        Event outward(
+            3.0 * sec,
+            libphysica::Vector({boundary_radius, 0.0, 0.0}),
+            libphysica::Vector({radial_speed, tangential_speed, 0.0}));
+
+		constexpr double earth_radius_km = 6371.0;
+
+        const Bincount_Radial_Grid earth_grid(
+            earth_radius_km,
+            RADIAL_DOMAIN_MAX_AU);
+
+        BoundKeplerExteriorArc earth_arc;
+        ASSERT_TRUE(Compute_Bound_Kepler_Exterior_Arc(
+            outward,
+            earth_grid,
+            earth_arc));
+
+        EXPECT_FALSE(earth_arc.outer_domain_removed);
+        EXPECT_EQ(earth_arc.dt_hist.size(), earth_grid.Bin_Count());
+        EXPECT_EQ(earth_arc.v2dt_hist.size(), earth_grid.Bin_Count());
+        EXPECT_NE(earth_arc.dt_hist.size(), TOTAL_BINS);
+
+        const double boundary_radius_km =
+            In_Units(boundary_radius, km);
+        const int first_bin_index =
+            earth_grid.Bin_Index_Km(boundary_radius_km);
+
+        ASSERT_GE(
+            first_bin_index,
+            static_cast<int>(earth_grid.Inner_Bin_Count()));
+        ASSERT_LT(
+            static_cast<std::size_t>(first_bin_index),
+            earth_grid.Bin_Count());
+
+        // This distinguishes the Earth-scaled grid from the legacy Sun grid.
+        EXPECT_NE(
+            first_bin_index,
+            BincountBinIndexKm(boundary_radius_km));
+
+        const std::size_t first_bin =
+            static_cast<std::size_t>(first_bin_index);
+
+        EXPECT_EQ(
+            std::accumulate(
+                earth_arc.dt_hist.begin(),
+                earth_arc.dt_hist.begin() + first_bin,
+                0.0),
+            0.0);
+
+        EXPECT_GT(earth_arc.dt_hist[first_bin], 0.0);
+        EXPECT_GT(
+            std::accumulate(
+                earth_arc.dt_hist.begin(),
+                earth_arc.dt_hist.end(),
+                0.0),
+            0.0);
+
+        EXPECT_NEAR(
+            std::accumulate(
+                earth_arc.dt_hist.begin(),
+                earth_arc.dt_hist.end(),
+                0.0),
+            earth_arc.elapsed_time_sec,
+            1.0e-10 * earth_arc.elapsed_time_sec);
+
+        EXPECT_GT(
+            std::accumulate(
+                earth_arc.v2dt_hist.begin(),
+                earth_arc.v2dt_hist.end(),
+                0.0),
+            0.0);
+}
 
 TEST(TestSimulationTrajectory, BoundKeplerExteriorArcFlagsApoapsisBeyondConfiguredCutoff)
 {
@@ -686,6 +824,47 @@ TEST(TestSimulationTrajectory, TestUncapturedBoundFreeFlightTerminatesAsNumerica
 	EXPECT_FALSE(result.bincount.survival_valid);
 	EXPECT_EQ(result.number_of_scatterings, 0UL);
 	EXPECT_DOUBLE_EQ(result.bincount.t_termination, 0.0);
+}
+
+TEST(TestSimulationTrajectory, TestUncapturedOutwardBoundaryStateTerminatesAsEscape)
+{
+    obscura::DM_Particle_SI DM(0.5 * GeV);
+
+    // Use negligible but nonzero cross sections. This particle begins outside
+    // the trajectory boundary and must terminate before any scattering query.
+    // DM_Particle_SI does not permit sigma_proton = 0 with fixed fn/fp.
+    DM.Set_Sigma_Proton(1.0e-100 * pb);
+    DM.Set_Sigma_Electron(1.0e-100 * pb);
+
+    Solar_Model SSM;
+    const double boundary = 2.0 * rSun;
+    Trajectory_Simulator simulator(SSM, 100, 10, boundary);
+
+    const double radius = 1.01 * boundary;
+    const double unbound_outward_speed =
+        1.1 * SSM.Local_Escape_Speed(radius);
+
+    Event IC(
+        0.0,
+        libphysica::Vector({radius, 0.0, 0.0}),
+        libphysica::Vector({unbound_outward_speed, 0.0, 0.0}));
+
+    Trajectory_Result result = simulator.Simulate(IC, DM, 0);
+
+    EXPECT_EQ(
+        result.bincount.termination_reason,
+        TrajectoryTerminationReason::OutwardEscape);
+    EXPECT_EQ(result.number_of_scatterings, 0UL);
+    EXPECT_FALSE(result.bincount.is_captured);
+    EXPECT_TRUE(result.bincount.survival_valid);
+    EXPECT_FALSE(result.bincount.outer_domain_removed);
+    EXPECT_TRUE(result.Particle_Free());
+    EXPECT_FALSE(result.Particle_Reflected());
+    EXPECT_DOUBLE_EQ(result.bincount.t_termination, 0.0);
+    EXPECT_GT(result.final_event.Radius(), simulator.maximum_distance);
+    EXPECT_GT(
+        result.final_event.position.Dot(result.final_event.velocity),
+        0.0);
 }
 
 TEST(TestSimulationTrajectory, TestSimulate)

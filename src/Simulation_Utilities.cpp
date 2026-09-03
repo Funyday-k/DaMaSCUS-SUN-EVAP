@@ -70,7 +70,7 @@ double Event::Angular_Momentum() const
 	return position.Cross(velocity).Norm();
 }
 
-double Event::Asymptotic_Speed_Sqr(Solar_Model& solar_model) const
+double Event::Asymptotic_Speed_Sqr(Celestial_Model& solar_model) const
 {
 	double r	 = Radius();
 	double v	 = Speed();
@@ -120,7 +120,7 @@ std::ostream& operator<<(std::ostream& output, const Event& event)
 }
 
 // 2. Generator of initial conditions
-double PDF_Initial_Speed(double v, obscura::DM_Distribution& halo_model, Solar_Model& solar_model)
+double PDF_Initial_Speed(double v, obscura::DM_Distribution& halo_model, Celestial_Model& solar_model)
 {
 	if(!std::isfinite(v) || v < 0.0)
 		throw std::invalid_argument("PDF_Initial_Speed(): speed must be finite and non-negative.");
@@ -129,7 +129,7 @@ double PDF_Initial_Speed(double v, obscura::DM_Distribution& halo_model, Solar_M
 	if(v == 0.0)
 		return 0.0;
 
-	double v_esc			 = solar_model.Local_Escape_Speed(rSun);
+	double v_esc			 = solar_model.Local_Escape_Speed(g_body_radius);
 	double v_average		 = halo_model.Average_Speed();
 	double v_inverse_average = halo_model.Eta_Function(0.0);
 	const double normalization = v_average + v_esc * v_esc * v_inverse_average;
@@ -173,7 +173,7 @@ double PDF_Cos_Theta(double cos_theta, double v, obscura::DM_Distribution& halo_
 	return pdf;
 }
 
-Event Initial_Conditions(obscura::DM_Distribution& halo_model, Solar_Model& solar_model, std::mt19937& PRNG)
+Event Initial_Conditions(obscura::DM_Distribution& halo_model, Celestial_Model& solar_model, std::mt19937& PRNG)
 {
 	auto* standard_halo = dynamic_cast<obscura::Standard_Halo_Model*>(&halo_model);
 	if(standard_halo == nullptr)
@@ -226,8 +226,8 @@ Event Initial_Conditions(obscura::DM_Distribution& halo_model, Solar_Model& sola
 
 	// 2. Initial position
 	// 2.1 Find the maximum impact parameter such that the particle still hits the Sun.
-	double v_esc				= solar_model.Local_Escape_Speed(rSun);
-	double impact_parameter_max = sqrt(u * u + v_esc * v_esc) / v * rSun;
+	double v_esc				= solar_model.Local_Escape_Speed(g_body_radius);
+	double impact_parameter_max = sqrt(u * u + v_esc * v_esc) / v * g_body_radius;
 	if(!std::isfinite(v_esc) || v_esc < 0.0 || !Finite_Positive(impact_parameter_max))
 		throw std::runtime_error("Initial_Conditions(): solar escape speed or impact-parameter bound is invalid.");
 	libphysica::Vector e_z		= (-1.0) * initial_velocity.Normalized();
@@ -251,11 +251,11 @@ Event Initial_Conditions(obscura::DM_Distribution& halo_model, Solar_Model& sola
 // 3. Analytically propagate a particle at event on a hyperbolic Kepler orbit to a radius R (without passing the periapsis)
 bool Hyperbolic_Kepler_Shift(Event& event, double R_final)
 {
-	const double mu = G_Newton * mSun;
+	const double mu = G_Newton * g_body_mass;
 	const double R_initial = event.Radius();
 	const double speed = event.Speed();
 
-	if(R_final < rSun || R_initial < rSun)
+	if(R_final < g_body_radius || R_initial < g_body_radius)
 		return Report_Hyperbolic_Kepler_Shift_Failure("orbits inside the Sun cannot be described analytically.");
 	if(!Finite_Positive(R_final) || !Finite_Positive(R_initial) || !Finite_Positive(speed))
 		return Report_Hyperbolic_Kepler_Shift_Failure("initial or final radius/speed is non-finite or non-positive.");

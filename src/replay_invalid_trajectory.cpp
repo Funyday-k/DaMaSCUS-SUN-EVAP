@@ -161,7 +161,7 @@ int main(int argc, char* argv[])
 		    solar_model,
 		    DEFAULT_MAXIMUM_FREE_TIME_STEPS,
 		    cfg.maximum_number_of_scatterings,
-		    TRAJECTORY_BOUNDARY_RSUN * rSun);
+		    TRAJECTORY_BOUNDARY_RSUN * g_body_radius);
 		simulator.current_trajectory_id =
 		    requested_trajectory_id > 0
 		    ? requested_trajectory_id - 1
@@ -211,8 +211,8 @@ int main(int argc, char* argv[])
 		    << (replay.bincount.event_observed ? 1 : 0) << "\n"
 		    << "replay_scatterings="
 		    << replay.number_of_scatterings << "\n"
-		    << "replay_final_r_Rsun="
-		    << In_Units(final_radius, rSun) << "\n"
+		    << "replay_final_r_Rbody="
+		    << In_Units(final_radius, g_body_radius) << "\n"
 		    << "replay_final_vr_km_s="
 		    << In_Units(final_radial_velocity, km / sec) << "\n"
 		    << "replay_final_energy_eV="

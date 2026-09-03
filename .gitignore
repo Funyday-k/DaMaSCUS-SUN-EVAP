@@ -49,4 +49,19 @@
 # Required solar-model input; all generated/runtime data remain ignored.
 !/data/
 /data/*
-!/data/model_agss09.dat
+!/data/earth_prem.dat
+<<<<<<< HEAD
+ctest_smoke_results/
+=======
+
+# 编译产物与作业日志
+build/
+*.err
+*.log
+>>>>>>> origin/chore/chpc-job-scripts
+
+# Simulation output
+Output/
+
+__pycache__/
+*.py[cod]

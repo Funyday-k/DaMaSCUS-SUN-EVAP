@@ -125,7 +125,7 @@ double Free_Propagation_Time_Step_Cap(double radius, double speed, double maximu
 
 	// 太阳外近似 Kepler 运动，步长不应大于局域动力学时间的一个固定比例。
 	const double safe_radius = std::max(radius, 1.0 * km);
-	const double dynamical_time = sqrt(safe_radius * safe_radius * safe_radius / (G_Newton * mSun));
+	const double dynamical_time = sqrt(safe_radius * safe_radius * safe_radius / (G_Newton * g_body_mass));
 	if(std::isfinite(dynamical_time) && dynamical_time > 0.0)
 		cap = std::min(cap, 0.1 * dynamical_time);
 
@@ -201,10 +201,10 @@ bool Bound_Kepler_Return_At_Same_Radius(const Event& outward_event, Event& inbou
 	const double speed = outward_event.Speed();
 	const double radial_velocity = Radial_Velocity(outward_event);
 	if(!std::isfinite(radius) || !std::isfinite(speed) || !std::isfinite(radial_velocity)
-	   || radius <= rSun || speed <= 0.0 || radial_velocity <= 0.0)
+	   || radius <= g_body_radius || speed <= 0.0 || radial_velocity <= 0.0)
 		return false;
 
-	const double mu = G_Newton * mSun;
+	const double mu = G_Newton * g_body_mass;
 	const double specific_energy = 0.5 * speed * speed - mu / radius;
 	if(!std::isfinite(specific_energy) || specific_energy >= 0.0)
 		return false;
@@ -429,7 +429,7 @@ bool Surface_Crossing_Fractions(const Event& before, const Event& after, double&
 {
 	double a = 0.0;
 	double b = 0.0;
-	double c = -rSun * rSun;
+	double c = -g_body_radius * g_body_radius;
 	for(unsigned int component = 0; component < 3; component++)
 	{
 		const double displacement = after.position[component] - before.position[component];
@@ -460,11 +460,11 @@ bool Fraction_In_Unit_Interval(double fraction)
 
 double Find_Surface_Crossing_Fraction(const Event& before, const Event& after, double lower, double upper)
 {
-	double r_lower = Radius_At_Fraction(before, after, lower) - rSun;
+	double r_lower = Radius_At_Fraction(before, after, lower) - g_body_radius;
 	for(int iteration = 0; iteration < 60; iteration++)
 	{
 		const double mid = 0.5 * (lower + upper);
-		const double r_mid = Radius_At_Fraction(before, after, mid) - rSun;
+		const double r_mid = Radius_At_Fraction(before, after, mid) - g_body_radius;
 		if((r_lower <= 0.0 && r_mid <= 0.0) || (r_lower >= 0.0 && r_mid >= 0.0))
 		{
 			lower = mid;
@@ -478,8 +478,8 @@ double Find_Surface_Crossing_Fraction(const Event& before, const Event& after, d
 
 bool Solar_Interior_Fraction_Interval(const Event& before, const Event& after, double r_before, double r_after, double& start, double& end)
 {
-	const bool before_inside = r_before < rSun;
-	const bool after_inside = r_after < rSun;
+	const bool before_inside = r_before < g_body_radius;
+	const bool after_inside = r_after < g_body_radius;
 	double first_crossing = 0.0;
 	double second_crossing = 0.0;
 	const bool has_crossings = Surface_Crossing_Fractions(before, after, first_crossing, second_crossing);
@@ -521,7 +521,7 @@ bool Solar_Interior_Fraction_Interval(const Event& before, const Event& after, d
 	return false;
 }
 
-double Scattering_Rate_At_Fraction(const Event& before, const Event& after, double fraction, Solar_Model& solar_model, obscura::DM_Particle& DM)
+double Scattering_Rate_At_Fraction(const Event& before, const Event& after, double fraction, Celestial_Model& solar_model, obscura::DM_Particle& DM)
 {
 	fraction = Clamp_Unit_Interval(fraction);
 	double radius_squared = 0.0;
@@ -536,7 +536,7 @@ double Scattering_Rate_At_Fraction(const Event& before, const Event& after, doub
 		speed_squared += velocity * velocity;
 	}
 	const double radius = sqrt(std::max(0.0, radius_squared));
-	if(radius >= rSun)
+	if(radius >= g_body_radius)
 		return 0.0;
 	return solar_model.Total_DM_Scattering_Rate(DM, radius, sqrt(std::max(0.0, speed_squared)));
 }
@@ -546,7 +546,7 @@ bool Build_Optical_Depth_Pieces(const Event& before,
                                 double interior_start,
                                 double interior_end,
                                 double actual_dt,
-                                Solar_Model& solar_model,
+                                Celestial_Model& solar_model,
                                 obscura::DM_Particle& DM,
                                 bool use_cached_start_rate,
                                 double cached_start_rate,
@@ -751,8 +751,10 @@ class HermiteBincountDepositor
 	HermiteBincountDepositor(
 		const Event& before,
 		const Event& after,
-		std::vector<BincountContribution>& contributions)
+            const Bincount_Radial_Grid& radial_grid,
+            std::vector<BincountContribution>& contributions)
 	: dt_sec_(In_Units(after.time - before.time, sec)),
+	  radial_grid_(radial_grid),
 	  contributions_(contributions)
 	{
 		for(std::size_t component = 0; component < 3; component++)
@@ -816,7 +818,8 @@ class HermiteBincountDepositor
 	Cartesian3 velocity_constant_km_s_{};
 	Cartesian3 velocity_linear_km_s_{};
 	Cartesian3 velocity_quadratic_km_s_{};
-	std::vector<BincountContribution>& contributions_;
+        const Bincount_Radial_Grid& radial_grid_;
+        std::vector<BincountContribution>& contributions_;
 
 	Cartesian3 Position(double fraction) const
 	{
@@ -884,8 +887,11 @@ class HermiteBincountDepositor
 
 	void Append_Contribution(int bin, double start, double end)
 	{
-		if(bin < 0 || bin >= NUM_BINS || !(end > start))
-			return;
+		if(bin < 0
+                   || bin >= static_cast<int>(
+                       radial_grid_.Inner_Bin_Count())
+                   || !(end > start))
+                        return;
 		BincountContribution contribution;
 		contribution.bin = bin;
 		contribution.dt_sec = dt_sec_ * (end - start);
@@ -918,9 +924,10 @@ class HermiteBincountDepositor
 		    chord_start, Cartesian_Scale(chord_midpoint, chord_delta));
 		const double radius_midpoint = Cartesian_Norm(position_midpoint);
 		int bin = -1;
-		if(std::isfinite(radius_midpoint)
-		   && radius_midpoint >= 0.0 && radius_midpoint < BIN_MAX_KM)
-			bin = static_cast<int>(radius_midpoint / BIN_WIDTH_KM);
+                if(std::isfinite(radius_midpoint)
+                   && radius_midpoint >= 0.0
+                   && radius_midpoint < radial_grid_.Inner_Extent_Km())
+                        bin = radial_grid_.Bin_Index_Km(radius_midpoint);
 		const double dense_piece_start =
 		    dense_start + (dense_end - dense_start) * chord_piece_start;
 		const double dense_piece_end =
@@ -978,9 +985,9 @@ class HermiteBincountDepositor
 		const double radius_min = std::min(radius_start, radius_end);
 		const double radius_max = std::max(radius_start, radius_end);
 		const int first_boundary = std::max(
-		    1, static_cast<int>(floor(radius_min / BIN_WIDTH_KM)) + 1);
+		    1, static_cast<int>(floor(radius_min / radial_grid_.Inner_Bin_Width_Km())) + 1);
 		const int last_boundary = std::min(
-		    NUM_BINS, static_cast<int>(floor(radius_max / BIN_WIDTH_KM)));
+		    static_cast<int>(radial_grid_.Inner_Bin_Count()), static_cast<int>(floor(radius_max / radial_grid_.Inner_Bin_Width_Km())));
 		const double quadratic_a = Cartesian_Dot(chord_delta, chord_delta);
 		const double quadratic_b = 2.0 * Cartesian_Dot(chord_start, chord_delta);
 		const int boundary_step = (radius_end >= radius_start) ? 1 : -1;
@@ -993,9 +1000,9 @@ class HermiteBincountDepositor
 		while((boundary_step > 0 && boundary <= boundary_end)
 		      || (boundary_step < 0 && boundary >= boundary_end))
 		{
-			const double target_radius = static_cast<double>(boundary) * BIN_WIDTH_KM;
-			if(target_radius > radius_min + 1.0e-10 * BIN_WIDTH_KM
-			   && target_radius < radius_max - 1.0e-10 * BIN_WIDTH_KM)
+			const double target_radius = static_cast<double>(boundary) * radial_grid_.Inner_Bin_Width_Km();
+			if(target_radius > radius_min + 1.0e-10 * radial_grid_.Inner_Bin_Width_Km()
+			   && target_radius < radius_max - 1.0e-10 * radial_grid_.Inner_Bin_Width_Km())
 			{
 				double root = 0.0;
 				if(Chord_Boundary_Root(
@@ -1040,8 +1047,8 @@ class HermiteBincountDepositor
 		if(chord_length_sqr <= 0.0)
 		{
 			const double radius = Cartesian_Norm(chord_start);
-			const int bin = (std::isfinite(radius) && radius >= 0.0 && radius < BIN_MAX_KM)
-			              ? static_cast<int>(radius / BIN_WIDTH_KM)
+			const int bin = (std::isfinite(radius) && radius >= 0.0 && radius < radial_grid_.Inner_Extent_Km())
+			              ? static_cast<int>(radius / radial_grid_.Inner_Bin_Width_Km())
 			              : -1;
 			Append_Contribution(bin, start, end);
 			return;
@@ -1114,14 +1121,14 @@ class HermiteBincountDepositor
 				    std::min(minimum_radial_projection, Cartesian_Dot(radial_direction, control));
 		}
 		const double margin =
-		    BINCOUNT_DENSE_POSITION_TOLERANCE_KM + 1.0e-10 * BIN_WIDTH_KM;
-		if(midpoint_radius >= BIN_MAX_KM)
+		    (2.0e-3 * radial_grid_.Inner_Bin_Width_Km()) + 1.0e-10 * radial_grid_.Inner_Bin_Width_Km();
+		if(midpoint_radius >= radial_grid_.Inner_Extent_Km())
 			return midpoint_radius > 0.0
-			    && minimum_radial_projection >= BIN_MAX_KM + margin;
+			    && minimum_radial_projection >= radial_grid_.Inner_Extent_Km() + margin;
 
-		const int bin = static_cast<int>(midpoint_radius / BIN_WIDTH_KM);
-		const double lower_radius = static_cast<double>(bin) * BIN_WIDTH_KM;
-		const double upper_radius = static_cast<double>(bin + 1) * BIN_WIDTH_KM;
+		const int bin = static_cast<int>(midpoint_radius / radial_grid_.Inner_Bin_Width_Km());
+		const double lower_radius = static_cast<double>(bin) * radial_grid_.Inner_Bin_Width_Km();
+		const double upper_radius = static_cast<double>(bin + 1) * radial_grid_.Inner_Bin_Width_Km();
 		if(maximum_control_radius >= upper_radius - margin)
 			return false;
 		if(lower_radius > 0.0
@@ -1138,7 +1145,7 @@ class HermiteBincountDepositor
 			return;
 		const double linearity_error = Position_Linearity_Error(start, end);
 		if(std::isfinite(linearity_error)
-		   && linearity_error > BINCOUNT_DENSE_POSITION_TOLERANCE_KM
+		   && linearity_error > (2.0e-3 * radial_grid_.Inner_Bin_Width_Km())
 		   && depth < BINCOUNT_DENSE_MAX_RECURSION)
 		{
 			const double midpoint = 0.5 * (start + end);
@@ -1162,12 +1169,35 @@ bool Find_First_Outward_Hermite_Radius_Crossing(
 }
 
 void Compute_Bincount_Interval_Contributions(
-	const Event& before,
-	const Event& after,
-	std::vector<BincountContribution>& contributions)
+        const Event& before,
+        const Event& after,
+        std::vector<BincountContribution>& contributions)
 {
-	contributions.clear();
-	HermiteBincountDepositor(before, after, contributions).Deposit();
+        // Preserve the historical Sun-grid behavior for existing callers.
+        static const Bincount_Radial_Grid legacy_sun_grid(
+            R_SUN_KM,
+            RADIAL_DOMAIN_MAX_AU);
+
+        Compute_Bincount_Interval_Contributions(
+            before,
+            after,
+            legacy_sun_grid,
+            contributions);
+}
+
+void Compute_Bincount_Interval_Contributions(
+        const Event& before,
+        const Event& after,
+        const Bincount_Radial_Grid& radial_grid,
+        std::vector<BincountContribution>& contributions)
+{
+        contributions.clear();
+
+        HermiteBincountDepositor(
+            before,
+            after,
+            radial_grid,
+            contributions).Deposit();
 }
 
 double BincountBinLowerKm(std::size_t bin)
@@ -1193,8 +1223,24 @@ int BincountBinIndexKm(double radius_km)
 }
 
 bool Compute_Bound_Kepler_Exterior_Arc(
-	const Event& outward_event,
-	BoundKeplerExteriorArc& arc)
+        const Event& outward_event,
+        BoundKeplerExteriorArc& arc)
+{
+        // Preserve the historical Sun-grid behavior for existing callers.
+        static const Bincount_Radial_Grid legacy_sun_grid(
+            R_SUN_KM,
+            RADIAL_DOMAIN_MAX_AU);
+
+        return Compute_Bound_Kepler_Exterior_Arc(
+            outward_event,
+            legacy_sun_grid,
+            arc);
+}
+
+bool Compute_Bound_Kepler_Exterior_Arc(
+        const Event& outward_event,
+        const Bincount_Radial_Grid& radial_grid,
+        BoundKeplerExteriorArc& arc)
 {
 	Event inbound_event;
 	double return_time = 0.0;
@@ -1208,7 +1254,7 @@ bool Compute_Bound_Kepler_Exterior_Arc(
 	const double angular_momentum_km2_s =
 	    In_Units(outward_event.Angular_Momentum(), km * km / sec);
 	const double mu_km3_s2 =
-	    In_Units(G_Newton * mSun, km * km * km / (sec * sec));
+	    In_Units(G_Newton * g_body_mass, km * km * km / (sec * sec));
 	const double specific_energy_km2_s2 =
 	    0.5 * speed_km_s * speed_km_s - mu_km3_s2 / radius_km;
 	const double semi_major_axis_km =
@@ -1231,22 +1277,22 @@ bool Compute_Bound_Kepler_Exterior_Arc(
 	const double apoapsis_km = In_Units(apoapsis_radius, km);
 	if(!std::isfinite(apoapsis_km) || apoapsis_km < radius_km)
 		return false;
-	arc = BoundKeplerExteriorArc();
+	arc = BoundKeplerExteriorArc(radial_grid.Bin_Count());
 	arc.terminal_event = inbound_event;
 	arc.elapsed_time_sec = In_Units(return_time, sec);
 	arc.kepler_period_sec = 2.0 * M_PI / mean_motion_s_inv;
 	arc.apoapsis_km = apoapsis_km;
 	arc.outer_domain_removed =
-	    apoapsis_km > RADIAL_DOMAIN_MAX_KM * (1.0 + 1.0e-12);
+	    apoapsis_km > radial_grid.Domain_Max_Km() * (1.0 + 1.0e-12);
 	const double integration_limit_km =
-	    arc.outer_domain_removed ? RADIAL_DOMAIN_MAX_KM : apoapsis_km;
+	    arc.outer_domain_removed ? radial_grid.Domain_Max_Km() : apoapsis_km;
 	const double pass_factor = arc.outer_domain_removed ? 1.0 : 2.0;
 	if(arc.outer_domain_removed)
 	{
 		const double cos_e_start = Clamp_Cosine(
 		    (1.0 - radius_km / semi_major_axis_km) / eccentricity);
 		const double cos_e_terminal = Clamp_Cosine(
-		    (1.0 - RADIAL_DOMAIN_MAX_KM / semi_major_axis_km) / eccentricity);
+		    (1.0 - radial_grid.Domain_Max_Km() / semi_major_axis_km) / eccentricity);
 		const double e_start = acos(cos_e_start);
 		const double e_terminal = acos(cos_e_terminal);
 		const double sin_e_start =
@@ -1259,7 +1305,7 @@ bool Compute_Bound_Kepler_Exterior_Arc(
 		    / mean_motion_s_inv;
 
 		const double radius = outward_event.Radius();
-		const double mu = G_Newton * mSun;
+		const double mu = G_Newton * g_body_mass;
 		const libphysica::Vector radial_unit = outward_event.position / radius;
 		const libphysica::Vector angular_momentum_vector =
 		    outward_event.position.Cross(outward_event.velocity);
@@ -1287,7 +1333,7 @@ bool Compute_Bound_Kepler_Exterior_Arc(
 		axis_y = axis_y / axis_y_norm;
 		axis_x = axis_y.Cross(axis_z).Normalized();
 
-		const double terminal_radius = RADIAL_DOMAIN_MAX_KM * km;
+		const double terminal_radius = radial_grid.Domain_Max_Km() * km;
 		const double cos_true_anomaly = Clamp_Cosine(
 		    (semi_latus_rectum / terminal_radius - 1.0)
 		    / eccentricity_natural);
@@ -1309,16 +1355,17 @@ bool Compute_Bound_Kepler_Exterior_Arc(
 			return false;
 	}
 
-	const int first_bin_index = BincountBinIndexKm(radius_km);
-	if(first_bin_index < NUM_BINS)
+	const int first_bin_index = radial_grid.Bin_Index_Km(radius_km);
+	if(first_bin_index
+           < static_cast<int>(radial_grid.Inner_Bin_Count()))
 		return false;
 	for(std::size_t bin = static_cast<std::size_t>(first_bin_index);
-	    bin < TOTAL_BINS; bin++)
+	    bin < radial_grid.Bin_Count(); bin++)
 	{
 		const double lower_radius_km =
-		    std::max(radius_km, BincountBinLowerKm(bin));
+		    std::max(radius_km, radial_grid.Bin_Lower_Km(bin));
 		const double upper_radius_km =
-		    std::min(integration_limit_km, BincountBinUpperKm(bin));
+		    std::min(integration_limit_km, radial_grid.Bin_Upper_Km(bin));
 		if(!(upper_radius_km > lower_radius_km))
 			break;
 
@@ -1349,6 +1396,8 @@ bool Compute_Bound_Kepler_Exterior_Arc(
 	return std::isfinite(arc.elapsed_time_sec) && arc.elapsed_time_sec > 0.0
 	    && std::isfinite(arc.kepler_period_sec) && arc.kepler_period_sec > 0.0;
 }
+
+
 
 const char* TrajectoryDiagnosticEventTypeKey(TrajectoryDiagnosticEventType type)
 {
@@ -1409,6 +1458,11 @@ const char* BincountIntegrationScheme()
 	return "conservative-hermite-kepler-outer-domain-geometric-capped-v4";
 }
 double BincountDensePositionToleranceKm() { return BINCOUNT_DENSE_POSITION_TOLERANCE_KM; }
+
+double BincountDensePositionToleranceKm(const Bincount_Radial_Grid& radial_grid)
+{
+    return 2.0e-3 * radial_grid.Inner_Bin_Width_Km();
+}
 double SnapshotProgressPublishWallIntervalSeconds() { return SNAPSHOT_PUBLISH_WALL_INTERVAL_SEC; }
 bool SnapshotProgressPublishDue(
     unsigned long int accepted_steps_since_publish, double wall_seconds_since_publish, bool force)
@@ -1465,8 +1519,8 @@ bool Trajectory_Result::Particle_Reflected() const
 	if(bincount.termination_reason != TrajectoryTerminationReason::OutwardEscape)
 		return false;
 	double r	= final_event.Radius();
-	double vesc = sqrt(2 * G_Newton * mSun / r);
-	return r > rSun && final_event.Speed() > vesc && number_of_scatterings > 0;
+	double vesc = sqrt(2 * G_Newton * g_body_mass / r);
+	return r > g_body_radius && final_event.Speed() > vesc && number_of_scatterings > 0;
 }
 
 bool Trajectory_Result::Particle_Free() const
@@ -1475,14 +1529,14 @@ bool Trajectory_Result::Particle_Free() const
 	    && number_of_scatterings == 0;
 }
 
-bool Trajectory_Result::Particle_Captured(Solar_Model& solar_model) const
+bool Trajectory_Result::Particle_Captured(Celestial_Model& solar_model) const
 {
 	double r	= final_event.Radius();
 	double vesc = solar_model.Local_Escape_Speed(r);
 	return final_event.Speed() < vesc;
 }
 
-void Trajectory_Result::Print_Summary(Solar_Model& solar_model, unsigned int mpi_rank)
+void Trajectory_Result::Print_Summary(Celestial_Model& solar_model, unsigned int mpi_rank)
 {
 	if(mpi_rank == 0)
 	{
@@ -1491,7 +1545,7 @@ void Trajectory_Result::Print_Summary(Solar_Model& solar_model, unsigned int mpi
 				  << std::endl
 				  << "Number of scatterings:\t" << number_of_scatterings << std::endl
 				  << "Simulation time [days]:\t" << libphysica::Round(In_Units(final_event.time, day)) << std::endl
-				  << "Final radius [rSun]:\t" << libphysica::Round(In_Units(final_event.Radius(), rSun)) << std::endl
+				  << "Final radius [R_body]:\t" << libphysica::Round(In_Units(final_event.Radius(), g_body_radius)) << std::endl
 				  << "Final speed [km/sec]:\t" << libphysica::Round(In_Units(final_event.Speed(), km / sec)) << std::endl
 				  << "Free particle:\t\t[" << (Particle_Free() ? "x" : " ") << "]" << std::endl
 				  << "Captured:\t\t[" << (Particle_Captured(solar_model) ? "x" : " ") << "]" << std::endl
@@ -1518,8 +1572,29 @@ void Trajectory_Result::Print_Summary(Solar_Model& solar_model, unsigned int mpi
 }
 
 // 2. Simulator
-Trajectory_Simulator::Trajectory_Simulator(const Solar_Model& model, unsigned long int max_time_steps, unsigned long int max_scatterings, double max_distance)
-: solar_model(model), has_previous_bincount_event(false),
+Trajectory_Simulator::Trajectory_Simulator(
+        Celestial_Model& model,
+        unsigned long int max_time_steps,
+        unsigned long int max_scatterings,
+        double max_distance)
+: Trajectory_Simulator(
+      model,
+      Bincount_Radial_Grid(R_SUN_KM, RADIAL_DOMAIN_MAX_AU),
+      max_time_steps,
+      max_scatterings,
+      max_distance)
+{
+}
+
+Trajectory_Simulator::Trajectory_Simulator(
+        Celestial_Model& model,
+        const Bincount_Radial_Grid& radial_grid,
+        unsigned long int max_time_steps,
+        unsigned long int max_scatterings,
+        double max_distance)
+: celestial_model(&model),
+  bincount_radial_grid(radial_grid),
+  has_previous_bincount_event(false),
   free_flight_reference_energy_eV(std::numeric_limits<double>::quiet_NaN()), current_ballistic_energy_drift_eV(0.0),
   current_physical_bound_state(false), terminate_on_capture(false), diagnostic_trace_enabled(false),
   diagnostic_event_index(0), diagnostic_scatter_index(0), diagnostic_step_index(0), last_scatter_target_index(-2),
@@ -1531,7 +1606,7 @@ Trajectory_Simulator::Trajectory_Simulator(const Solar_Model& model, unsigned lo
 		throw std::invalid_argument("Trajectory_Simulator(): maximum distance must be finite and positive.");
 	std::random_device rd;
 	PRNG.seed(rd());
-	rate_nuclei_cache.resize(solar_model.target_isotopes.size());
+	rate_nuclei_cache.resize(celestial_model->Target_Count());
 	bincount_contribution_cache.reserve(256);
 }
 
@@ -1608,7 +1683,11 @@ void Trajectory_Simulator::Accumulate_Bincount_Interval(
 		return;
 	if(!current_bincount.is_captured)
 		return;
-	Compute_Bincount_Interval_Contributions(before, after, bincount_contribution_cache);
+	Compute_Bincount_Interval_Contributions(
+            before,
+            after,
+            bincount_radial_grid,
+            bincount_contribution_cache);
 	for(const BincountContribution& contribution : bincount_contribution_cache)
 	{
 		if(contribution.bin < 0
@@ -1662,7 +1741,7 @@ void Trajectory_Simulator::Reset_Bincount_Anchor(const Event& event)
 
 double Trajectory_Simulator::Capture_Energy_eV(double radius, double speed, obscura::DM_Particle& DM)
 {
-	double vesc = solar_model.Local_Escape_Speed(radius);
+	double vesc = celestial_model->Local_Escape_Speed(radius);
 	double E = 0.5 * DM.mass * (speed * speed - vesc * vesc);
 	return In_Units(E, eV);
 }
@@ -1695,7 +1774,7 @@ void Trajectory_Simulator::Record_Diagnostic_Event(
 	record.energy_eV = Capture_Energy_eV(event.Radius(), event.Speed(), DM);
 	record.angular_momentum_km2_s = In_Units(event.Angular_Momentum(), km * km / sec);
 	record.is_bound = record.energy_eV < 0.0 ? 1 : 0;
-	record.inside_sun = event.Radius() < rSun ? 1 : 0;
+	record.inside_sun = event.Radius() < g_body_radius ? 1 : 0;
 	record.candidate_active = std::isfinite(current_bincount.t_final_unbinding_scatter) ? 1 : 0;
 	std::strncpy(record.target_species, target_species == nullptr ? "" : target_species,
 	             sizeof(record.target_species) - 1);
@@ -1829,23 +1908,29 @@ bool Trajectory_Simulator::Update_Capture_State(double radius, double speed, dou
 
 TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& current_event, obscura::DM_Particle& DM)
 {
-	if(!current_physical_bound_state
-	   && current_event.Radius() >= maximum_distance
-	   && Radial_Velocity(current_event) > 0.0)
+	auto has_unbound_outward_escape = [&](const Event& event)
 	{
-		const double boundary_energy_eV =
-		    Capture_Energy_eV(
-		        current_event.Radius(),
-		        current_event.Speed(),
-		        DM);
-		const double energy_tolerance_eV =
-		    Boundary_Energy_Tolerance_eV(
-		        free_flight_reference_energy_eV,
-		        DM);
-		if(std::isfinite(boundary_energy_eV)
-		   && boundary_energy_eV >= -energy_tolerance_eV)
-			return TrajectoryTerminationReason::OutwardEscape;
-	}
+	        if(current_physical_bound_state
+	           || event.Radius() < maximum_distance
+	           || Radial_Velocity(event) <= 0.0)
+	                return false;
+
+	        const double boundary_energy_eV =
+	            Capture_Energy_eV(
+	                event.Radius(),
+	                event.Speed(),
+	                DM);
+	        const double energy_tolerance_eV =
+	            Boundary_Energy_Tolerance_eV(
+	                free_flight_reference_energy_eV,
+	                DM);
+
+	        return std::isfinite(boundary_energy_eV)
+	               && boundary_energy_eV >= -energy_tolerance_eV;
+	};
+
+	if(has_unbound_outward_escape(current_event))
+	        return TrajectoryTerminationReason::OutwardEscape;
 
 	auto abort_if_uncaptured_bound = [&](const Event& event)
 	{
@@ -1966,7 +2051,7 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 		double r_before = particle_propagator.Current_Radius();
 		double v_before = particle_propagator.Current_Speed();
 		double rate_before = 0.0;
-		if(r_before >= rSun)
+		if(r_before >= g_body_radius)
 		{
 			const double step_cap = Free_Propagation_Time_Step_Cap(r_before, v_before, maximum_distance);
 			particle_propagator.time_step = std::min(RK45_Sanitized_Time_Step(particle_propagator.time_step), step_cap);
@@ -1988,9 +2073,9 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 					    std::min(particle_propagator.time_step, boundary_step_cap);
 				}
 			}
-			if(r_before > rSun && radial_velocity_before < 0.0)
+			if(r_before > g_body_radius && radial_velocity_before < 0.0)
 			{
-				const double surface_time_estimate = (r_before - rSun) / (-radial_velocity_before);
+				const double surface_time_estimate = (r_before - g_body_radius) / (-radial_velocity_before);
 				if(std::isfinite(surface_time_estimate) && surface_time_estimate > 0.0)
 					particle_propagator.time_step =
 					    std::min(particle_propagator.time_step, std::max(surface_time_estimate, 1.0e-8 * sec));
@@ -1999,7 +2084,7 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 		else
 		{
 			particle_propagator.time_step = RK45_Sanitized_Time_Step(particle_propagator.time_step);
-			rate_before = solar_model.Total_DM_Scattering_Rate(DM, r_before, v_before);
+			rate_before = celestial_model->Total_DM_Scattering_Rate(DM, r_before, v_before);
 			if(!std::isfinite(rate_before) || rate_before < 0.0)
 				{
 					std::cerr << "\nWarning in Propagate_Freely(): invalid pre-step scattering rate (rank "
@@ -2018,7 +2103,7 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 
 		const Free_Particle_Propagator::Scalar_State propagator_state_before = particle_propagator.Save_Scalar_State();
 		double t_before = particle_propagator.Current_Time();
-		bool rk_step_ok = particle_propagator.Runge_Kutta_45_Step(solar_model);
+		bool rk_step_ok = particle_propagator.Runge_Kutta_45_Step(*celestial_model);
 		double actual_dt = particle_propagator.Current_Time() - t_before;
 		double r_after = particle_propagator.Current_Radius();
 		double v_after = particle_propagator.Current_Speed();
@@ -2079,7 +2164,7 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 		double interior_end = 0.0;
 		if(Solar_Interior_Fraction_Interval(event_before, event_after, r_before, r_after, interior_start, interior_end))
 		{
-			if(r_after < rSun && v_after < 0.0)
+			if(r_after < g_body_radius && v_after < 0.0)
 			{
 				std::cerr << "Warning: Negative velocity detected (v = " << v_after << ") at r = " << r_after << ", skipping scattering calculation." << std::endl;
 				break;
@@ -2089,13 +2174,13 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 			double tau_two_piece = 0.0;
 			double delta_tau = 0.0;
 			bool invalid_rate = false;
-			const bool use_cached_start_rate = r_before < rSun && interior_start <= 1.0e-12;
+			const bool use_cached_start_rate = r_before < g_body_radius && interior_start <= 1.0e-12;
 				Build_Optical_Depth_Pieces(event_before,
 				                           event_after,
 				                           interior_start,
 				                           interior_end,
 				                           actual_dt,
-				                           solar_model,
+				                           *celestial_model,
 				                           DM,
 				                           use_cached_start_rate,
 				                           rate_before,
@@ -2329,7 +2414,10 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 					return TrajectoryTerminationReason::NumericalFailure;
 
 				BoundKeplerExteriorArc kepler_arc;
-				if(Compute_Bound_Kepler_Exterior_Arc(boundary_event, kepler_arc))
+				if(Compute_Bound_Kepler_Exterior_Arc(
+                                       boundary_event,
+                                       bincount_radial_grid,
+                                       kepler_arc))
 				{
 					time_steps++;
 					optical_depth_retries = 0;
@@ -2358,7 +2446,10 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 						      > current_bincount.max_bound_exit_exterior_time_sec)
 							current_bincount.max_bound_exit_exterior_time_sec =
 							    kepler_arc.elapsed_time_sec;
-						for(std::size_t bin = NUM_BINS; bin < TOTAL_BINS; bin++)
+						for(std::size_t bin =
+						        bincount_radial_grid.Inner_Bin_Count();
+						    bin < bincount_radial_grid.Bin_Count();
+						    bin++)
 						{
 							current_bincount.dt_hist[bin] += kepler_arc.dt_hist[bin];
 							current_bincount.v2dt_hist[bin] += kepler_arc.v2dt_hist[bin];
@@ -2372,10 +2463,10 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 						if(current_bincount.is_captured)
 						{
 							if(!std::isfinite(current_bincount.max_radius_after_capture_km)
-							   || RADIAL_DOMAIN_MAX_KM
+							   || bincount_radial_grid.Domain_Max_Km()
 							      > current_bincount.max_radius_after_capture_km)
 								current_bincount.max_radius_after_capture_km =
-								    RADIAL_DOMAIN_MAX_KM;
+								    bincount_radial_grid.Domain_Max_Km();
 							current_bincount.t_last_bound = In_Units(current_event.time, sec);
 						}
 						Maybe_Publish_Snapshot_Progress(
@@ -2421,6 +2512,9 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 		current_event.time += time_origin;
 		if(abort_if_uncaptured_bound(current_event))
 			return TrajectoryTerminationReason::NumericalFailure;
+
+		if(has_unbound_outward_escape(current_event))
+		        return TrajectoryTerminationReason::OutwardEscape;
 		if(terminate_on_capture && captured_now)
 			return TrajectoryTerminationReason::CaptureMode;
 
@@ -2435,20 +2529,20 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 
 int Trajectory_Simulator::Sample_Target(obscura::DM_Particle& DM, double r, double DM_speed)
 {
-	if(r > rSun)
+	if(r > g_body_radius)
 	{
-		throw std::runtime_error("Sample_Target(): r > rSun.");
+		throw std::runtime_error("Sample_Target(): r exceeds the target-body radius.");
 	}
 	else
 	{
 		// C: 复用预分配的 rate_nuclei_cache，避免每次散射事件堆分配
-		for(unsigned int i = 0; i < solar_model.target_isotopes.size(); i++)
+		for(unsigned int i = 0; i < celestial_model->Target_Count(); i++)
 		{
-			rate_nuclei_cache[i] = solar_model.DM_Scattering_Rate_Nucleus(DM, r, DM_speed, i);
+			rate_nuclei_cache[i] = celestial_model->DM_Scattering_Rate_Nucleus(DM, r, DM_speed, i);
 			if(!std::isfinite(rate_nuclei_cache[i]) || rate_nuclei_cache[i] < 0.0)
 				throw std::runtime_error("Sample_Target(): nucleus scattering rate is negative or non-finite.");
 		}
-		double rate_electron = solar_model.DM_Scattering_Rate_Electron(DM, r, DM_speed);
+		double rate_electron = celestial_model->DM_Scattering_Rate_Electron(DM, r, DM_speed);
 		if(!std::isfinite(rate_electron) || rate_electron < 0.0)
 			throw std::runtime_error("Sample_Target(): electron scattering rate is negative or non-finite.");
 		double total_rate	 = std::accumulate(rate_nuclei_cache.begin(), rate_nuclei_cache.end(), rate_electron);
@@ -2461,10 +2555,10 @@ int Trajectory_Simulator::Sample_Target(obscura::DM_Particle& DM, double r, doub
 		if(sum > xi)
 			return -1;
 		// Nuclei
-		for(unsigned int i = 0; i < solar_model.target_isotopes.size(); i++)
+		for(unsigned int i = 0; i < celestial_model->Target_Count(); i++)
 		{
 			sum += rate_nuclei_cache[i] / total_rate;
-			if(sum > xi || i == solar_model.target_isotopes.size() - 1)
+			if(sum > xi || i == celestial_model->Target_Count() - 1)
 				return i;
 		}
 		throw std::runtime_error("Sample_Target(): no target could be sampled.");
@@ -2572,12 +2666,12 @@ void Trajectory_Simulator::Scatter(Event& current_event, obscura::DM_Particle& D
 	if(target_index == -1)
 		target_mass = mElectron;
 	else
-		target_mass = solar_model.target_isotopes[target_index].mass;
+		target_mass = celestial_model->Target_Isotope(target_index).mass;
 
-	libphysica::Vector vel_target = Sample_Target_Velocity(solar_model.Temperature(r), target_mass, current_event.velocity);
+	libphysica::Vector vel_target = Sample_Target_Velocity(celestial_model->Temperature(r), target_mass, current_event.velocity);
 
 	// 2. Sample the scattering angle
-	double cos_alpha = (target_index == -1) ? DM.Sample_Scattering_Angle_Electron(PRNG, v, r) : DM.Sample_Scattering_Angle_Nucleus(PRNG, solar_model.target_isotopes[target_index], v, r);
+	double cos_alpha = (target_index == -1) ? DM.Sample_Scattering_Angle_Electron(PRNG, v, r) : DM.Sample_Scattering_Angle_Nucleus(PRNG, celestial_model->Target_Isotope(target_index), v, r);
 
 	// 3. Construct the final DM velocity
 	current_event.velocity = New_DM_Velocity(cos_alpha, DM.mass, target_mass, current_event.velocity, vel_target);
@@ -2600,7 +2694,8 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
 	long unsigned int number_of_scatterings = 0;
 
 	// Initialize per-trajectory bincount
-	current_bincount = TrajectoryBincount();
+	current_bincount =
+            TrajectoryBincount(bincount_radial_grid.Bin_Count());
 	Reset_Bincount_Anchor(current_event);
 	previous_capture_energy_eV = Capture_Energy_eV(current_event.Radius(), current_event.Speed(), DM);
 	free_flight_reference_energy_eV = previous_capture_energy_eV;
@@ -2634,7 +2729,7 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
 	while(number_of_scatterings < maximum_scatterings)
 	{
 		TrajectoryTerminationReason propagation_reason = Propagate_Freely(current_event, DM);
-		if(propagation_reason == TrajectoryTerminationReason::Scatter && current_event.Radius() < rSun)
+		if(propagation_reason == TrajectoryTerminationReason::Scatter && current_event.Radius() < g_body_radius)
 		{
 			diagnostic_scatter_index = number_of_scatterings + 1;
 			const size_t scatter_pre_event_index = current_diagnostic_events.size();
@@ -2658,8 +2753,8 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
 			if(last_scatter_target_index == -1)
 				target_species = "electron";
 			else if(last_scatter_target_index >= 0
-			        && static_cast<size_t>(last_scatter_target_index) < solar_model.target_isotopes.size())
-				target_species = solar_model.target_isotopes[static_cast<size_t>(last_scatter_target_index)].name;
+			        && static_cast<size_t>(last_scatter_target_index) < celestial_model->Target_Count())
+				target_species = celestial_model->Target_Isotope(static_cast<size_t>(last_scatter_target_index)).name;
 			if(diagnostic_trace_enabled && scatter_pre_event_index < current_diagnostic_events.size())
 			{
 				std::strncpy(current_diagnostic_events[scatter_pre_event_index].target_species,
@@ -2706,7 +2801,7 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
 	{
 		double r_final = current_event.Radius();
 		double v_final = current_event.Speed();
-		double vesc_final = solar_model.Local_Escape_Speed(r_final);
+		double vesc_final = celestial_model->Local_Escape_Speed(r_final);
 		double E_final = 0.5 * DM.mass * (v_final * v_final - vesc_final * vesc_final);
 		double E_final_eV = In_Units(E_final, eV);
 		if(termination_reason == TrajectoryTerminationReason::OutwardEscape && E_final_eV >= 0.0)
@@ -2861,7 +2956,7 @@ double Free_Particle_Propagator::dphi_dt(double r)
 	return angular_momentum / r / r;
 }
 
-bool Free_Particle_Propagator::Runge_Kutta_45_Step(Solar_Model& solar_model)
+bool Free_Particle_Propagator::Runge_Kutta_45_Step(Celestial_Model& solar_model)
 {
 	time_step = RK45_Sanitized_Time_Step(time_step);
 	bool accepted = false;

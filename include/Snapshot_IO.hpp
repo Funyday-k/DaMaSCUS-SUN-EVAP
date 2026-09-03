@@ -17,7 +17,7 @@ struct SnapshotEvaporationProgressEntry
 	uint64_t trajectory_id = 0;
 	double completion_wall_time_sec = 0.0;
 	double lifetime_unbinding_sec = -1.0;
-	double r_capture_rsun = -1.0;
+	double r_capture_rbody = -1.0;
 	double E_capture_eV = 0.0;
 	double dE_capture_eV = 0.0;
 };
@@ -46,12 +46,26 @@ struct SnapshotRankState
 	double current_trajectory_simulated_elapsed_sec = 0.0;
 	uint64_t current_trajectory_scatterings = 0;
 	int32_t current_trajectory_captured = 0;
-	std::array<double, TOTAL_BINS> current_trajectory_dt_hist{};
-	std::array<double, TOTAL_BINS> current_trajectory_v2dt_hist{};
-	std::array<double, TOTAL_BINS> captured_dt_hist{};
-	std::array<double, TOTAL_BINS> captured_v2dt_hist{};
-	std::array<double, TOTAL_BINS> captured_dt_sq_hist{};
-	std::array<double, TOTAL_BINS> captured_v2dt_sq_hist{};
+
+	// Default construction preserves the historical Sun-sized snapshot
+	// layout. Runtime-grid callers may provide a different bin count.
+	explicit SnapshotRankState(
+			std::size_t radial_bin_count = TOTAL_BINS)
+	: current_trajectory_dt_hist(radial_bin_count, 0.0),
+	  current_trajectory_v2dt_hist(radial_bin_count, 0.0),
+	  captured_dt_hist(radial_bin_count, 0.0),
+	  captured_v2dt_hist(radial_bin_count, 0.0),
+	  captured_dt_sq_hist(radial_bin_count, 0.0),
+	  captured_v2dt_sq_hist(radial_bin_count, 0.0)
+	{
+	}
+
+	std::vector<double> current_trajectory_dt_hist;
+	std::vector<double> current_trajectory_v2dt_hist;
+	std::vector<double> captured_dt_hist;
+	std::vector<double> captured_v2dt_hist;
+	std::vector<double> captured_dt_sq_hist;
+	std::vector<double> captured_v2dt_sq_hist;
 	std::vector<SnapshotEvaporationProgressEntry> new_evaporation_events;
 };
 
@@ -94,10 +108,21 @@ struct SnapshotReportState
 	uint64_t numerical_failures = 0;
 	uint64_t snapshot_bincount_captured_samples = 0;
 	uint64_t in_progress_bincount_captured_samples = 0;
-	std::array<double, TOTAL_BINS> captured_dt_hist{};
-	std::array<double, TOTAL_BINS> captured_v2dt_hist{};
-	std::array<double, TOTAL_BINS> captured_dt_sq_hist{};
-	std::array<double, TOTAL_BINS> captured_v2dt_sq_hist{};
+
+	// Snapshot merges configure this from the first readable rank state.
+	explicit SnapshotReportState(
+			std::size_t radial_bin_count = 0)
+	: captured_dt_hist(radial_bin_count, 0.0),
+	  captured_v2dt_hist(radial_bin_count, 0.0),
+	  captured_dt_sq_hist(radial_bin_count, 0.0),
+	  captured_v2dt_sq_hist(radial_bin_count, 0.0)
+	{
+	}
+
+	std::vector<double> captured_dt_hist;
+	std::vector<double> captured_v2dt_hist;
+	std::vector<double> captured_dt_sq_hist;
+	std::vector<double> captured_v2dt_sq_hist;
 	std::vector<SnapshotRankedEvaporationEntry> new_evaporation_events;
 	std::vector<RankProgress> rank_progress;
 };
@@ -140,6 +165,20 @@ SnapshotMergeResult TryWriteSnapshot(
 	double sigma_cm2,
 	bool allow_partial);
 
+// Runtime-grid overload: report bin edges and metadata are
+// derived from radial_grid rather than the historical Sun grid.
+SnapshotMergeResult TryWriteSnapshot(
+	const std::string& snapshot_root,
+	const std::string& rank_snapshot_dir,
+	int snapshot_index,
+	double interval_seconds,
+	int mpi_processes,
+	uint64_t run_id,
+	double mass_gev,
+	double sigma_cm2,
+	const Bincount_Radial_Grid& radial_grid,
+	bool allow_partial);
+
 SnapshotMergeResult TryWriteSnapshotCached(
 	const std::string& snapshot_root,
 	const std::string& rank_snapshot_dir,
@@ -151,6 +190,21 @@ SnapshotMergeResult TryWriteSnapshotCached(
 	double sigma_cm2,
 	SnapshotMergeCache& cache,
 	bool allow_partial);
+
+// Runtime-grid overload used by explicit callers and later
+// by SnapshotHeartbeat.
+SnapshotMergeResult TryWriteSnapshotCached(
+	const std::string& snapshot_root,
+	const std::string& rank_snapshot_dir,
+	int snapshot_index,
+	double interval_seconds,
+	int mpi_processes,
+	uint64_t run_id,
+	double mass_gev,
+       double sigma_cm2,
+       const Bincount_Radial_Grid& radial_grid,
+       SnapshotMergeCache& cache,
+       bool allow_partial);
 
 bool WriteMissedSnapshotMarker(
 	const std::string& snapshot_root,

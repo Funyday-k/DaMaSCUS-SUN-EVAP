@@ -3085,12 +3085,27 @@ bool Free_Particle_Propagator::Runge_Kutta_45_Step(Celestial_Model& solar_model)
 	if(RK45_Errors_Within_Tolerance(errors, error_tolerances))
 	{
 		time	  = time + time_step;
-		radius	  = radius_4;
-		// 边界检查：防止半径变为负数（数值误差）
-		if(radius < 0.0)
-			radius = 0.0;
-		v_radial  = v_radial_4;
-		phi		  = phi_4;
+		radius = radius_4;
+		v_radial = v_radial_4;
+		phi = phi_4;
+
+		// For a purely radial trajectory, a negative scalar radius means that
+		// the particle crossed the origin. Re-express the same physical 3D
+		// state with positive radius and a reversed radial basis.
+		if(radial_mode && std::isfinite(radius) && radius < 0.0)
+		{
+				radius = -radius;
+				v_radial = -v_radial;
+
+				for(unsigned int component = 0; component < 3; component++)
+						axis_x[component] = -axis_x[component];
+		}
+		else if(radius < 0.0)
+		{
+				// Non-radial trajectories should not cross the origin. Keep the
+				// existing defensive handling for this numerically invalid case.
+				radius = 0.0;
+		}
 		time_step = time_step_new;
 		accepted  = true;
 		return true;
@@ -3115,11 +3130,27 @@ bool Free_Particle_Propagator::Runge_Kutta_45_Step(Celestial_Model& solar_model)
 		time = time + abs_min_step;
 		if(state_ok)
 		{
-			radius = radius_4;
-			if(radius < 0.0)
+		radius = radius_4;
+		v_radial = v_radial_4;
+		phi = phi_4;
+
+		// For a purely radial trajectory, a negative scalar radius means that
+		// the particle crossed the origin. Re-express the same physical 3D
+		// state with positive radius and a reversed radial basis.
+		if(radial_mode && std::isfinite(radius) && radius < 0.0)
+		{
+				radius = -radius;
+				v_radial = -v_radial;
+
+				for(unsigned int component = 0; component < 3; component++)
+						axis_x[component] = -axis_x[component];
+		}
+		else if(radius < 0.0)
+		{
+				// Non-radial trajectories should not cross the origin. Keep the
+				// existing defensive handling for this numerically invalid case.
 				radius = 0.0;
-			v_radial = v_radial_4;
-			phi      = phi_4;
+		}
 		}
 		time_step = abs_min_step;
 		accepted  = true;
@@ -3185,11 +3216,27 @@ bool Free_Particle_Propagator::Runge_Kutta_45_Step(double constant_mass)
 	if(RK45_Errors_Within_Tolerance(errors, error_tolerances))
 	{
 		time	  = time + time_step;
-		radius	  = radius_4;
-		if(radius < 0.0)
-			radius = 0.0;
-		v_radial  = v_radial_4;
-		phi		  = phi_4;
+		radius = radius_4;
+		v_radial = v_radial_4;
+		phi = phi_4;
+
+		// For a purely radial trajectory, a negative scalar radius means that
+		// the particle crossed the origin. Re-express the same physical 3D
+		// state with positive radius and a reversed radial basis.
+		if(radial_mode && std::isfinite(radius) && radius < 0.0)
+		{
+				radius = -radius;
+				v_radial = -v_radial;
+
+				for(unsigned int component = 0; component < 3; component++)
+						axis_x[component] = -axis_x[component];
+		}
+		else if(radius < 0.0)
+		{
+				// Non-radial trajectories should not cross the origin. Keep the
+				// existing defensive handling for this numerically invalid case.
+				radius = 0.0;
+		}
 		time_step = time_step_new;
 		accepted  = true;
 		return true;
@@ -3206,11 +3253,27 @@ bool Free_Particle_Propagator::Runge_Kutta_45_Step(double constant_mass)
 		time = time + abs_min_step;
 		if(state_ok)
 		{
-			radius = radius_4;
-			if(radius < 0.0)
+		radius = radius_4;
+		v_radial = v_radial_4;
+		phi = phi_4;
+
+		// For a purely radial trajectory, a negative scalar radius means that
+		// the particle crossed the origin. Re-express the same physical 3D
+		// state with positive radius and a reversed radial basis.
+		if(radial_mode && std::isfinite(radius) && radius < 0.0)
+		{
+				radius = -radius;
+				v_radial = -v_radial;
+
+				for(unsigned int component = 0; component < 3; component++)
+						axis_x[component] = -axis_x[component];
+		}
+		else if(radius < 0.0)
+		{
+				// Non-radial trajectories should not cross the origin. Keep the
+				// existing defensive handling for this numerically invalid case.
 				radius = 0.0;
-			v_radial = v_radial_4;
-			phi      = phi_4;
+		}
 		}
 		time_step = abs_min_step;
 		accepted  = true;

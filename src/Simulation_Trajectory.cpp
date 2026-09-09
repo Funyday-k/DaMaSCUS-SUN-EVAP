@@ -1999,23 +1999,85 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 		particle_propagator = Free_Particle_Propagator(local_event);
 	};
 
-	auto abort_if_wall_time_exceeded = [&](const char* phase)
-	{
-		if(max_trajectory_wall_time_sec <= 0.0)
-			return false;
+        auto abort_if_wall_time_exceeded = [&](const char* phase)
+        {
+                if(max_trajectory_wall_time_sec <= 0.0)
+                        return false;
 
-		double traj_wall = Current_Trajectory_Wall_Time_Seconds();
-		if(traj_wall <= max_trajectory_wall_time_sec)
-			return false;
+                const double traj_wall = Current_Trajectory_Wall_Time_Seconds();
+                if(traj_wall <= max_trajectory_wall_time_sec)
+                        return false;
 
-		std::cerr << "\nWarning in Propagate_Freely(): trajectory wall-time budget exceeded (rank "
-		          << current_mpi_rank << ", traj " << current_trajectory_id
-		          << ", phase=" << phase << ", step_attempts=" << step_attempts
-		          << ", traj_wall=" << traj_wall << "s > " << max_trajectory_wall_time_sec
-		          << "s). Aborting trajectory." << std::endl;
-		current_event = to_absolute_event(particle_propagator.Event_In_3D());
-		return true;
-	};
+                // Read the current RK45 state only when the trajectory is
+                // actually timing out.
+                const Event local_timeout_event =
+                    particle_propagator.Event_In_3D();
+                const Event absolute_timeout_event =
+                    to_absolute_event(local_timeout_event);
+
+                const double radius = local_timeout_event.Radius();
+                const double speed = local_timeout_event.Speed();
+                const double radial_velocity =
+                    (radius > 0.0)
+                        ? local_timeout_event.position.Dot(
+                              local_timeout_event.velocity)
+                              / radius
+                        : 0.0;
+
+                // Use exactly the same energy convention as
+                // Update_Capture_State().
+                const double energy_eV =
+                    Capture_Energy_eV(radius, speed, DM);
+                const bool energy_negative =
+                    std::isfinite(energy_eV) && energy_eV < 0.0;
+
+                // This is the project's existing outward-escape criterion.
+                const bool outward_escape_now =
+                    has_unbound_outward_escape(local_timeout_event);
+
+                const double radius_over_body =
+                    (g_body_radius > 0.0)
+                        ? radius / g_body_radius
+                        : std::numeric_limits<double>::quiet_NaN();
+
+                std::cerr
+                    << "\nWarning in Propagate_Freely(): "
+                    << "trajectory wall-time budget exceeded"
+                    << " (rank=" << current_mpi_rank
+                    << ", traj=" << current_trajectory_id
+                    << ", phase=" << phase
+                    << ", step_attempts=" << step_attempts
+                    << ", accepted_steps=" << time_steps
+                    << ", traj_wall_s=" << traj_wall
+                    << ", budget_s=" << max_trajectory_wall_time_sec
+                    << ", t_s="
+                    << In_Units(absolute_timeout_event.time, sec)
+                    << ", dt_rk45_s="
+                    << In_Units(particle_propagator.time_step, sec)
+                    << ", r_km=" << In_Units(radius, km)
+                    << ", r_over_Rbody=" << radius_over_body
+                    << ", v_km_s=" << In_Units(speed, km / sec)
+                    << ", v_r_km_s="
+                    << In_Units(radial_velocity, km / sec)
+                    << ", E_capture_eV=" << energy_eV
+                    << ", energy_negative_now="
+                    << (energy_negative ? "true" : "false")
+                    << ", physical_bound_cached="
+                    << (current_physical_bound_state ? "true" : "false")
+                    << ", is_captured="
+                    << (current_bincount.is_captured ? "true" : "false")
+                    << ", outward_escape_now="
+                    << (outward_escape_now ? "true" : "false")
+                    << ", optical_depth_retries="
+                    << optical_depth_retries
+                    << ", boundary_refinement_retries="
+                    << boundary_refinement_retries
+                    << "). Aborting trajectory."
+                    << std::endl;
+
+                current_event = absolute_timeout_event;
+                return true;
+        };
 
 	auto commit_accepted_event = [&](const Event& local_accepted_event)
 	{

@@ -9,6 +9,7 @@
 
 #include "Simulation_Trajectory.hpp"
 #include "Simulation_Utilities.hpp"
+#include "Solar_Model.hpp"
 
 using namespace DaMaSCUS_SUN;
 using namespace libphysica::natural_units;

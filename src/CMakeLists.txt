@@ -43,6 +43,9 @@ add_library(lib_damascus_sun STATIC
 	Snapshot_Shared_State.cpp
 	Simulation_Trajectory.cpp
 	Simulation_Utilities.cpp
+	Celestial_Model.cpp
+	Radial_Binning.cpp
+	Earth_Model.cpp
 	Solar_Model.cpp )
 
 set_target_properties(lib_damascus_sun PROPERTIES PREFIX "")

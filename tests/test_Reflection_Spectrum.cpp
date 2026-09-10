@@ -8,6 +8,7 @@
 
 #include "obscura/DM_Halo_Models.hpp"
 #include "obscura/DM_Particle_Standard.hpp"
+#include "Solar_Model.hpp"
 
 using namespace DaMaSCUS_SUN;
 using namespace libphysica::natural_units;

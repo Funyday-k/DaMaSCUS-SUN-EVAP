@@ -192,7 +192,7 @@ void ExpectStatesEqual(const SnapshotRankState& expected, const SnapshotRankStat
 		EXPECT_EQ(expected.new_evaporation_events[index].trajectory_id, actual.new_evaporation_events[index].trajectory_id);
 		EXPECT_DOUBLE_EQ(expected.new_evaporation_events[index].completion_wall_time_sec, actual.new_evaporation_events[index].completion_wall_time_sec);
 		EXPECT_DOUBLE_EQ(expected.new_evaporation_events[index].lifetime_unbinding_sec, actual.new_evaporation_events[index].lifetime_unbinding_sec);
-		EXPECT_DOUBLE_EQ(expected.new_evaporation_events[index].r_capture_rsun, actual.new_evaporation_events[index].r_capture_rsun);
+		EXPECT_DOUBLE_EQ(expected.new_evaporation_events[index].r_capture_rbody, actual.new_evaporation_events[index].r_capture_rbody);
 		EXPECT_DOUBLE_EQ(expected.new_evaporation_events[index].E_capture_eV, actual.new_evaporation_events[index].E_capture_eV);
 		EXPECT_DOUBLE_EQ(expected.new_evaporation_events[index].dE_capture_eV, actual.new_evaporation_events[index].dE_capture_eV);
 	}
@@ -249,6 +249,30 @@ TEST_F(SnapshotIOTest, AcceptsOnlyPositiveIntegerSnapshotIntervals)
 		std::invalid_argument);
 }
 
+TEST_F(SnapshotIOTest, HeartbeatAcceptsRuntimeGrid)
+{
+    constexpr double earth_radius_km = 6371.0;
+    const Bincount_Radial_Grid earth_grid(earth_radius_km);
+
+    SnapshotSharedState shared_state(earth_grid.Bin_Count());
+    shared_state.Initialize(0xE474U, 0);
+
+    EXPECT_NO_THROW(
+    {
+        SnapshotHeartbeat heartbeat(
+            shared_state,
+            0,
+            1,
+            0xE474U,
+            snapshot_root,
+            rank_snapshot_dir,
+            10.0,
+            0.5,
+            1.0e-40,
+            earth_grid);
+    });
+}
+
 TEST_F(SnapshotIOTest, BinaryRankStateRoundTripsAndRejectsCorruption)
 {
 	const uint64_t run_id = 0x123456789ULL;
@@ -287,13 +311,244 @@ TEST_F(SnapshotIOTest, BinaryRankStateRoundTripsAndRejectsCorruption)
 	EXPECT_FALSE(ReadSnapshotRankState(path, run_id, actual));
 }
 
+TEST_F(SnapshotIOTest, BinaryRankStateRoundTripsRuntimeHistogramLength)
+{
+    constexpr std::size_t runtime_bin_count = 7;
+    const uint64_t run_id = 0xE471U;
+
+    SnapshotRankState expected(runtime_bin_count);
+    expected.run_id = run_id;
+    expected.snapshot_index = 2;
+    expected.rank = 1;
+    expected.local_total = 3;
+    expected.local_classified = 3;
+    expected.rank_elapsed_wall_sec = 20.0;
+
+    expected.current_trajectory_dt_hist[6] = 1.25;
+    expected.current_trajectory_v2dt_hist[6] = 5.0;
+    expected.captured_dt_hist[4] = 3.5;
+    expected.captured_v2dt_hist[4] = 14.0;
+    expected.captured_dt_sq_hist[4] = 12.25;
+    expected.captured_v2dt_sq_hist[4] = 196.0;
+
+    const std::string path =
+        rank_snapshot_dir + "runtime_histogram.bin";
+
+    ASSERT_TRUE(WriteSnapshotRankState(path, expected));
+
+    SnapshotRankState actual;
+    ASSERT_TRUE(ReadSnapshotRankState(path, run_id, actual));
+
+    EXPECT_EQ(runtime_bin_count, actual.current_trajectory_dt_hist.size());
+    EXPECT_EQ(runtime_bin_count, actual.current_trajectory_v2dt_hist.size());
+    EXPECT_EQ(runtime_bin_count, actual.captured_dt_hist.size());
+    EXPECT_EQ(runtime_bin_count, actual.captured_v2dt_hist.size());
+    EXPECT_EQ(runtime_bin_count, actual.captured_dt_sq_hist.size());
+    EXPECT_EQ(runtime_bin_count, actual.captured_v2dt_sq_hist.size());
+
+    ExpectStatesEqual(expected, actual);
+}
+
+TEST_F(SnapshotIOTest, MergesRuntimeHistogramLength)
+{
+    constexpr double earth_radius_km = 6371.0;
+    const Bincount_Radial_Grid runtime_grid(earth_radius_km);
+    const std::size_t runtime_bin_count = runtime_grid.Bin_Count();
+    const std::size_t bin = runtime_bin_count - 1;
+    const uint64_t run_id = 0xE472U;
+    const double interval = 10.0;
+
+    SnapshotRankState state(runtime_bin_count);
+    state.run_id = run_id;
+    state.snapshot_index = 1;
+    state.rank = 0;
+    state.rank_elapsed_wall_sec = interval;
+    state.local_total = 1;
+    state.local_captured = 1;
+    state.local_classified = 1;
+    state.bincount_captured_samples = 1;
+
+    state.captured_dt_hist[bin] = 3.5;
+    state.captured_v2dt_hist[bin] = 14.0;
+    state.captured_dt_sq_hist[bin] = 12.25;
+    state.captured_v2dt_sq_hist[bin] = 196.0;
+
+    ASSERT_TRUE(WriteSnapshotRankState(
+        SnapshotRankCheckpointPath(
+            rank_snapshot_dir,
+            0,
+            1,
+            interval),
+        state));
+
+    const SnapshotMergeResult merged = TryWriteSnapshot(
+        snapshot_root,
+        rank_snapshot_dir,
+        1,
+        interval,
+        1,
+        run_id,
+        0.5,
+        1.0e-40,
+        runtime_grid,
+        false);
+
+    ASSERT_EQ(SnapshotMergeStatus::Merged, merged.status);
+
+    std::array<double, 4> histogram{};
+    ASSERT_TRUE(ReadHistogramBin(
+        SnapshotTextFilePath(snapshot_root, 1, interval),
+        static_cast<int>(bin),
+        histogram));
+
+    EXPECT_DOUBLE_EQ(3.5, histogram[0]);
+    EXPECT_DOUBLE_EQ(14.0, histogram[1]);
+}
+
+TEST_F(SnapshotIOTest, SnapshotReportUsesRuntimeGridEdges)
+{
+    constexpr double earth_radius_km = 6371.0;
+    const Bincount_Radial_Grid earth_grid(earth_radius_km);
+    const uint64_t run_id = 0xE473U;
+    const double interval = 10.0;
+    const std::size_t bin = earth_grid.Inner_Bin_Count();
+
+    SnapshotRankState state(earth_grid.Bin_Count());
+    state.run_id = run_id;
+    state.snapshot_index = 1;
+    state.rank = 0;
+    state.rank_elapsed_wall_sec = interval;
+    state.local_total = 1;
+    state.local_captured = 1;
+    state.local_classified = 1;
+    state.bincount_captured_samples = 1;
+
+    state.captured_dt_hist[bin] = 2.0;
+    state.captured_v2dt_hist[bin] = 8.0;
+    state.captured_dt_sq_hist[bin] = 4.0;
+    state.captured_v2dt_sq_hist[bin] = 64.0;
+
+    ASSERT_TRUE(WriteSnapshotRankState(
+        SnapshotRankCheckpointPath(
+            rank_snapshot_dir,
+            0,
+            1,
+            interval),
+        state));
+
+    const SnapshotMergeResult merged = TryWriteSnapshot(
+        snapshot_root,
+        rank_snapshot_dir,
+        1,
+        interval,
+        1,
+        run_id,
+        0.5,
+        1.0e-40,
+        earth_grid,
+        false);
+
+    ASSERT_EQ(SnapshotMergeStatus::Merged, merged.status);
+
+    const std::string report =
+        ReadAll(SnapshotTextFilePath(snapshot_root, 1, interval));
+    EXPECT_NE(
+        std::string::npos,
+        report.find("# bincount_dense_position_tolerance_km = 1.274200e-02"));
+
+    EXPECT_NE(
+        std::string::npos,
+        report.find(
+            "# total_radial_bins = "
+            + std::to_string(earth_grid.Bin_Count())));
+    EXPECT_NE(
+        std::string::npos,
+        report.find(
+            "# bin_index  r_lower_Rbody  r_upper_Rbody"));
+    EXPECT_EQ(std::string::npos, report.find("r_lower_Rsun"));
+    EXPECT_EQ(std::string::npos, report.find("r_upper_Rsun"));
+
+    std::array<double, 4> histogram{};
+    ASSERT_TRUE(ReadHistogramBin(
+        SnapshotTextFilePath(snapshot_root, 1, interval),
+        static_cast<int>(bin),
+        histogram));
+
+    EXPECT_DOUBLE_EQ(2.0, histogram[0]);
+    EXPECT_DOUBLE_EQ(8.0, histogram[1]);
+}
+
+TEST_F(SnapshotIOTest, SharedStateAcceptsRuntimeHistogramLength)
+{
+    constexpr std::size_t runtime_bin_count = 7;
+
+    SnapshotSharedState shared_state(runtime_bin_count);
+    shared_state.Initialize(701, 0);
+    shared_state.BeginTrajectory(91, 10.0);
+
+    std::vector<double> dt_hist(runtime_bin_count, 0.0);
+    std::vector<double> v2dt_hist(runtime_bin_count, 0.0);
+    dt_hist[6] = 2.5;
+    v2dt_hist[6] = 10.0;
+
+    shared_state.PublishCurrentTrajectoryProgress(
+        dt_hist,
+        v2dt_hist,
+        12.0);
+    shared_state.MarkCurrentCaptured(true);
+
+    std::size_t evaporation_end = 0;
+    const SnapshotRankState running =
+        shared_state.CopyForSnapshot(
+            1,
+            10.0,
+            10.0,
+            0,
+            evaporation_end);
+
+    ASSERT_EQ(
+        runtime_bin_count,
+        running.current_trajectory_dt_hist.size());
+    ASSERT_EQ(
+        runtime_bin_count,
+        running.current_trajectory_v2dt_hist.size());
+    EXPECT_DOUBLE_EQ(2.5, running.current_trajectory_dt_hist[6]);
+    EXPECT_DOUBLE_EQ(10.0, running.current_trajectory_v2dt_hist[6]);
+
+    TrajectoryBincount completed(runtime_bin_count);
+    completed.is_captured = true;
+    completed.termination_reason =
+        TrajectoryTerminationReason::OutwardEscape;
+    completed.dt_hist = dt_hist;
+    completed.v2dt_hist = v2dt_hist;
+
+    shared_state.RecordCompletedTrajectory(
+        completed,
+        true,
+        false,
+        {});
+
+    const SnapshotRankState final_state =
+        shared_state.CopyFinal(20.0, 0);
+
+    ASSERT_EQ(
+        runtime_bin_count,
+        final_state.captured_dt_hist.size());
+    ASSERT_EQ(
+        runtime_bin_count,
+        final_state.captured_v2dt_hist.size());
+    EXPECT_EQ(1U, final_state.bincount_captured_samples);
+    EXPECT_DOUBLE_EQ(2.5, final_state.captured_dt_hist[6]);
+    EXPECT_DOUBLE_EQ(10.0, final_state.captured_v2dt_hist[6]);
+}
+
 TEST_F(SnapshotIOTest, SharedStatePublishesCurrentTrajectoryProgress)
 {
 	SnapshotSharedState shared_state;
 	shared_state.Initialize(501, 4);
 	shared_state.BeginTrajectory(77, 100.0);
-	std::array<double, TOTAL_BINS> dt_hist{};
-	std::array<double, TOTAL_BINS> v2dt_hist{};
+	std::vector<double> dt_hist(TOTAL_BINS, 0.0);
+	std::vector<double> v2dt_hist(TOTAL_BINS, 0.0);
 	dt_hist[3] = 1.0;
 	v2dt_hist[3] = 4.0;
 	dt_hist[4] = 1.5;
@@ -543,6 +798,12 @@ TEST_F(SnapshotIOTest, FourLogicalRanksProgressFromPartialToMergedWithoutDowngra
 
 	const std::string merged_report = ReadAll(report_path);
 	const std::string merged_evaporation = ReadAll(evaporation_path);
+    EXPECT_NE(
+        std::string::npos,
+        merged_evaporation.find("r_capture_Rbody"));
+    EXPECT_EQ(
+        std::string::npos,
+        merged_evaporation.find("r_capture_Rsun"));
 	EXPECT_NE(std::string::npos, merged_report.find("# snapshot_status = merged"));
 	EXPECT_NE(std::string::npos, merged_report.find("# ready_ranks = 0,1,2,3"));
 	EXPECT_NE(std::string::npos, merged_report.find("# missing_ranks = \n"));

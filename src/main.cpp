@@ -3,6 +3,7 @@
 #include <cstring>	 // for strlen
 #include <exception>
 #include <iostream>
+#include <memory>
 #include <mpi.h>
 
 #include "libphysica/Natural_Units.hpp"
@@ -10,12 +11,15 @@
 #include "libphysica/Utilities.hpp"
 
 #include "Data_Generation.hpp"
+#include "Earth_Model.hpp"
 #include "Parameter_Scan.hpp"
 #include "Solar_Model.hpp"
 #include "version.hpp"
+#include "obscura/DM_Halo_Models.hpp"
 
 using namespace DaMaSCUS_SUN;
 using namespace libphysica::natural_units;
+extern std::string g_top_level_dir;
 
 int main(int argc, char* argv[])
 {
@@ -52,6 +56,30 @@ int main(int argc, char* argv[])
 
 	// Configuration parameters
 	Configuration cfg(argv[1], mpi_rank);
+
+	if(cfg.target_body == "Earth" && cfg.annual_modulation)
+	{
+	        auto* standard_halo = dynamic_cast<obscura::Standard_Halo_Model*>(cfg.DM_distr);
+	        if(standard_halo == nullptr)
+	        {
+	                if(mpi_rank == 0)
+	                        std::cerr << "Error: Earth annual modulation requires DM_distribution = \"SHM\"." << std::endl;
+	                MPI_Finalize();
+	                return 1;
+	        }
+
+	        standard_halo->Set_Observer_Velocity(
+	            cfg.obs_day, cfg.obs_month, cfg.obs_year, cfg.obs_hour, cfg.obs_minute);
+
+	        if(mpi_rank == 0)
+	                std::cout << "Earth annual modulation enabled for "
+	                          << cfg.obs_year << "-"
+	                          << cfg.obs_month << "-"
+	                          << cfg.obs_day << " "
+	                          << cfg.obs_hour << ":"
+	                          << cfg.obs_minute << std::endl;
+	}
+
 	if(cfg.snapshot_config.enabled && mpi_thread_provided < MPI_THREAD_FUNNELED)
 	{
 		if(mpi_rank == 0)
@@ -59,19 +87,69 @@ int main(int argc, char* argv[])
 			          << "heartbeat snapshot is disabled. Final MPI-reduced outputs are unaffected." << std::endl;
 		cfg.snapshot_config.enabled = false;
 	}
-	std::string solar_model_data_file;
+	std::unique_ptr<Celestial_Model> celestial_model;
+
 	try
 	{
-		solar_model_data_file = Locate_Solar_Model_Data_File(argv[0]);
-	}
-	catch(const std::exception& error)
-	{
+		if(cfg.target_body == "Earth")
+		{
+			celestial_model.reset(new Earth_Model());
+		}
+		else if(cfg.target_body == "Sun")
+		{
+			const std::string solar_model_data_file =
+				Locate_Solar_Model_Data_File(argv[0]);
+			celestial_model.reset(new Solar_Model(solar_model_data_file));
+		}
+		else
+		{
+			if(mpi_rank == 0)
+				std::cerr << "Error: unsupported target_body: "
+						<< cfg.target_body << std::endl;
+
+			MPI_Finalize();
+			return 1;
+		}
+
+		// Shared engine code uses these values wherever it cannot
+		// directly receive a Celestial_Model reference.
+		g_body_radius = celestial_model->Radius();
+		g_body_mass   = celestial_model->Total_Mass();
+
+		// Explicit runtime confirmation of the selected celestial model.
 		if(mpi_rank == 0)
-			std::cerr << "Error: " << error.what() << std::endl;
-		MPI_Finalize();
-		return 1;
+		{
+			const char* concrete_model =
+				dynamic_cast<Earth_Model*>(celestial_model.get()) != nullptr
+					? "Earth_Model"
+					: "Solar_Model";
+
+			std::cout << "##############################################################" << std::endl
+					<< "Celestial-model check" << std::endl
+					<< "\tRequested target body: " << cfg.target_body << std::endl
+					<< "\tConcrete model class:  " << concrete_model << std::endl
+					<< "\tModel name:            " << celestial_model->Name() << std::endl
+					<< "\tRadius [km]:           "
+					<< In_Units(g_body_radius, km) << std::endl
+					<< "\tTotal mass [kg]:       "
+					<< In_Units(g_body_mass, kg) << std::endl
+					<< "##############################################################" << std::endl;
+		}
 	}
-	Solar_Model SSM(solar_model_data_file);
+catch(const std::exception& error)
+{
+    if(mpi_rank == 0)
+        std::cerr << "Error while initializing "
+                  << cfg.target_body
+                  << " model: "
+                  << error.what()
+                  << std::endl;
+
+    MPI_Finalize();
+    return 1;
+}
+	// Retain the existing call sites below through the common interface.
+	Celestial_Model& SSM = *celestial_model;
 	cfg.Print_Summary(mpi_rank);
 	MPI_Barrier(MPI_COMM_WORLD);
 	////////////////////////////////////////////////////////////////////////
@@ -81,7 +159,7 @@ int main(int argc, char* argv[])
 	{
 		double u_min = 0.0;
 		Simulation_Data data_set(cfg.sample_size, cfg.max_trajectories, u_min, cfg.isoreflection_rings);
-		data_set.Configure(TRAJECTORY_BOUNDARY_RSUN * rSun, 1, cfg.maximum_number_of_scatterings);
+		data_set.Configure(TRAJECTORY_BOUNDARY_RSUN * g_body_radius, 1, cfg.maximum_number_of_scatterings);
 		data_set.Configure_Trajectory_Diagnostics(cfg.trajectory_diagnostic_config);
 		if(mpi_rank == 0)
 			std::cout << (cfg.capture_mode ? "Generate data in CAPTURE MODE..." : "Generate data...") << std::endl
@@ -100,7 +178,7 @@ int main(int argc, char* argv[])
 
 		// Write output files (bincount + evaporation summary)
 		std::string output_prefix = cfg.capture_mode ? "results_capture_" : "results_";
-		std::string output_path = g_top_level_dir + output_prefix + std::to_string(log10(In_Units(cfg.DM->mass, GeV))) + "_" + std::to_string(log10(In_Units(cfg.DM->Sigma_Proton(), cm * cm))) + "/";
+		std::string output_path = g_top_level_dir + cfg.target_body + "/" + output_prefix + std::to_string(log10(In_Units(cfg.DM->mass, GeV))) + "_" + std::to_string(log10(In_Units(cfg.DM->Sigma_Proton(), cm * cm))) + "/";
 		if(!cfg.capture_mode)
 			data_set.Write_Output_Files(output_path, *cfg.DM);
 

@@ -181,6 +181,43 @@ void Configuration::Import_Parameter_Scan_Parameter()
 		std::cerr << "No 'run_mode' setting in configuration file." << std::endl;
 		std::exit(EXIT_FAILURE);
 	}
+	// Optional target body. Legacy configuration files default to Sun.
+	target_body = "Sun";
+	try
+	{
+	        target_body = config.lookup("target_body").c_str();
+	}
+	catch(const SettingNotFoundException& nfex)
+	{
+	}
+
+	if(target_body != "Sun" && target_body != "Earth")
+	{
+	        std::cerr << "Error in Configuration::Import_Parameter_Scan_Parameter(): "
+	                  << "'target_body' must be either \"Sun\" or \"Earth\"." << std::endl;
+	        std::exit(EXIT_FAILURE);
+	}
+
+	config.lookupValue("annual_modulation", annual_modulation);
+	config.lookupValue("obs_day", obs_day);
+	config.lookupValue("obs_month", obs_month);
+	config.lookupValue("obs_year", obs_year);
+	config.lookupValue("obs_hour", obs_hour);
+	config.lookupValue("obs_minute", obs_minute);
+
+	if(annual_modulation)
+	{
+	        if(obs_month < 1 || obs_month > 12
+	           || obs_day < 1 || obs_day > 31
+	           || obs_hour < 0 || obs_hour > 23
+	           || obs_minute < 0 || obs_minute > 59)
+	        {
+	                std::cerr << "Error in Configuration::Import_Parameter_Scan_Parameter(): "
+	                          << "invalid observation date/time for annual modulation." << std::endl;
+	                std::exit(EXIT_FAILURE);
+	        }
+	}
+
 	capture_mode = (run_mode == "Capture");
 	const bool parameter_scan_mode = (run_mode == "Parameter scan");
 	try
@@ -627,8 +664,12 @@ void Configuration::Print_Summary(int mpi_rank)
 				  << "\tSample size:\t\t\t" << sample_size << std::endl
 				  << "\tFixed PRNG seed:\t\t" << (fixed_seed == 0 ? "random" : std::to_string(fixed_seed)) << std::endl
 				  << "\tMax scatterings/traj:\t\t" << maximum_number_of_scatterings << std::endl
-				  << "\tTrajectory boundary [Rsun]:\t" << TRAJECTORY_BOUNDARY_RSUN << std::endl
-				  << "\tSc. rate interpolation:\t\t" << ((interpolation_points > 0) ? "[x] (Grid: " + std::to_string(interpolation_points) + "×" + std::to_string(interpolation_points) + ")" : "[ ]") << std::endl;
+				  << "\tTrajectory boundary [R_body]:\t" << TRAJECTORY_BOUNDARY_RSUN << std::endl
+				                                    << "\tSc. rate interpolation:\t\t"
+				                                    << (((target_body == "Earth") ? (interpolation_points >= 3) : (interpolation_points >= 2))
+				                                                ? "[x] (Grid: " + std::to_string(interpolation_points) + "×" + std::to_string(interpolation_points) + ")"
+				                                                : "[ ]")
+				                                    << std::endl;
 		if(run_mode == "Parameter point" && isoreflection_rings > 1)
 			std::cout << "\tIsoreflection rings:\t\t" << isoreflection_rings << std::endl;
 		else if(run_mode == "Parameter scan")
@@ -640,13 +681,13 @@ void Configuration::Print_Summary(int mpi_rank)
 	}
 }
 
-double Compute_p_Value(unsigned int sample_size, obscura::DM_Particle& DM, obscura::DM_Detector& detector, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, unsigned int rate_interpolation_points, int mpi_rank, unsigned long int max_scatterings, SnapshotConfig snapshot_config, unsigned int fixed_seed)
+double Compute_p_Value(unsigned int sample_size, obscura::DM_Particle& DM, obscura::DM_Detector& detector, Celestial_Model& solar_model, obscura::DM_Distribution& halo_model, unsigned int rate_interpolation_points, int mpi_rank, unsigned long int max_scatterings, SnapshotConfig snapshot_config, unsigned int fixed_seed)
 {
 	double u_min = detector.Minimum_DM_Speed(DM);
 
 	solar_model.Interpolate_Total_DM_Scattering_Rate(DM, rate_interpolation_points, rate_interpolation_points);
 	Simulation_Data data_set(sample_size, g_max_trajectories, u_min);
-	data_set.Configure(TRAJECTORY_BOUNDARY_RSUN * rSun, 1, max_scatterings);
+	data_set.Configure(TRAJECTORY_BOUNDARY_RSUN * g_body_radius, 1, max_scatterings);
 	data_set.Generate_Data(DM, solar_model, halo_model, snapshot_config, fixed_seed, false);
 	data_set.Print_Summary(mpi_rank);
 	Reflection_Spectrum spectrum(data_set, solar_model, halo_model, DM.mass);
@@ -893,7 +934,7 @@ std::vector<std::vector<double>> Parameter_Scan::Limit_Curve()
 	return limit_curve;
 }
 
-void Parameter_Scan::Perform_STA_Scan(obscura::DM_Particle& DM, obscura::DM_Detector& detector, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, int mpi_rank)
+void Parameter_Scan::Perform_STA_Scan(obscura::DM_Particle& DM, obscura::DM_Detector& detector, Celestial_Model& solar_model, obscura::DM_Distribution& halo_model, int mpi_rank)
 {
 	Import_P_Values();
 	double mDM_original		 = DM.mass;
@@ -973,7 +1014,7 @@ void Parameter_Scan::Perform_STA_Scan(obscura::DM_Particle& DM, obscura::DM_Dete
 	DM.Set_Interaction_Parameter(coupling_original, detector.Target_Particles());
 }
 
-void Parameter_Scan::Perform_Full_Scan(obscura::DM_Particle& DM, obscura::DM_Detector& detector, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, int mpi_rank)
+void Parameter_Scan::Perform_Full_Scan(obscura::DM_Particle& DM, obscura::DM_Detector& detector, Celestial_Model& solar_model, obscura::DM_Distribution& halo_model, int mpi_rank)
 {
 	Import_P_Values();
 	double mDM_original		 = DM.mass;

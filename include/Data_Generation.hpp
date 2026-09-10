@@ -78,7 +78,7 @@ struct CompactEvaporationEvent
 	uint64_t trajectory_id = 0;
 	double completion_wall_time_sec = 0.0;
 	double lifetime_unbinding = -1.0;
-	double r_capture_rsun = -1.0;
+	double r_capture_rbody = -1.0;
 	double E_capture_eV = 0.0;
 	double dE_capture_eV = 0.0;
 	uint64_t number_of_bound_exterior_arcs = 0;
@@ -128,11 +128,11 @@ struct InvalidTrajectoryRecord
 	uint64_t number_of_recaptures = 0;
 	double t_capture_s = std::numeric_limits<double>::quiet_NaN();
 	double t_termination_s = std::numeric_limits<double>::quiet_NaN();
-	double final_r_rsun = std::numeric_limits<double>::quiet_NaN();
+	double final_r_rbody = std::numeric_limits<double>::quiet_NaN();
 	double final_vr_km_s = std::numeric_limits<double>::quiet_NaN();
 	double final_speed_km_s = std::numeric_limits<double>::quiet_NaN();
 	double final_energy_eV = std::numeric_limits<double>::quiet_NaN();
-	double max_r_after_capture_rsun = std::numeric_limits<double>::quiet_NaN();
+	double max_r_after_capture_rbody = std::numeric_limits<double>::quiet_NaN();
 	double max_free_energy_drift_eV = 0.0;
 	double max_free_energy_drift_rel = 0.0;
 	double failure_energy_before_step_eV = std::numeric_limits<double>::quiet_NaN();
@@ -162,8 +162,10 @@ class Simulation_Data
   private:
 	// Configuration
 	unsigned int requested_captured_particles;
-	uint64_t maximum_trajectories;
-	double initial_and_final_radius = TRAJECTORY_BOUNDARY_RSUN * libphysica::natural_units::rSun;
+	uint64_t maximum_trajectories;                      // 来自 main，使用 uint64_t
+	unsigned long int max_trajectories_per_rank;       // 来自 earth-refactor
+	unsigned long int normal_mode_mpi_sync_interval;   // 来自 earth-refactor
+	double initial_and_final_radius = TRAJECTORY_BOUNDARY_RSUN * libphysica::natural_units::rSun; // 使用 main 的规范写法
 	unsigned int minimum_number_of_scatterings = 1;
 	unsigned long int maximum_number_of_scatterings = DEFAULT_MAXIMUM_SCATTERINGS;
 	unsigned long int maximum_free_time_steps = DEFAULT_MAXIMUM_FREE_TIME_STEPS;
@@ -192,13 +194,19 @@ class Simulation_Data
 	bool early_stopped;
 	SimulationStopReason early_stop_reason;
 
-	// Aggregated bincount histograms
-	std::array<double, TOTAL_BINS> captured_dt_hist{};
-	std::array<double, TOTAL_BINS> captured_v2dt_hist{};
+	// One runtime grid is shared by the simulator, snapshots,
+	// aggregation, jackknife storage, and final bincount output.
+	Bincount_Radial_Grid bincount_radial_grid{
+		R_SUN_KM,
+		RADIAL_DOMAIN_MAX_AU};
 
-	// Per-bin sum of squares for error estimation
-	std::array<double, TOTAL_BINS> captured_dt_sq_hist{};      // Σ (per-traj dt)²
-	std::array<double, TOTAL_BINS> captured_v2dt_sq_hist{};    // Σ (per-traj v²dt)²
+	// Aggregated runtime-sized bincount histograms.
+	std::vector<double> captured_dt_hist;
+	std::vector<double> captured_v2dt_hist;
+
+	// Per-bin sum of squares for error estimation.
+	std::vector<double> captured_dt_sq_hist;      // Σ (per-traj dt)²
+	std::vector<double> captured_v2dt_sq_hist;    // Σ (per-traj v²dt)²
 	std::vector<double> residence_jackknife_block_dt_hist;
 	std::vector<double> residence_jackknife_block_v2dt_hist;
 	std::array<unsigned long int, RESIDENCE_JACKKNIFE_BLOCKS> jackknife_attempted_counts{};
@@ -241,7 +249,7 @@ class Simulation_Data
 	void Configure(double initial_radius, unsigned int min_scattering, unsigned long int max_scattering, unsigned long int max_free_steps = DEFAULT_MAXIMUM_FREE_TIME_STEPS);
 	void Configure_Trajectory_Diagnostics(const TrajectoryDiagnosticConfig& config);
 
-	void Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, SnapshotConfig snapshot_cfg = SnapshotConfig(), unsigned int fixed_seed = 0, bool capture_mode = false);
+	void Generate_Data(obscura::DM_Particle& DM, Celestial_Model& solar_model, obscura::DM_Distribution& halo_model, SnapshotConfig snapshot_cfg = SnapshotConfig(), unsigned int fixed_seed = 0, bool capture_mode = false);
 
 	// Output files
 	void Write_Output_Files(const std::string& output_dir, obscura::DM_Particle& DM);

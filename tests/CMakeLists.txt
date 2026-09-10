@@ -234,3 +234,17 @@ if(Python3_Interpreter_FOUND)
 else()
 	message(STATUS "Skipping Python workflow tests: Python3 interpreter is unavailable")
 endif()
+
+# Runtime radial-grid regression tests.
+add_executable(test_Radial_Binning
+    test_Radial_Binning.cpp)
+target_include_directories(test_Radial_Binning PRIVATE ${GENERATED_DIR})
+target_link_libraries(test_Radial_Binning
+    PRIVATE
+        lib_damascus_sun
+        gtest_main)
+target_compile_options(test_Radial_Binning PUBLIC -Wall -pedantic)
+add_test(NAME test_Radial_Binning COMMAND test_Radial_Binning
+    WORKING_DIRECTORY ${TESTS_DIR})
+set_tests_properties(test_Radial_Binning PROPERTIES
+    LABELS "bincount;grid;unit")

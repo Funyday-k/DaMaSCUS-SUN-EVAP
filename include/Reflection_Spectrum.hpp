@@ -6,7 +6,7 @@
 #include "obscura/DM_Distribution.hpp"
 
 #include "Data_Generation.hpp"
-#include "Solar_Model.hpp"
+#include "Celestial_Model.hpp"
 
 namespace DaMaSCUS_SUN
 {
@@ -20,7 +20,7 @@ class Reflection_Spectrum : public obscura::DM_Distribution
 
   public:
 	//Constructors
-	Reflection_Spectrum(const Simulation_Data& simulation_data, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, double mDM, int iso_ring = 0);
+	Reflection_Spectrum(const Simulation_Data& simulation_data, Celestial_Model& solar_model, obscura::DM_Distribution& halo_model, double mDM, int iso_ring = 0);
 
 	virtual double PDF_Speed(double v) override;
 
@@ -32,7 +32,7 @@ class Reflection_Spectrum : public obscura::DM_Distribution
 	virtual void Print_Summary(int mpi_rank = 0) override;
 };
 
-double DM_Entering_Rate(Solar_Model& solar_model, obscura::DM_Distribution& halo_model, double mDM);
+double DM_Entering_Rate(Celestial_Model& solar_model, obscura::DM_Distribution& halo_model, double mDM);
 
 }	// namespace DaMaSCUS_SUN
 

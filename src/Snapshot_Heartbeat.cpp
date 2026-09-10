@@ -26,6 +26,33 @@ SnapshotHeartbeat::SnapshotHeartbeat(
 	double snapshot_interval,
 	double mass_gev,
 	double sigma_cm2)
+: SnapshotHeartbeat(
+	shared_state,
+	mpi_rank,
+	mpi_processes,
+	run_id,
+	snapshot_root,
+	rank_snapshot_dir,
+	snapshot_interval,
+	mass_gev,
+	sigma_cm2,
+	Bincount_Radial_Grid(
+		R_SUN_KM,
+		RADIAL_DOMAIN_MAX_AU))
+{
+}
+
+SnapshotHeartbeat::SnapshotHeartbeat(
+	SnapshotSharedState& shared_state,
+	int mpi_rank,
+	int mpi_processes,
+	uint64_t run_id,
+	const std::string& snapshot_root,
+	const std::string& rank_snapshot_dir,
+	double snapshot_interval,
+	double mass_gev,
+	double sigma_cm2,
+	const Bincount_Radial_Grid& radial_grid)
 : shared_state_(shared_state),
   mpi_rank_(mpi_rank),
   mpi_processes_(mpi_processes),
@@ -35,10 +62,13 @@ SnapshotHeartbeat::SnapshotHeartbeat(
   snapshot_interval_(snapshot_interval),
   mass_gev_(mass_gev),
   sigma_cm2_(sigma_cm2),
+  radial_grid_(radial_grid),
   missed_tolerance_sec_(std::max(1.0, 0.1 * snapshot_interval))
 {
 	if(!IsValidSnapshotIntervalSeconds(snapshot_interval_))
-		throw std::invalid_argument("SnapshotHeartbeat: snapshot interval must be a positive integer number of seconds.");
+		throw std::invalid_argument(
+			"SnapshotHeartbeat: snapshot interval must be a positive "
+			"integer number of seconds.");
 }
 
 SnapshotHeartbeat::~SnapshotHeartbeat()
@@ -347,6 +377,7 @@ SnapshotMergeResult SnapshotHeartbeat::TryMergeIndex(int snapshot_index, bool al
 		run_id_,
 		mass_gev_,
 		sigma_cm2_,
+		radial_grid_,
 		AcquireMergeCache(snapshot_index),
 		allow_partial);
 	if(result.status == SnapshotMergeStatus::Merged)

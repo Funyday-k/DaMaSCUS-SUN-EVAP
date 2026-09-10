@@ -384,6 +384,35 @@ TEST(TestDataGeneration, TestSpeedFunctions)
 	EXPECT_DOUBLE_EQ(data_set.Minimum_Speed(), 0.75 * u_min);
 }
 
+TEST(TestDataGeneration, TestOutputFailuresAreReported)
+{
+	Simulation_Data data_set(1, 1);
+	obscura::DM_Particle_SD DM(0.1 * GeV);
+	const std::string output_dir = TestOutputDir("output_failure");
+	const std::string blocker = output_dir + "regular_file";
+	TouchFile(blocker);
+	EXPECT_THROW(data_set.Prepare_Output_Directory(blocker + "/nested"), std::runtime_error);
+	EXPECT_THROW(data_set.Write_Output_Files(blocker + "/nested", DM), std::runtime_error);
+	EXPECT_NO_THROW(data_set.Prepare_Output_Directory(output_dir));
+	std::remove(blocker.c_str());
+
+	// Exercise a failure after successful bincount publication, not just an
+	// invalid top-level directory. A directory cannot be replaced by rename.
+	const std::string evaporation_path = output_dir + "evaporation_times.txt";
+	mkdir(evaporation_path.c_str(), 0755);
+	EXPECT_THROW(data_set.Write_Output_Files(output_dir, DM), std::runtime_error);
+	rmdir(evaporation_path.c_str());
+
+	// Stale diagnostic files must be removable even with diagnostics disabled.
+	const std::string metadata_path = output_dir + "run_metadata.json";
+	mkdir(metadata_path.c_str(), 0755);
+	TouchFile(metadata_path + "/keep");
+	EXPECT_THROW(data_set.Write_Output_Files(output_dir, DM), std::runtime_error);
+	std::remove((metadata_path + "/keep").c_str());
+	rmdir(metadata_path.c_str());
+	RemoveTestOutputDir(output_dir);
+}
+
 TEST(TestDataGeneration, TestDefaultOutputContract)
 {
 	Solar_Model SSM;

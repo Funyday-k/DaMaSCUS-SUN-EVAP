@@ -1967,16 +1967,42 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 	MPI_Trace_Point(mpi_rank, "leave Perform_MPI_Reductions");
 }
 
+void Simulation_Data::Prepare_Output_Directory(const std::string& output_dir) const
+{
+	if(mpi_rank != 0)
+		return;
+
+	if(!Ensure_Directory_Exists(output_dir))
+		throw std::runtime_error("failed to create output directory " + output_dir);
+
+	// Use an exclusive temporary file so a preflight never overwrites a result.
+	std::string pattern = output_dir + "/.write_probe_XXXXXX";
+	std::vector<char> filename(pattern.begin(), pattern.end());
+	filename.push_back('\0');
+	const int descriptor = mkstemp(filename.data());
+	if(descriptor < 0)
+		throw std::runtime_error("output directory is not writable: " + output_dir);
+	const bool wrote = write(descriptor, "\n", 1) == 1;
+	const bool closed = close(descriptor) == 0;
+	const bool removed = std::remove(filename.data()) == 0;
+	if(!wrote || !closed || !removed)
+		throw std::runtime_error("output directory write check failed: " + output_dir);
+}
+
 void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura::DM_Particle& DM)
 {
 	if(mpi_rank != 0)
 		return;
 
 	if(!Ensure_Directory_Exists(output_dir))
+		throw std::runtime_error("failed to create output directory " + output_dir);
+
+	auto close_output = [](std::ofstream& file, const std::string& path)
 	{
-		std::cerr << "Warning in Write_Output_Files(): failed to create output directory " << output_dir << std::endl;
-		return;
-	}
+		file.close();
+		if(!file)
+			throw std::runtime_error("failed to write output file " + path);
+	};
 
 	double mass_gev = In_Units(DM.mass, GeV);
 	double sigma_cm2 = In_Units(DM.Sigma_Proton(), cm * cm);
@@ -2240,23 +2266,27 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 	}
 	std::cout << "Residence jackknife blocks: " << jackknife_path << std::endl;
 
-	std::remove((output_dir + "/captured_bincount.txt").c_str());
-	std::remove((output_dir + "/not_captured_bincount.txt").c_str());
-	std::remove((output_dir + "/evaporation_diagnostics.txt").c_str());
-	std::remove((output_dir + "/run_metadata.json").c_str());
-	std::remove((output_dir + "/trajectory_summary.tsv").c_str());
-	std::remove((output_dir + "/trajectory_events.tsv").c_str());
-	std::remove((output_dir + "/invalid_trajectories.tsv").c_str());
-	std::remove((output_dir + "/evaporation_" + "summary.txt").c_str());
-	std::remove((output_dir + "/evaporation_" + "mode_summary.txt").c_str());
-	std::remove((output_dir + "/evaporation_" + "mode_" + "bincount.txt").c_str());
-	std::remove((output_dir + "/computation_" + "time_summary.txt").c_str());
+	auto remove_stale_output = [](const std::string& path) {
+		if(std::remove(path.c_str()) != 0 && errno != ENOENT)
+			throw std::runtime_error("failed to remove stale output file " + path);
+	};
+	remove_stale_output(output_dir + "/captured_bincount.txt");
+	remove_stale_output(output_dir + "/not_captured_bincount.txt");
+	remove_stale_output(output_dir + "/evaporation_diagnostics.txt");
+	remove_stale_output(output_dir + "/run_metadata.json");
+	remove_stale_output(output_dir + "/trajectory_summary.tsv");
+	remove_stale_output(output_dir + "/trajectory_events.tsv");
+	remove_stale_output(output_dir + "/invalid_trajectories.tsv");
+	remove_stale_output(output_dir + "/evaporation_" + "summary.txt");
+	remove_stale_output(output_dir + "/evaporation_" + "mode_summary.txt");
+	remove_stale_output(output_dir + "/evaporation_" + "mode_" + "bincount.txt");
+	remove_stale_output(output_dir + "/computation_" + "time_summary.txt");
 
 	// 3. Final evaporation-time list.  This is intentionally the only final
 	// evaporation report; snapshot files are intermediate progress reports.
 	bool evaporation_times_ok = Write_Final_Evaporation_Time_File(Evaporation_Log_Path_From_Output_Dir(output_dir), mass_gev, sigma_cm2, compact_evaporation_events);
 	if(!evaporation_times_ok)
-		std::cerr << "Warning in Write_Output_Files(): failed to write evaporation_times.txt" << std::endl;
+		throw std::runtime_error("failed to write evaporation_times.txt in " + output_dir);
 
 	// 4. Always-on replay ledger for trajectories excluded by numerical or
 	// computational validity rules. A header-only file is written when no
@@ -2334,14 +2364,10 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 			    << '\t' << Encode_PRNG_State(record.rng_state_before_simulation)
 			    << '\n';
 		}
-		invalid.close();
-		if(!invalid)
-			std::cerr << "Warning in Write_Output_Files(): failed to write "
-			          << invalid_path << std::endl;
-		else
-			std::cout << "Invalid trajectory ledger:\t" << invalid_path
-			          << " (" << invalid_trajectory_records.size() << " records)"
-			          << std::endl;
+		close_output(invalid, invalid_path);
+		std::cout << "Invalid trajectory ledger:\t" << invalid_path
+		          << " (" << invalid_trajectory_records.size() << " records)"
+		          << std::endl;
 	}
 
 	if(evaporation_diagnostics_enabled)
@@ -2572,6 +2598,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 			         << "  \"bound_exit_orbit_invariant\": " << (bound_exit_orbit_invariant ? "true" : "false") << ",\n"
 			         << "  \"evaporation_event_reconciliation\": " << (evaporation_event_reconciliation ? "true" : "false") << "\n"
 			         << "}\n";
+			close_output(metadata, output_dir + "/run_metadata.json");
 		}
 
 		auto nan_if_missing = [](double value) {
@@ -2645,6 +2672,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 				summary << '\t' << (traced ? replay->rng_state_before_initial_conditions : std::string())
 				        << '\t' << (traced ? replay->rng_state_before_simulation : std::string()) << '\n';
 			}
+			close_output(summary, output_dir + "/trajectory_summary.tsv");
 		}
 
 		{
@@ -2667,6 +2695,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 				       << '\t' << event.is_bound << '\t' << event.inside_sun << '\t' << event.candidate_active
 				       << '\t' << event.target_species << '\t' << event.ballistic_energy_drift_eV << '\n';
 			}
+			close_output(events, output_dir + "/trajectory_events.tsv");
 		}
 
 		if(!unique_keys || !time_invariants || !evaporation_event_reconciliation || !escape_radius_invariant

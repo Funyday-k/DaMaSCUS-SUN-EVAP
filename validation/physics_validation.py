@@ -71,6 +71,8 @@ def _parse_bincount(path: Path):
     headers: Dict[str, str] = {}
     early_stop = None
     captured_dt: List[float] = []
+    columns: Optional[List[str]] = None
+    captured_dt_index: Optional[int] = None
     with path.open("r", encoding="utf-8") as handle:
         for raw_line in handle:
             line = raw_line.strip()
@@ -82,13 +84,33 @@ def _parse_bincount(path: Path):
                 match = HEADER_PATTERN.match(line)
                 if match:
                     headers[match.group(1).strip()] = match.group(2).strip()
+                else:
+                    candidate_columns = line[1:].split()
+                    if candidate_columns and candidate_columns[0] == "bin_index":
+                        # Current files use residence_dt[s]; older output used
+                        # cap_dt, optionally followed by an explicit unit.
+                        names = [column.split("[", 1)[0] for column in candidate_columns]
+                        matches = [index for index, name in enumerate(names)
+                                   if name in {"residence_dt", "cap_dt"}]
+                        if len(matches) != 1:
+                            raise ValueError(f"Unknown or ambiguous bincount columns in {path}: {line}")
+                        if columns is not None and candidate_columns != columns:
+                            raise ValueError(f"Conflicting bincount columns in {path}: {line}")
+                        columns = candidate_columns
+                        captured_dt_index = matches[0]
                 continue
             fields = line.split()
-            if len(fields) < 2:
+            if columns is None or captured_dt_index is None:
+                raise ValueError(f"Missing bincount column header in {path}")
+            if len(fields) != len(columns):
                 raise ValueError(f"Malformed bincount row in {path}: {line}")
-            # v2 adds explicit lower/upper radial edges before cap_dt.
-            captured_dt_index = 3 if len(fields) >= 11 else 1
-            captured_dt.append(float(fields[captured_dt_index]))
+            value = float(fields[captured_dt_index])
+            if not math.isfinite(value) or value < 0.0:
+                raise ValueError(f"Invalid residence time in {path}: {line}")
+            captured_dt.append(value)
+
+    if columns is None:
+        raise ValueError(f"Missing bincount column header in {path}")
 
     total = sum(captured_dt)
     radial_distribution = (

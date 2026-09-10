@@ -199,6 +199,69 @@ TEST(TestSimulationUtilities, TestInitialSpeedPDFIsFiniteAtZero)
 	EXPECT_THROW(PDF_Initial_Speed(-1.0, SHM, SSM), std::invalid_argument);
 }
 
+TEST(TestSimulationUtilities, TestInitialSpeedSamplingAdaptsToHaloParameters)
+{
+	Solar_Model solar_model;
+	obscura::Standard_Halo_Model halo;
+	const libphysica::Vector observer = halo.Get_Observer_Velocity();
+	std::mt19937 prng(20260910u);
+	const unsigned int trials = 5000;
+	const unsigned int grid_points = 8192;
+	const double distant_escape_squared = std::pow(solar_model.Local_Escape_Speed(1000.0 * AU), 2.0);
+	const double surface_escape_squared = std::pow(solar_model.Local_Escape_Speed(rSun), 2.0);
+	// Mutate one halo repeatedly: a cached envelope must not survive a change
+	// in dispersion or observer velocity. The final case also exercises s=0.
+	for(unsigned int scenario = 0; scenario < 5; scenario++)
+	{
+		const double dispersions[] = {220.0, 100.0, 30.0, 400.0, 100.0};
+		halo.Set_Speed_Dispersion(dispersions[scenario] * km / sec);
+		halo.Set_Observer_Velocity(scenario == 4 ? libphysica::Vector({0.0, 0.0, 0.0}) : observer);
+		const double maximum_speed = halo.Maximum_DM_Speed();
+		const double step = maximum_speed / grid_points;
+		std::vector<double> cdf(grid_points + 1, 0.0);
+		// Independent midpoint quadrature of f(u)*(u+v_escape^2/u).
+		for(unsigned int i = 0; i < grid_points; i++)
+		{
+			const double speed = (i + 0.5) * step;
+			cdf[i + 1] = cdf[i] + halo.PDF_Speed(speed)
+			    * (speed + surface_escape_squared / speed) * step;
+		}
+		ASSERT_GT(cdf.back(), 0.0);
+		const double normalization = cdf.back();
+		for(double& value : cdf)
+			value /= normalization;
+		std::vector<double> probabilities;
+		for(unsigned int i = 0; i < trials; i++)
+		{
+			const Event event = Initial_Conditions(halo, solar_model, prng);
+			const double speed = std::sqrt(event.Speed() * event.Speed() - distant_escape_squared);
+			ASSERT_TRUE(std::isfinite(speed));
+			ASSERT_GT(speed, 0.0);
+			ASSERT_LE(speed, maximum_speed);
+			const double coordinate = speed / step;
+			const unsigned int bin = std::min(grid_points - 1, static_cast<unsigned int>(coordinate));
+			probabilities.push_back(cdf[bin] + (coordinate - bin) * (cdf[bin + 1] - cdf[bin]));
+		}
+		std::sort(probabilities.begin(), probabilities.end());
+		double ks = 0.0;
+		for(unsigned int i = 0; i < trials; i++)
+			ks = std::max(ks, std::max(std::fabs(probabilities[i] - static_cast<double>(i) / trials),
+			                         std::fabs(static_cast<double>(i + 1) / trials - probabilities[i])));
+		// A conservative fixed-seed KS threshold, including five scenarios.
+		EXPECT_LT(ks, 2.0 / std::sqrt(trials)) << "dispersion [km/s]=" << dispersions[scenario]
+		                                            << ", stationary observer=" << (scenario == 4);
+	}
+}
+
+TEST(TestSimulationUtilities, TestInitialConditionsRejectsNonstandardSHMDerivatives)
+{
+	struct Modified_Halo : obscura::Standard_Halo_Model {};
+	Modified_Halo halo;
+	Solar_Model solar_model;
+	std::mt19937 prng(1u);
+	EXPECT_THROW(Initial_Conditions(halo, solar_model, prng), std::invalid_argument);
+}
+
 // 3. Analytically propagate a particle at event on a hyperbolic Kepler orbit to a radius R (without passing the periapsis)
 TEST(TestSimulationUtilities, TestHyperbolicKeplerShift)
 {

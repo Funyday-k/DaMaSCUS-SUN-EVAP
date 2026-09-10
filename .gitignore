@@ -50,3 +50,7 @@
 !/data/
 /data/*
 !/data/model_agss09.dat
+
+!/examples/
+/examples/*
+!/examples/*.cfg

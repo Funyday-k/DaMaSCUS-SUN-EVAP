@@ -83,6 +83,34 @@ int main(int argc, char* argv[])
 		Simulation_Data data_set(cfg.sample_size, cfg.max_trajectories, u_min, cfg.isoreflection_rings);
 		data_set.Configure(TRAJECTORY_BOUNDARY_RSUN * rSun, 1, cfg.maximum_number_of_scatterings);
 		data_set.Configure_Trajectory_Diagnostics(cfg.trajectory_diagnostic_config);
+		const std::string output_prefix = cfg.capture_mode ? "results_capture_" : "results_";
+		const std::string output_path = g_top_level_dir + output_prefix + std::to_string(log10(In_Units(cfg.DM->mass, GeV))) + "_" + std::to_string(log10(In_Units(cfg.DM->Sigma_Proton(), cm * cm))) + "/";
+		// All ranks take the same failure path, including errors that occur only
+		// on rank zero while opening, flushing, or publishing the final files.
+		auto root_output_succeeded = [&](auto action) {
+			int success = 1;
+			if(mpi_rank == 0)
+			{
+				try
+				{
+					action();
+				}
+				catch(const std::exception& error)
+				{
+					std::cerr << "Error: " << error.what() << std::endl;
+					success = 0;
+				}
+			}
+			MPI_Bcast(&success, 1, MPI_INT, 0, MPI_COMM_WORLD);
+			return success != 0;
+		};
+		if(!cfg.capture_mode && !root_output_succeeded([&]() {
+			data_set.Prepare_Output_Directory(output_path);
+		}))
+		{
+			MPI_Finalize();
+			return 1;
+		}
 		if(mpi_rank == 0)
 			std::cout << (cfg.capture_mode ? "Generate data in CAPTURE MODE..." : "Generate data...") << std::endl
 					  << "\tm_DM [MeV]:\t" << libphysica::Round(In_Units(cfg.DM->mass, MeV)) << "\t\t"
@@ -99,10 +127,13 @@ int main(int argc, char* argv[])
 			data_set.Print_Summary(mpi_rank);
 
 		// Write output files (bincount + evaporation summary)
-		std::string output_prefix = cfg.capture_mode ? "results_capture_" : "results_";
-		std::string output_path = g_top_level_dir + output_prefix + std::to_string(log10(In_Units(cfg.DM->mass, GeV))) + "_" + std::to_string(log10(In_Units(cfg.DM->Sigma_Proton(), cm * cm))) + "/";
-		if(!cfg.capture_mode)
+		if(!cfg.capture_mode && !root_output_succeeded([&]() {
 			data_set.Write_Output_Files(output_path, *cfg.DM);
+		}))
+		{
+			MPI_Finalize();
+			return 1;
+		}
 
 	}
 	// Perform a parameter scan to compute exclusion limits

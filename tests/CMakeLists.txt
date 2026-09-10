@@ -1,6 +1,6 @@
 # 1. Test executable
 add_test(NAME executable_test
-	COMMAND DaMaSCUS-SUN ${PROJECT_SOURCE_DIR}/tests/config_executable_smoke.cfg
+	COMMAND DaMaSCUS-SUN ${PROJECT_SOURCE_DIR}/examples/quickstart.cfg
 	WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
 add_test(NAME test_Invalid_Snapshot_Interval_Config
@@ -111,6 +111,14 @@ set_tests_properties(test_Physics_Validation PROPERTIES
 	TIMEOUT 30
 	LABELS "physics-validation;unit")
 
+add_executable(test_Kepler_Return test_Kepler_Return.cpp)
+target_include_directories(test_Kepler_Return PRIVATE ${GENERATED_DIR})
+target_link_libraries(test_Kepler_Return PRIVATE lib_damascus_sun gtest_main)
+target_compile_options(test_Kepler_Return PRIVATE -Wall -pedantic)
+add_test(NAME test_Kepler_Return COMMAND test_Kepler_Return
+	WORKING_DIRECTORY ${TESTS_DIR})
+set_tests_properties(test_Kepler_Return PROPERTIES TIMEOUT 30 LABELS "physics-validation;unit")
+
 # 8. Unit tests: Solar_Model.xpp	
 add_executable(test_Solar_Model
 	test_Solar_Model.cpp)
@@ -158,6 +166,13 @@ add_test(NAME test_Snapshot_IO COMMAND test_Snapshot_IO
 set_tests_properties(test_Snapshot_IO PROPERTIES
 	TIMEOUT 10
 	LABELS "snapshot;unit")
+
+add_executable(test_Snapshot_Heartbeat_Retry test_Snapshot_Heartbeat_Retry.cpp)
+target_include_directories(test_Snapshot_Heartbeat_Retry PRIVATE ${GENERATED_DIR})
+target_link_libraries(test_Snapshot_Heartbeat_Retry PRIVATE lib_damascus_sun gtest_main)
+target_compile_options(test_Snapshot_Heartbeat_Retry PRIVATE -Wall -pedantic)
+add_test(NAME test_Snapshot_Heartbeat_Retry COMMAND test_Snapshot_Heartbeat_Retry)
+set_tests_properties(test_Snapshot_Heartbeat_Retry PROPERTIES TIMEOUT 20 LABELS "snapshot;unit")
 
 # 10. Four-rank MPI text-gather regression tests. In particular, the
 # all-empty case must return on every rank instead of entering a zero-count
@@ -225,6 +240,18 @@ endif()
 # 12. Python workflow tests.
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
+	add_test(NAME test_Output_Failures
+		COMMAND ${Python3_EXECUTABLE} ${TESTS_DIR}/test_output_failures.py
+			--program $<TARGET_FILE:DaMaSCUS-SUN>)
+	set_tests_properties(test_Output_Failures PROPERTIES TIMEOUT 45 LABELS "output;unit")
+	if(MPIEXEC_EXECUTABLE AND MPIEXEC_NUMPROC_FLAG AND MPIEXEC_MAX_NUMPROCS GREATER_EQUAL 3)
+		add_test(NAME test_Output_Failures_MPI_3Ranks
+			COMMAND ${Python3_EXECUTABLE} ${TESTS_DIR}/test_output_failures.py
+				--program $<TARGET_FILE:DaMaSCUS-SUN>
+				--mpiexec ${MPIEXEC_EXECUTABLE} --numproc-flag=${MPIEXEC_NUMPROC_FLAG} --ranks 3)
+		set_tests_properties(test_Output_Failures_MPI_3Ranks PROPERTIES
+			TIMEOUT 45 PROCESSORS 3 RUN_SERIAL TRUE LABELS "output;mpi")
+	endif()
 	add_test(NAME test_Physics_Validation_Workflow
 		COMMAND ${Python3_EXECUTABLE} ${TESTS_DIR}/test_physics_validation.py
 		WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
@@ -234,3 +261,11 @@ if(Python3_Interpreter_FOUND)
 else()
 	message(STATUS "Skipping Python workflow tests: Python3 interpreter is unavailable")
 endif()
+
+add_test(NAME test_Installed_Quickstart
+	COMMAND ${CMAKE_COMMAND} -DBUILD_DIR=${CMAKE_BINARY_DIR}
+		-DBUILD_CONFIG=$<CONFIG> -DBIN_DIR=${CMAKE_INSTALL_BINDIR}
+		-DDATA_DIR=${DAMASCUS_INSTALL_DATADIR}
+		-DTEST_OUTPUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/installed_smoke
+		-P ${PROJECT_SOURCE_DIR}/cmake/TestInstalledSmoke.cmake)
+set_tests_properties(test_Installed_Quickstart PROPERTIES TIMEOUT 30 LABELS "build;install")

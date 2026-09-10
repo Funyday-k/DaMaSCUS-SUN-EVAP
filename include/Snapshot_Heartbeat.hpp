@@ -72,6 +72,7 @@ class SnapshotHeartbeat
 	size_t first_uncommitted_evaporation_entry_ = 0;
 	int last_rank_snapshot_written_ = 0;
 	int highest_snapshot_index_seen_ = 0;
+	int last_retry_merge_index_ = 0;
 	std::set<int> retry_merge_indices_;
 	std::set<int> unresolved_merge_indices_;
 	std::map<int, SnapshotMergeCache> merge_caches_;

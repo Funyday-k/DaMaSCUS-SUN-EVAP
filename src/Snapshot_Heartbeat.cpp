@@ -14,6 +14,7 @@ namespace DaMaSCUS_SUN
 namespace
 {
 constexpr size_t MAX_SNAPSHOT_MERGE_CACHE_ENTRIES = 32;
+constexpr size_t MAX_SNAPSHOT_MERGE_RETRIES_PER_TICK = 8;
 }
 
 SnapshotHeartbeat::SnapshotHeartbeat(
@@ -59,6 +60,7 @@ bool SnapshotHeartbeat::Start(const std::chrono::steady_clock::time_point& epoch
 	unresolved_merge_indices_.clear();
 	merge_caches_.clear();
 	highest_snapshot_index_seen_ = 0;
+	last_retry_merge_index_ = 0;
 	first_uncommitted_evaporation_entry_ = 0;
 	last_rank_snapshot_written_ = 0;
 	try
@@ -356,7 +358,24 @@ SnapshotMergeResult SnapshotHeartbeat::TryMergeIndex(int snapshot_index, bool al
 
 void SnapshotHeartbeat::ProcessMergeTick(int snapshot_index, bool local_checkpoint_missed)
 {
-	const std::vector<int> previous_retries(retry_merge_indices_.begin(), retry_merge_indices_.end());
+	// A shard may become visible several checkpoints late. Keep incomplete
+	// indices eligible until they merge, but visit only a bounded, rotating
+	// portion of the backlog so permanently missing shards do not make every
+	// heartbeat increasingly expensive or starve newer retry candidates.
+	std::vector<int> previous_retries;
+	const size_t retry_count = std::min(
+		retry_merge_indices_.size(), MAX_SNAPSHOT_MERGE_RETRIES_PER_TICK);
+	previous_retries.reserve(retry_count);
+	auto next_retry = retry_merge_indices_.upper_bound(last_retry_merge_index_);
+	for(size_t retry = 0; retry < retry_count; ++retry)
+	{
+		if(next_retry == retry_merge_indices_.end())
+			next_retry = retry_merge_indices_.begin();
+		previous_retries.push_back(*next_retry);
+		++next_retry;
+	}
+	if(!previous_retries.empty())
+		last_retry_merge_index_ = previous_retries.back();
 	if(local_checkpoint_missed)
 		unresolved_merge_indices_.insert(snapshot_index);
 	else
@@ -371,11 +390,7 @@ void SnapshotHeartbeat::ProcessMergeTick(int snapshot_index, bool local_checkpoi
 			retry_merge_indices_.erase(index);
 			unresolved_merge_indices_.erase(index);
 		}
-		else if(result.status != SnapshotMergeStatus::Merged)
-		{
-			unresolved_merge_indices_.insert(index);
-			retry_merge_indices_.erase(index);
-		}
+		// Both incomplete merges and failed checkpoint cleanup stay queued.
 	}
 
 	if(local_checkpoint_missed)

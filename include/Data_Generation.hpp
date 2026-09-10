@@ -244,6 +244,8 @@ class Simulation_Data
 	void Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, SnapshotConfig snapshot_cfg = SnapshotConfig(), unsigned int fixed_seed = 0, bool capture_mode = false);
 
 	// Output files
+	// Rank zero checks the destination before expensive work; I/O failures throw.
+	void Prepare_Output_Directory(const std::string& output_dir) const;
 	void Write_Output_Files(const std::string& output_dir, obscura::DM_Particle& DM);
 
 	double Free_Ratio() const;

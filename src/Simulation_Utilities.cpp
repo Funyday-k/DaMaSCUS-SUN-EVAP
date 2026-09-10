@@ -4,8 +4,10 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
+#include <typeinfo>
 
 #include "libphysica/Special_Functions.hpp"
 #include "libphysica/Statistics.hpp"
@@ -41,6 +43,61 @@ bool Finite_Positive(double value)
 {
 	return std::isfinite(value) && value > 0.0;
 }
+
+double Flux_Weighted_Speed_PDF(double speed, double speed_pdf,
+                             double escape_speed_squared, double normalization)
+{
+	if(!Finite_Positive(normalization) || !std::isfinite(speed_pdf) || speed_pdf < 0.0)
+		throw std::runtime_error("PDF_Initial_Speed(): halo normalization or speed PDF is invalid.");
+	const double pdf = (speed_pdf * speed + (speed_pdf / speed) * escape_speed_squared) / normalization;
+	if(!std::isfinite(pdf) || pdf < 0.0)
+		throw std::runtime_error("PDF_Initial_Speed(): flux-weighted speed PDF is invalid.");
+	return pdf;
+}
+
+// obscura exposes setters, but no read-only accessors, for these SHM
+// parameters. Copying its small base object gives a legal protected-member
+// view without modifying the halo or maintaining a parameter-dependent cache.
+class SHM_Sampling_Parameters : public obscura::Standard_Halo_Model
+{
+  public:
+	explicit SHM_Sampling_Parameters(const obscura::Standard_Halo_Model& halo)
+	: obscura::Standard_Halo_Model(halo)
+	{
+	}
+
+	double Initial_Speed_Envelope(double solar_escape_speed, double normalization) const
+	{
+		if(!Finite_Positive(v_0) || !Finite_Positive(N_esc)
+		   || !std::isfinite(v_observer) || v_observer < 0.0
+		   || !Finite_Positive(normalization))
+			throw std::runtime_error("Initial_Conditions(): invalid SHM sampling parameters.");
+		const double a = solar_escape_speed * solar_escape_speed;
+		const double s = v_observer;
+		const double e = std::exp(1.0);
+		// f(u)/u <= 4*u*exp(-(u-s)^2/v0^2)/(N*sqrt(pi)*v0^3).
+		// Expand u <= s+|u-s| and bound each Gaussian-weighted power
+		// by max_x |x|^k exp(-x^2/v0^2) = v0^k*(k/(2e))^(k/2).
+		const double polynomial_bound = s * s * s + a * s
+		    + (3.0 * s * s + a) * v_0 / std::sqrt(2.0 * e)
+		    + 3.0 * s * v_0 * v_0 / e
+		    + v_0 * v_0 * v_0 * std::pow(3.0 / (2.0 * e), 1.5);
+		double envelope = 4.0 * polynomial_bound
+		    / (N_esc * std::sqrt(M_PI) * v_0 * v_0 * v_0 * normalization);
+		if(s > 0.0)
+		{
+			// The exact shifted-Maxwell speed PDF is a difference of
+			// exponentials. Dropping the subtracted term and using
+			// u^2 <= 2*(u-s)^2+2*s^2 gives a tighter bound away from s=0.
+			const double shifted_bound = (2.0 * v_0 * v_0 / e + 2.0 * s * s + a)
+			    / (N_esc * std::sqrt(M_PI) * v_0 * s * normalization);
+			envelope = std::min(envelope, shifted_bound);
+		}
+		if(!Finite_Positive(envelope))
+			throw std::runtime_error("Initial_Conditions(): speed rejection envelope is invalid.");
+		return envelope * (1.0 + 32.0 * std::numeric_limits<double>::epsilon());
+	}
+};
 
 }	// namespace
 
@@ -133,13 +190,7 @@ double PDF_Initial_Speed(double v, obscura::DM_Distribution& halo_model, Solar_M
 	double v_average		 = halo_model.Average_Speed();
 	double v_inverse_average = halo_model.Eta_Function(0.0);
 	const double normalization = v_average + v_esc * v_esc * v_inverse_average;
-	const double speed_pdf = halo_model.PDF_Speed(v);
-	if(!Finite_Positive(normalization) || !std::isfinite(speed_pdf) || speed_pdf < 0.0)
-		throw std::runtime_error("PDF_Initial_Speed(): halo normalization or speed PDF is invalid.");
-	const double pdf = (speed_pdf * v + (speed_pdf / v) * v_esc * v_esc) / normalization;
-	if(!std::isfinite(pdf) || pdf < 0.0)
-		throw std::runtime_error("PDF_Initial_Speed(): flux-weighted speed PDF is invalid.");
-	return pdf;
+	return Flux_Weighted_Speed_PDF(v, halo_model.PDF_Speed(v), v_esc * v_esc, normalization);
 }
 
 // Conditional pdf for cos_theta given a speed value v
@@ -175,15 +226,29 @@ double PDF_Cos_Theta(double cos_theta, double v, obscura::DM_Distribution& halo_
 
 Event Initial_Conditions(obscura::DM_Distribution& halo_model, Solar_Model& solar_model, std::mt19937& PRNG)
 {
-	auto* standard_halo = dynamic_cast<obscura::Standard_Halo_Model*>(&halo_model);
-	if(standard_halo == nullptr)
-		throw std::invalid_argument("Initial_Conditions(): only Standard_Halo_Model distributions are supported.");
+	if(typeid(halo_model) != typeid(obscura::Standard_Halo_Model))
+		throw std::invalid_argument("Initial_Conditions(): only the standard SHM distribution is supported; SHM++ and other derived distributions require their own sampling law.");
+	auto* standard_halo = static_cast<obscura::Standard_Halo_Model*>(&halo_model);
 	// 1. Initial velocity
 	// 1.1. Sample initial speed u asymptotically far from the Sun.
-	std::function<double(double)> pdf_v = [&halo_model, &solar_model](double v) {
-		return PDF_Initial_Speed(v, halo_model, solar_model);
+	const double surface_escape_speed = solar_model.Local_Escape_Speed(rSun);
+	if(!Finite_Positive(surface_escape_speed))
+		throw std::runtime_error("Initial_Conditions(): solar escape speed is invalid.");
+	const double escape_speed_squared = surface_escape_speed * surface_escape_speed;
+	// Rejection trials share one normalization integral; recompute it for
+	// every trajectory so changes to an existing halo never leave stale data.
+	const double normalization = halo_model.Average_Speed()
+	    + escape_speed_squared * halo_model.Eta_Function(0.0);
+	const SHM_Sampling_Parameters sampling_parameters(*standard_halo);
+	const double speed_envelope = sampling_parameters.Initial_Speed_Envelope(surface_escape_speed, normalization);
+	std::function<double(double)> pdf_v = [&halo_model, escape_speed_squared, normalization](double v) {
+		if(!std::isfinite(v) || v < 0.0)
+			throw std::runtime_error("Initial_Conditions(): speed must be finite and non-negative.");
+		if(v == 0.0)
+			return 0.0;
+		return Flux_Weighted_Speed_PDF(v, halo_model.PDF_Speed(v), escape_speed_squared, normalization);
 	};
-	double u = libphysica::Rejection_Sampling(pdf_v, halo_model.Minimum_DM_Speed(), halo_model.Maximum_DM_Speed(), 1200.0, PRNG);
+	double u = libphysica::Rejection_Sampling(pdf_v, halo_model.Minimum_DM_Speed(), halo_model.Maximum_DM_Speed(), speed_envelope, PRNG);
 	if(!Finite_Positive(u))
 		throw std::runtime_error("Initial_Conditions(): sampled asymptotic speed is invalid.");
 
@@ -226,10 +291,9 @@ Event Initial_Conditions(obscura::DM_Distribution& halo_model, Solar_Model& sola
 
 	// 2. Initial position
 	// 2.1 Find the maximum impact parameter such that the particle still hits the Sun.
-	double v_esc				= solar_model.Local_Escape_Speed(rSun);
-	double impact_parameter_max = sqrt(u * u + v_esc * v_esc) / v * rSun;
-	if(!std::isfinite(v_esc) || v_esc < 0.0 || !Finite_Positive(impact_parameter_max))
-		throw std::runtime_error("Initial_Conditions(): solar escape speed or impact-parameter bound is invalid.");
+	double impact_parameter_max = sqrt(u * u + escape_speed_squared) / v * rSun;
+	if(!Finite_Positive(impact_parameter_max))
+		throw std::runtime_error("Initial_Conditions(): impact-parameter bound is invalid.");
 	libphysica::Vector e_z		= (-1.0) * initial_velocity.Normalized();
 	const libphysica::Vector reference = (std::fabs(e_z[2]) < 0.9)
 	                                         ? libphysica::Vector({0.0, 0.0, 1.0})

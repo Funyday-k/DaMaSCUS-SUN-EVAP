@@ -210,7 +210,9 @@ bool Bound_Kepler_Return_At_Same_Radius(const Event& outward_event, Event& inbou
 	if(!std::isfinite(specific_energy) || specific_energy >= 0.0)
 		return false;
 
-	const double angular_momentum = outward_event.Angular_Momentum();
+	const libphysica::Vector angular_momentum_vector =
+	    outward_event.position.Cross(outward_event.velocity);
+	const double angular_momentum = angular_momentum_vector.Norm();
 	if(!std::isfinite(angular_momentum))
 		return false;
 
@@ -241,10 +243,24 @@ bool Bound_Kepler_Return_At_Same_Radius(const Event& outward_event, Event& inbou
 		return false;
 
 	const libphysica::Vector radial_unit = outward_event.position / radius;
+	const libphysica::Vector eccentricity_vector =
+	    outward_event.velocity.Cross(angular_momentum_vector) / mu - radial_unit;
+	const double eccentricity_vector_norm = eccentricity_vector.Norm();
+	if(!std::isfinite(eccentricity_vector_norm) || eccentricity_vector_norm <= 1.0e-14)
+		return false;
+	const libphysica::Vector apsidal_axis = eccentricity_vector / eccentricity_vector_norm;
+	// Equal-radius points on an ellipse lie on opposite sides of its apsidal
+	// line. Reflect the position across that line and reverse the reflected
+	// velocity to select the later, inbound crossing on the same orbit.
 	inbound_event = outward_event;
 	inbound_event.time += return_time;
-	inbound_event.velocity = outward_event.velocity - 2.0 * radial_velocity * radial_unit;
-	return inbound_event.time > outward_event.time && std::isfinite(inbound_event.Speed());
+	inbound_event.position =
+	    2.0 * outward_event.position.Dot(apsidal_axis) * apsidal_axis - outward_event.position;
+	inbound_event.velocity =
+	    outward_event.velocity - 2.0 * outward_event.velocity.Dot(apsidal_axis) * apsidal_axis;
+	return inbound_event.time > outward_event.time
+	    && std::isfinite(inbound_event.Radius()) && std::isfinite(inbound_event.Speed())
+	    && Radial_Velocity(inbound_event) < 0.0;
 }
 
 // Overwrite an Event in place. Assigning a libphysica::Vector allocates twice

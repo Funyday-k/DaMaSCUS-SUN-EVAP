@@ -696,18 +696,45 @@ TEST(TestSimulationTrajectory, TestSimulate)
 	DM.Set_Sigma_Proton(0.1 * pb);
 	Solar_Model SSM;
 	Trajectory_Simulator simulator(SSM);
+	simulator.Fix_PRNG_Seed(20260910);
 	obscura::Standard_Halo_Model SHM;
 	// ACT & ASSERT
 	int trials = 5;
 	for(int i = 0; i < trials; i++)
 	{
+		SCOPED_TRACE(i);
 		Event IC = Initial_Conditions(SHM, SSM, simulator.PRNG);
 		ASSERT_TRUE(Hyperbolic_Kepler_Shift(IC, 1.5 * rSun));
 		Trajectory_Result result = simulator.Simulate(IC, DM, 0);
-		if(result.Particle_Reflected() || result.Particle_Free())
+		const TrajectoryTerminationReason reason = result.bincount.termination_reason;
+		ASSERT_NE(reason, TrajectoryTerminationReason::Unknown);
+		ASSERT_NE(reason, TrajectoryTerminationReason::Scatter);
+		if(reason == TrajectoryTerminationReason::OutwardEscape)
+		{
+			ASSERT_TRUE(result.Particle_Reflected() || result.Particle_Free());
 			ASSERT_NEAR(result.final_event.Radius(), simulator.maximum_distance, 1.0e-10 * rSun);
+			EXPECT_TRUE(result.bincount.survival_valid);
+		}
 		else
-			ASSERT_GT(result.number_of_scatterings, 0);
+		{
+			// A numerical rejection or computational cutoff can occur before
+			// the first collision; it is neither capture nor successful escape.
+			EXPECT_FALSE(result.Particle_Free());
+			EXPECT_FALSE(result.Particle_Reflected());
+			EXPECT_FALSE(result.bincount.event_observed);
+			EXPECT_EQ(result.bincount.survival_valid,
+			          !TrajectoryTerminationInvalidatesSurvival(reason));
+			if(reason == TrajectoryTerminationReason::NumericalFailure
+			   || reason == TrajectoryTerminationReason::NonFiniteState
+			   || reason == TrajectoryTerminationReason::EnergyDriftEscape)
+				EXPECT_NE(result.bincount.numerical_failure_detail,
+				          TrajectoryNumericalFailureDetail::None);
+			if(reason == TrajectoryTerminationReason::CaptureMode
+			   || reason == TrajectoryTerminationReason::OuterDomainRemoval)
+				EXPECT_TRUE(result.bincount.is_captured);
+		}
+		if(result.bincount.is_captured)
+			EXPECT_GT(result.number_of_scatterings, 0UL);
 	}
 }
 

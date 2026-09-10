@@ -8,6 +8,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from validation.physics_validation import (
+    _parse_bincount,
+    _total_variation,
     compare_runs,
     load_run_metrics,
     rewrite_config,
@@ -78,6 +80,45 @@ class PhysicsValidationWorkflowTests(unittest.TestCase):
         self.assertAlmostEqual(metrics.complete_evaporation_fraction, 0.8)
         self.assertAlmostEqual(metrics.evaporation_median_sec, 20.5)
         self.assertEqual(metrics.captured_radial_distribution, [0.6, 0.4])
+
+    def test_current_seven_column_histogram_uses_residence_time(self):
+        column_header = (
+            "# bin_index r_lower_Rsun r_upper_Rsun residence_dt[s] "
+            "residence_v2dt[km2/s] residence_err_dt[s] residence_err_v2dt[km2/s]\n"
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            baseline = Path(temp) / "baseline.txt"
+            candidate = Path(temp) / "candidate.txt"
+            baseline.write_text(column_header + "0 0 0.5 1000 0 0 0\n1 0.5 1 1 0 0 0\n")
+            candidate.write_text(column_header + "0 0 0.5 1 0 0 0\n1 0.5 1 1000 0 0 0\n")
+            left = _parse_bincount(baseline)[2]
+            right = _parse_bincount(candidate)[2]
+        self.assertEqual(left, [1000 / 1001, 1 / 1001])
+        self.assertAlmostEqual(_total_variation(left, right), 999 / 1001)
+
+    def test_legacy_column_names_determine_position(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "bincount.txt"
+            path.write_text("# bin_index r_lower r_upper cap_dt[s] other\n"
+                            "0 0 0.5 3 8\n1 0.5 1 1 9\n")
+            self.assertEqual(_parse_bincount(path)[2], [0.75, 0.25])
+
+    def test_unknown_or_invalid_histograms_fail_explicitly(self):
+        invalid_files = [
+            "0 0.5 1 4 0 0 0\n",
+            "# bin_index r_lower r_upper other\n0 0 1 4\n",
+            "# bin_index cap_dt residence_dt[s]\n0 1 2\n",
+            "# bin_index cap_dt\n0 1 2\n",
+            "# bin_index cap_dt\n0 nan\n",
+            "# bin_index cap_dt\n0 -1\n",
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "bincount.txt"
+            for content in invalid_files:
+                with self.subTest(content=content):
+                    path.write_text(content)
+                    with self.assertRaises(ValueError):
+                        _parse_bincount(path)
 
     def test_compatible_runs_pass_physics_gates(self):
         with tempfile.TemporaryDirectory() as temp:

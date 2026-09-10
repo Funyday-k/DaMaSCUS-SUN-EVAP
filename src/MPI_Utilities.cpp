@@ -169,7 +169,7 @@ MPIWorkQueue::MPIWorkQueue(
 	uint64_t maximum_trajectories,
 	double initial_shift_abort_fraction,
 	MPI_Comm communicator)
-: communicator_(communicator),
+: communicator_(MPI_COMM_NULL),
   initial_shift_abort_fraction_(initial_shift_abort_fraction)
 {
 	if(target_samples == 0)
@@ -185,6 +185,11 @@ MPIWorkQueue::MPIWorkQueue(
 		    "MPIWorkQueue(): initial-shift abort fraction must be finite and non-negative.");
 	}
 
+	// Keep progress probes isolated from application messages, so they always
+	// return flag=false and repeatedly drive MPI's weak progress engine.
+	Check_MPI_Result(
+	    MPI_Comm_dup(communicator, &communicator_),
+	    "queue communicator duplication");
 	Check_MPI_Result(
 	    MPI_Comm_rank(communicator_, &mpi_rank_),
 	    "communicator-rank inspection");
@@ -439,6 +444,24 @@ MPIWorkQueueState MPIWorkQueue::ReadState() const
 	return PublicState(state);
 }
 
+void MPIWorkQueue::Progress()
+{
+	if(finalized_)
+		throw std::logic_error(
+		    "MPIWorkQueue::Progress(): queue is already finalized.");
+	if(mpi_rank_ != 0 || mpi_processes_ == 1)
+		return;
+	const auto now = std::chrono::steady_clock::now();
+	if(now < next_progress_poll_)
+		return;
+	next_progress_poll_ = now + std::chrono::milliseconds(1);
+	int pending = 0;
+	Check_MPI_Result(
+	    MPI_Iprobe(MPI_ANY_SOURCE, MPI_ANY_TAG, communicator_,
+	               &pending, MPI_STATUS_IGNORE),
+	    "trajectory-time progress probe");
+}
+
 MPIWorkQueueState MPIWorkQueue::Finalize()
 {
 	if(finalized_)
@@ -455,6 +478,9 @@ MPIWorkQueueState MPIWorkQueue::Finalize()
 	Check_MPI_Result(
 	    MPI_Win_free(&window_),
 	    "window release");
+	Check_MPI_Result(
+	    MPI_Comm_free(&communicator_),
+	    "queue communicator release");
 	finalized_ = true;
 	root_window_memory_ = nullptr;
 	return final_state;

@@ -2,6 +2,7 @@
 #define __Simulation_Trajectory_hpp_
 
 #include <fstream>
+#include <functional>
 #include <random>
 #include <string>
 #include <vector>
@@ -332,6 +333,7 @@ class Trajectory_Simulator
 	std::vector<TrajectoryDiagnosticEvent> current_diagnostic_events;
 
 	SnapshotRecorder* snapshot_recorder;
+	std::function<void()> progress_callback;
 	bool trajectory_in_progress;
 	bool track_trajectory_wall_time;
 	std::chrono::steady_clock::time_point current_trajectory_wall_start;
@@ -371,6 +373,9 @@ class Trajectory_Simulator
 	void Restore_PRNG_State(const std::string& serialized_state);
 	std::string Serialize_PRNG_State() const;
 	void Set_Snapshot_Recorder(SnapshotRecorder* recorder);
+	// Runs on Simulate's calling thread, independently of snapshot recording.
+	// The callback must be nonblocking and must not mutate trajectory state.
+	void Set_Progress_Callback(std::function<void()> callback);
 	void Enable_Capture_Mode(bool enabled);
 	void Enable_Diagnostic_Trace(bool enabled);
 

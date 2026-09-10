@@ -4,6 +4,7 @@
 #include <mpi.h>
 
 #include <cstdint>
+#include <chrono>
 #include <string>
 
 namespace DaMaSCUS_SUN
@@ -81,6 +82,11 @@ class MPIWorkQueue
 	MPIWorkQueueState Complete(const MPIWorkOutcome& outcome);
 	MPIWorkQueueState ReadState() const;
 
+	// Call periodically from the main thread while computing a trajectory.
+	// Passive-target RMA may need rank 0 to enter MPI to serve other ranks.
+	// This never takes the queue lock, waits for a peer, or changes work state.
+	void Progress();
+
 	// Collective. Every rank must stop claiming/completing work before calling.
 	MPIWorkQueueState Finalize();
 
@@ -99,6 +105,7 @@ class MPIWorkQueue
 	mutable MPI_Win window_ = MPI_WIN_NULL;
 	void* root_window_memory_ = nullptr;
 	bool finalized_ = false;
+	std::chrono::steady_clock::time_point next_progress_poll_{};
 };
 
 }	// namespace DaMaSCUS_SUN

@@ -445,6 +445,7 @@ TEST(TestDataGeneration, TestDefaultOutputContract)
 		    output_dir + "bincount.txt",
 		    "# exterior_max_bin_width_Rsun = 1.0000000000e+01"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# mpi_scheduler = dynamic_rma_work_queue_v1"));
+		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# mpi_scheduler_progress = main_thread_iprobe_v1"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# mpi_scheduler_work_claims = 1"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# mpi_scheduler_peak_in_flight = 1"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# capture_target_overshoot = 0"));

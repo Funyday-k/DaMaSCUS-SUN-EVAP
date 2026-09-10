@@ -196,6 +196,18 @@ tail may temporarily leave excess ranks idle, but
 `capture_target_overshoot` remains zero. Output headers report
 `mpi_scheduler_work_claims` and `mpi_scheduler_peak_in_flight`.
 
+Rank 0 also advances MPI during trajectory propagation with a nonblocking
+`MPI_Iprobe`, at most once per millisecond. This is needed on MPI transports
+that do not progress passive-target RMA while the window owner is computing:
+otherwise rank 0's first long trajectory can stall every other rank's first
+claim. Progress runs on the main thread, independently of snapshots, and all
+ranks still compute trajectories. Updated final headers identify this path as
+`mpi_scheduler_progress = main_thread_iprobe_v1`.
+
+The exact-target rule still applies: `sample_size = 1` allows only one active
+trajectory, and fewer than 32 remaining target slots cannot keep 32 ranks busy.
+Increasing MPI ranks alone does not remove that intentional tail limit.
+
 For reproducible MPI runs, a nonzero fixed seed is expanded by rank as
 `base_seed + 1000003 * mpi_rank`. Computational cutoffs are tracked separately
 from physical right-censoring so that final evaporation-time files contain only

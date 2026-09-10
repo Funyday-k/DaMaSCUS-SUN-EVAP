@@ -1237,6 +1237,11 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 	    maximum_trajectories,
 	    INITIAL_SHIFT_FAILURE_ABORT_FRACTION,
 	    MPI_COMM_WORLD);
+	// Rank 0 owns the queue window and must keep serving remote claims even
+	// during a long trajectory. The heartbeat thread cannot do this under
+	// MPI_THREAD_FUNNELED, so pump MPI from the simulation's main thread.
+	if(mpi_rank == 0 && mpi_processes > 1)
+		simulator.Set_Progress_Callback([&work_queue]() { work_queue.Progress(); });
 	while(true)
 	{
 		MPIWorkQueueState observed;
@@ -1265,6 +1270,7 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 		print_progress_update(global_target_samples, false);
 	}
 
+	simulator.Set_Progress_Callback(nullptr);
 	const MPIWorkQueueState final_work_state =
 	    work_queue.Finalize();
 	global_target_samples =
@@ -1996,6 +2002,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 		f << "# initial_shift_failures = " << number_of_initial_shift_failures << "\n";
 		f << "# final_reflection_shift_failures = " << number_of_final_reflection_shift_failures << "\n";
 		f << "# mpi_scheduler = dynamic_rma_work_queue_v1\n";
+		f << "# mpi_scheduler_progress = main_thread_iprobe_v1\n";
 		f << "# mpi_scheduler_work_claims = " << mpi_scheduler_work_claims << "\n";
 		f << "# mpi_scheduler_peak_in_flight = " << mpi_scheduler_peak_in_flight << "\n";
 		f << "# capture_target_overshoot = " << capture_target_overshoot << "\n";

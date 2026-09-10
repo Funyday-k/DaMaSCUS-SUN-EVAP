@@ -6,6 +6,7 @@
 #include <limits>
 #include <numeric>
 #include <stdexcept>
+#include <thread>
 #include <vector>
 
 #include "libphysica/Natural_Units.hpp"
@@ -728,7 +729,21 @@ TEST(TestSimulationTrajectory, TestSerializedPRNGStateReplaysTrajectoryExactly)
 	Trajectory_Simulator replay(SSM, 1000000, 1000, 2.0 * rSun);
 	ASSERT_NO_THROW(replay.Restore_PRNG_State(state_before_simulation));
 	replay.Enable_Diagnostic_Trace(true);
+	// Scheduler progress must run on the calling thread (MPI_THREAD_FUNNELED),
+	// even without a snapshot recorder, and leave the trajectory/RNG unchanged.
+	const auto calling_thread = std::this_thread::get_id();
+	unsigned long progress_calls = 0;
+	replay.Set_Progress_Callback([&]() {
+		progress_calls++;
+		EXPECT_EQ(std::this_thread::get_id(), calling_thread);
+		EXPECT_TRUE(replay.Trajectory_In_Progress());
+	});
 	Trajectory_Result second = replay.Simulate(IC, DM, 0);
+	replay.Set_Progress_Callback(nullptr);
+	EXPECT_GT(progress_calls, 1UL);
+	EXPECT_EQ(original.Serialize_PRNG_State(), replay.Serialize_PRNG_State());
+	EXPECT_EQ(first.bincount.dt_hist, second.bincount.dt_hist);
+	EXPECT_EQ(first.bincount.v2dt_hist, second.bincount.v2dt_hist);
 
 	EXPECT_EQ(first.number_of_scatterings, second.number_of_scatterings);
 	EXPECT_EQ(first.bincount.termination_reason, second.bincount.termination_reason);

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numeric>
 #include <random>
 
 #include "Simulation_Trajectory.hpp"
@@ -43,7 +44,6 @@ void CheckEllipticReturn(double periapsis, double apoapsis,
 
 	BoundKeplerExteriorArc arc;
 	ASSERT_TRUE(Compute_Bound_Kepler_Exterior_Arc(outward, arc));
-	ASSERT_FALSE(arc.outer_domain_removed);
 	const Event& inbound = arc.terminal_event;
 	EXPECT_LT((inbound.position - expected_position).Norm() / radius, 2.0e-9);
 	EXPECT_LT((inbound.velocity - expected_velocity).Norm() / outward.Speed(), 2.0e-9);
@@ -56,6 +56,15 @@ void CheckEllipticReturn(double periapsis, double apoapsis,
 	const double expected_time = In_Units(
 	    (2.0 * M_PI - 2.0 * anomaly + 2.0 * e * sin_e) / n, sec);
 	EXPECT_NEAR(arc.elapsed_time_sec / expected_time, 1.0, 2.0e-9);
+	if(apoapsis >= AU)
+	{
+		EXPECT_NEAR(std::accumulate(arc.dt_hist.begin(), arc.dt_hist.end(), 0.0)
+		            / expected_time, 1.0, 2.0e-9);
+		const double expected_v2dt = In_Units(
+		    2.0 * mu / (a * n) * (M_PI - anomaly - e * sin_e), km * km / sec);
+		EXPECT_NEAR(std::accumulate(arc.v2dt_hist.begin(), arc.v2dt_hist.end(), 0.0)
+		            / expected_v2dt, 1.0, 2.0e-9);
+	}
 }
 }
 
@@ -96,4 +105,15 @@ TEST(KeplerReturn, DegenerateRadialAndUnboundStatesAreRejected)
 	    Event(0.0, position, libphysica::Vector({1000.0 * km / sec, 0.0, 0.0})), arc));
 	EXPECT_FALSE(Compute_Bound_Kepler_Exterior_Arc(
 	    Event(0.0, position, libphysica::Vector({-100.0 * km / sec, 200.0 * km / sec, 0.0})), arc));
+}
+
+TEST(KeplerReturn, WideOrbitsReturnWithoutARadialCutoff)
+{
+	const libphysica::Vector axis_x({1.0, 0.0, 0.0});
+	const libphysica::Vector axis_y({0.0, 1.0, 0.0});
+	for(double apoapsis_au : {1.0, 5.2, 10.0, 100.0})
+	{
+		SCOPED_TRACE(apoapsis_au);
+		CheckEllipticReturn(0.5 * rSun, apoapsis_au * AU, axis_x, axis_y);
+	}
 }

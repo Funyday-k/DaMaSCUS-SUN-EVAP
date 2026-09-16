@@ -401,58 +401,40 @@ TEST(TestSimulationTrajectory, TestNumericalBincountClipsAtKeplerBoundary)
 	EXPECT_NEAR(SumBins(aggregate.dt), 1.5, 1.0e-10);
 }
 
-TEST(TestSimulationTrajectory, CompactRadialGridReachesConfiguredCutoff)
+TEST(TestSimulationTrajectory, RadialGridExtendsBeyondFormerCutoffs)
 {
-	EXPECT_EQ(TOTAL_BINS, static_cast<std::size_t>(NUM_BINS) + EXTERIOR_BINS);
 	EXPECT_DOUBLE_EQ(BincountBinLowerKm(0), 0.0);
 	EXPECT_DOUBLE_EQ(BincountBinLowerKm(NUM_BINS), BIN_MAX_KM);
-	EXPECT_NEAR(
-	    BincountBinUpperKm(NUM_BINS) - BincountBinLowerKm(NUM_BINS),
-	    BIN_WIDTH_KM,
-	    1.0e-12 * BIN_WIDTH_KM);
-	for(std::size_t exterior_bin = 0;
-	    exterior_bin + 1 < EXTERIOR_FIRST_CAPPED_BIN
-	    && exterior_bin + 2 < EXTERIOR_BINS;
-	    exterior_bin++)
+	for(std::size_t exterior_bin = 0; exterior_bin + 1 < EXTERIOR_FIRST_CAPPED_BIN; exterior_bin++)
 	{
-		const std::size_t bin = static_cast<std::size_t>(NUM_BINS) + exterior_bin;
+		const std::size_t bin = NUM_BINS + exterior_bin;
 		const double width = BincountBinUpperKm(bin) - BincountBinLowerKm(bin);
-		const double next_width =
-		    BincountBinUpperKm(bin + 1) - BincountBinLowerKm(bin + 1);
-		EXPECT_NEAR(
-		    next_width / width,
-		    EXTERIOR_BIN_GROWTH_FACTOR,
-		    1.0e-11);
+		const double next_width = BincountBinUpperKm(bin + 1) - BincountBinLowerKm(bin + 1);
+		EXPECT_NEAR(next_width / width, EXTERIOR_BIN_GROWTH_FACTOR, 1.0e-11);
 	}
-	if(EXTERIOR_BINS > EXTERIOR_FIRST_CAPPED_BIN + 2)
+	const int last_bin = BincountBinIndexKm(100.0 * AU_KM);
+	ASSERT_GT(last_bin, NUM_BINS + static_cast<int>(EXTERIOR_FIRST_CAPPED_BIN));
+	for(int bin = 0; bin <= last_bin; bin++)
 	{
-		const std::size_t first_capped_bin =
-		    static_cast<std::size_t>(NUM_BINS) + EXTERIOR_FIRST_CAPPED_BIN;
-		EXPECT_NEAR(
-		    BincountBinUpperKm(first_capped_bin) - BincountBinLowerKm(first_capped_bin),
-		    EXTERIOR_MAX_BIN_WIDTH_KM,
-		    1.0e-12 * EXTERIOR_MAX_BIN_WIDTH_KM);
-		EXPECT_NEAR(
-		    BincountBinUpperKm(first_capped_bin + 1) - BincountBinLowerKm(first_capped_bin + 1),
-		    EXTERIOR_MAX_BIN_WIDTH_KM,
-		    1.0e-12 * EXTERIOR_MAX_BIN_WIDTH_KM);
+		const double lower = BincountBinLowerKm(bin);
+		const double upper = BincountBinUpperKm(bin);
+		EXPECT_LT(lower, upper);
+		EXPECT_EQ(BincountBinIndexKm(lower), bin);
+		EXPECT_EQ(BincountBinIndexKm(std::nextafter(upper, 0.0)), bin);
+		EXPECT_EQ(BincountBinIndexKm(upper), bin + 1);
+		if(bin >= NUM_BINS + static_cast<int>(EXTERIOR_FIRST_CAPPED_BIN))
+			EXPECT_NEAR(upper - lower, EXTERIOR_MAX_BIN_WIDTH_KM, 1.0e-12 * EXTERIOR_MAX_BIN_WIDTH_KM);
 	}
-	EXPECT_NEAR(
-	    BincountBinUpperKm(TOTAL_BINS - 1),
-	    RADIAL_DOMAIN_MAX_KM,
-	    1.0e-12 * RADIAL_DOMAIN_MAX_KM);
-	EXPECT_EQ(BincountBinIndexKm(BIN_MAX_KM), NUM_BINS);
-	EXPECT_EQ(BincountBinIndexKm(std::nextafter(RADIAL_DOMAIN_MAX_KM, 0.0)),
-	          static_cast<int>(TOTAL_BINS - 1));
-	EXPECT_EQ(BincountBinIndexKm(RADIAL_DOMAIN_MAX_KM), -1);
-	for(std::size_t bin = 0; bin < TOTAL_BINS; bin++)
+	for(double radius_au : {1.0, 5.2, 100.0})
 	{
-		EXPECT_LT(BincountBinLowerKm(bin), BincountBinUpperKm(bin));
-		EXPECT_EQ(BincountBinIndexKm(BincountBinLowerKm(bin)), static_cast<int>(bin));
+		const double radius = radius_au * AU_KM;
+		const int bin = BincountBinIndexKm(radius);
+		ASSERT_GE(bin, NUM_BINS);
+		EXPECT_LE(BincountBinLowerKm(bin), radius);
+		EXPECT_GT(BincountBinUpperKm(bin), radius);
 	}
-	EXPECT_LE(
-	    BincountBinUpperKm(TOTAL_BINS - 1) - BincountBinLowerKm(TOTAL_BINS - 1),
-	    EXTERIOR_MAX_BIN_WIDTH_KM);
+	EXPECT_EQ(BincountBinIndexKm(-1.0), -1);
+	EXPECT_EQ(BincountBinIndexKm(std::numeric_limits<double>::infinity()), -1);
 }
 
 TEST(TestSimulationTrajectory, BoundKeplerExteriorArcUsesGeometricWidthGrid)
@@ -475,9 +457,8 @@ TEST(TestSimulationTrajectory, BoundKeplerExteriorArcUsesGeometricWidthGrid)
 
 	BoundKeplerExteriorArc arc;
 	ASSERT_TRUE(Compute_Bound_Kepler_Exterior_Arc(outward, arc));
-	EXPECT_FALSE(arc.outer_domain_removed);
 	EXPECT_NEAR(arc.apoapsis_km, 2.0 * R_SUN_KM, 1.0e-10 * R_SUN_KM);
-	EXPECT_EQ(arc.dt_hist.size(), TOTAL_BINS);
+	EXPECT_EQ(arc.dt_hist.size(), static_cast<std::size_t>(BincountBinIndexKm(arc.apoapsis_km)) + 1);
 	EXPECT_EQ(arc.v2dt_hist.size(), arc.dt_hist.size());
 	EXPECT_NEAR(
 	    In_Units(arc.terminal_event.Radius(), rSun),
@@ -514,7 +495,7 @@ TEST(TestSimulationTrajectory, BoundKeplerExteriorArcUsesGeometricWidthGrid)
 	    0.0);
 }
 
-TEST(TestSimulationTrajectory, BoundKeplerExteriorArcFlagsApoapsisBeyondConfiguredCutoff)
+TEST(TestSimulationTrajectory, BoundKeplerExteriorArcReturnsFromBeyondFormerCutoffs)
 {
 	const double periapsis = 0.5 * rSun;
 	const double apoapsis = 6.0 * AU;
@@ -536,15 +517,27 @@ TEST(TestSimulationTrajectory, BoundKeplerExteriorArcFlagsApoapsisBeyondConfigur
 
 	BoundKeplerExteriorArc arc;
 	ASSERT_TRUE(Compute_Bound_Kepler_Exterior_Arc(outward, arc));
-	EXPECT_TRUE(arc.outer_domain_removed);
-	EXPECT_GT(arc.apoapsis_km, RADIAL_DOMAIN_MAX_KM);
+	EXPECT_NEAR(arc.apoapsis_km / AU_KM, 6.0, 1.0e-9);
+	const double anomaly = std::acos((1.0 - boundary_radius / semi_major_axis) / eccentricity);
+	const double mean_motion = std::sqrt(mu / (semi_major_axis * semi_major_axis * semi_major_axis));
+	const double expected_elapsed_sec = In_Units(
+	    2.0 * (M_PI - anomaly + eccentricity * std::sin(anomaly)) / mean_motion, sec);
+	EXPECT_NEAR(arc.elapsed_time_sec / expected_elapsed_sec, 1.0, 1.0e-9);
+	const int one_au_bin = BincountBinIndexKm(AU_KM);
+	EXPECT_GT(std::accumulate(arc.dt_hist.begin() + one_au_bin + 1, arc.dt_hist.end(), 0.0),
+	          0.9 * arc.elapsed_time_sec);
+	const double expected_v2dt = In_Units(
+	    2.0 * mu / (semi_major_axis * mean_motion)
+	        * (M_PI - anomaly - eccentricity * std::sin(anomaly)), km * km / sec);
+	EXPECT_NEAR(std::accumulate(arc.v2dt_hist.begin(), arc.v2dt_hist.end(), 0.0) / expected_v2dt,
+	            1.0, 1.0e-9);
 	EXPECT_GT(arc.kepler_period_sec, arc.elapsed_time_sec);
-	EXPECT_EQ(arc.dt_hist.size(), TOTAL_BINS);
+	EXPECT_EQ(arc.dt_hist.size(), static_cast<std::size_t>(BincountBinIndexKm(arc.apoapsis_km)) + 1);
 	EXPECT_NEAR(
 	    In_Units(arc.terminal_event.Radius(), km),
-	    RADIAL_DOMAIN_MAX_KM,
-	    1.0e-10 * RADIAL_DOMAIN_MAX_KM);
-	EXPECT_GT(
+	    In_Units(boundary_radius, km),
+	    1.0e-9 * R_SUN_KM);
+	EXPECT_LT(
 	    arc.terminal_event.position.Dot(arc.terminal_event.velocity),
 	    0.0);
 	EXPECT_NEAR(

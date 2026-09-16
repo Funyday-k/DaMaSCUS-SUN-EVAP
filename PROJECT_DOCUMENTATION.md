@@ -379,11 +379,11 @@ while (未终止):
 
 **在线统计与输出策略**：
 
-当前 C++ 主模拟不再把每条轨迹写成 `.dat` 文件，而是在内存中在线累积径向箱计数。基础网格为 `[0,1.1R_\odot)` 的 `1100` 个等宽 bin，bin 宽 `0.001R_\odot`（约 `695.7 km`）；外部网格从同样的 `0.001R_\odot` 宽度开始，每个 bin 按 `1.02` 的比例加宽，并设有 `10R_\odot` 的全局宽度上限。默认径向域在达到该宽度上限前于 `1 AU` 截断，共 `423` 个外部 bin。因此每条直方图恒为 `1523` 行，不再随个别超长轴轨道膨胀；最后一个 bin 会缩短以精确落在径向域边界。每个已接受 RK45 区间由端点位置和速度构造三次 Hermite dense output；`1.1R_\odot` 外的束缚 Kepler 段则逐壳层加入解析的 $\Delta t$ 与 $v^2\Delta t$：
+当前 C++ 主模拟不再把每条轨迹写成 `.dat` 文件，而是在内存中在线累积径向箱计数。基础网格为 `[0,1.1R_\odot)` 的 `1100` 个等宽 bin，bin 宽 `0.001R_\odot`（约 `695.7 km`）；外部网格从同样的 `0.001R_\odot` 宽度开始，每个 bin 按 `1.02` 的比例加宽，并设有 `10R_\odot` 的全局宽度上限。径向域不设截断，外部 bin 按轨道远日点动态扩展；输出行数随实际统计范围变化，最外层保留完整箱宽。每个已接受 RK45 区间由端点位置和速度构造三次 Hermite dense output；`1.1R_\odot` 外的束缚 Kepler 段则逐壳层加入解析的 $\Delta t$ 与 $v^2\Delta t$：
 
 $$\sum \Delta t,\qquad \sum v^2 \Delta t$$
 
-普通模式按 captured / not_captured 分别累积 `bincount` 与每轨迹平方和，用于输出误差估计；captured bincount 采用默认 `1 AU` 径向域，超出该域的捕获轨迹在外行穿越边界时按 `outer_domain_removal` 分类，并由新轨迹补足蒸发事件目标样本。not_captured bincount 只纳入完整 outward escape 终止的非捕获轨迹。Capture Mode 为了快速扫描捕获率，会跳过 `bincount`、蒸发记录、snapshot 和反射谱数据累积，只保留轨迹总数、捕获数和捕获率误差。
+普通模式累积 captured 轨迹的 `bincount` 与每轨迹平方和，用于输出误差估计。束缚太阳外轨道无径向截断，完整往返的停留时间均计入统计，之后继续模拟至蒸发或其他终止条件；未捕获轨迹不输出 residence bincount。Capture Mode 为了快速扫描捕获率，会跳过 `bincount`、蒸发记录、snapshot 和反射谱数据累积，只保留轨迹总数、捕获数和捕获率误差。
 
 ### 5.3 Phase 3: 粒子命运分类
 
@@ -395,7 +395,7 @@ $$\sum \Delta t,\qquad \sum v^2 \Delta t$$
 | **反射（Reflected）** | $N_\text{scat} \geq 1$，$v > v_\text{esc}$，$r > R_\odot$ | 散射后仍保持正能量并逃逸 |
 | **捕获（Captured）** | $E = \frac{1}{2}m_\chi(v^2 - v_\text{esc}^2) < 0$ | 散射后总能量为负，被引力束缚 |
 
-**样本计数逻辑**：普通模式下，`sample_size` 表示精确的“完整、有效、且束缚外轨道不超过默认 `1 AU` 径向域的蒸发事件”目标数；数值失败和 `outer_domain_removal` 轨迹会分别计入诊断计数，但不会占用蒸发事件目标样本。Capture Mode 下，`sample_size` 仍表示精确 captured 数量。每轮全局尝试数不超过尚缺的目标样本数，因此最终批次不会 overshoot；未设置 `max_trajectories` 时会继续补样直到达到目标。
+**样本计数逻辑**：普通模式下，`sample_size` 表示精确的“完整、有效的蒸发事件（束缚外轨道无径向限制）”目标数；数值失败及计算截断轨迹计入诊断计数，不占用蒸发事件目标样本；新运行不再产生 `outer_domain_removal`。Capture Mode 下，`sample_size` 仍表示精确 captured 数量。每轮全局尝试数不超过尚缺的目标样本数，因此最终批次不会 overshoot；未设置 `max_trajectories` 时会继续补样直到达到目标。
 
 ### 5.4 Phase 4: MPI数据汇总
 
@@ -471,7 +471,7 @@ $$\int \sum_i n_i \frac{m_\chi m_i}{(m_\chi + m_i)^2} \langle v_\text{rel} \rang
 
 普通 `Parameter point` 模式直接在 `Data_Generation.cpp` 中输出以下文件：
 
-- `bincount.txt`：captured 与 not_captured 的径向占据时间 $\sum \Delta t$、速度二阶矩 $\sum v^2\Delta t$，以及逐 bin 误差估计。`1.1R_\odot` 内使用 `0.001R_\odot` 等宽网格；外部宽度从 `0.001R_\odot` 开始按 `1.02` 的比例逐 bin 增长，默认延伸到 `1 AU`，共 `423` 个外部 bin。负能量粒子的太阳外 Kepler 段按解析壳层积分。
+- `bincount.txt`：captured 与 not_captured 的径向占据时间 $\sum \Delta t$、速度二阶矩 $\sum v^2\Delta t$，以及逐 bin 误差估计。`1.1R_\odot` 内使用 `0.001R_\odot` 等宽网格；外部宽度从 `0.001R_\odot` 开始按 `1.02` 的比例逐 bin 增长，箱宽最大为 `10R_\odot`，箱数按需增长，无径向截断。负能量粒子的太阳外 Kepler 段按解析壳层积分。
 - `evaporation_times.txt`：始终只写完整、有效、未删失的真实蒸发事件。前六列为 `rank trajectory_id lifetime_unbinding_sec r_capture_Rsun E_capture_eV dE_capture_eV`；随后输出负能量外轨道次数、在 `1.1R_\odot` 外行状态定义的 first / last / max Kepler 密切周期，以及对应的 first / last / max 外部解析往返时间。文件按 `lifetime_unbinding_sec` 升序输出，`rank trajectory_id` 只作为并列时的稳定排序键。
 
 `bincount.txt` 与 snapshot 报告的文件头保留兼容字段 `capture_rate`、`capture_rate_err` 和 `capture_rate_CI_95_lower/upper`，其口径为全部尝试轨迹的 raw 比例；同时明确输出 `capture_rate_raw*`。按 captured + completed outward escape 归一化的结果使用 `capture_rate_valid`、`capture_rate_valid_err` 和 `capture_rate_valid_CI_95_lower/upper`。`evaporation_times.txt` 只包含运行元数据与事件列定义。Capture Mode 不写这些文件，只在终端分别打印 raw / valid 统计及各自 Wilson 区间。
@@ -526,11 +526,11 @@ Snapshot 会合并各 rank 的当前进度，包括已完成轨迹的 captured /
 
 **物理影响**：太阳外部为纯 Kepler 问题。数值积分仅保留到 `1.1R_\odot`；负能量外轨道的往返时间和逐壳层贡献由解析公式给出，因此不会因长周期弱束缚轨道损失精度或耗费大量 RK45 步。
 
-### 7.4 固定紧凑径向数组
+### 7.4 动态径向直方图
 
-**优化内容**：径向域和网格数在编译期固定后，默认 `1 AU` 构建中的轨迹、全局统计和 snapshot 均使用 `std::array<double, 1523>`。只有事件记录等长度确实随样本数变化的数据使用 `std::vector`。
+**实现内容**：轨迹、全局统计和 snapshot 使用 `std::vector<double>`，以 `1100` 个内区 bin 起步，按太阳外轨道的远日点扩展。MPI 汇总先同步最大长度并补零；jackknife 内存按 bin 优先排列，扩展时保留已有块统计。快照二进制版本为 `9`，读取前按文件实际长度校验箱数。
 
-**效率与安全影响**：避免每条轨迹反复分配 histogram，也不需要运行时 resize 或长度一致性检查；1 AU 截断同时阻止极少数超长轴轨道把输出和内存无界扩张。
+**效率影响**：不再通过有限径向域移除弱束缚轨道；极大远日点会增加直方图、jackknife 和输出文件的存储量。输出元数据中的 `radial_extent_Rsun` 记录实际网格范围，`radial_domain_max_AU` 为 `unbounded`，JSON 的 `outer_domain_removal_AU` 为 `null`。
 
 ### 7.5 在线 bincount 与 Capture Mode 快速统计
 
@@ -548,9 +548,9 @@ Snapshot 会合并各 rank 的当前进度，包括已完成轨迹的 captured /
 
 ### 7.7 Kepler 解析推进替代数值积分
 
-**优化内容**：入射双曲轨道解析推进到 `1.1R_\odot`；捕获后负能量粒子从该边界外行时，解析推进到远日点并返回同一边界，同时把精确的 $\Delta t$ 与 $v^2\Delta t$ 加入固定混合网格：内区等宽、外区宽度按几何级数增长。若解析远日点超过默认 `1 AU` 径向域，轨迹在外行穿越边界时以 `outer_domain_removal` 终止。
+**优化内容**：入射双曲轨道解析推进到 `1.1R_\odot`；捕获后负能量粒子从该边界外行时，解析推进到远日点并返回同一边界，同时把精确的 $\Delta t$ 与 $v^2\Delta t$ 加入动态混合网格：内区等宽、外区宽度按几何级数增长并封顶于 `10R_\odot`。任意可计算的束缚外轨道均经远日点返回，不按径向距离移除。
 
-**物理影响**：`1 AU` 以内的太阳外传播仍是点质量 Kepler 解析解，同时省去弱束缚长周期轨道的大量数值步。该截断定义了本结果的近太阳统计域；超域轨迹不是蒸发事件。正能量粒子在 `1.1R_\odot` 外行时终止，不为无穷远轨道添加有限 bincount 尾部。
+**物理影响**：所有束缚太阳外传播采用点质量 Kepler 解析解，省去弱束缚长周期轨道的大量数值步，完整保留远日点附近的停留时间。正能量粒子在 `1.1R_\odot` 外行时终止，不为无穷远轨道添加有限 bincount 尾部。
 
 每次负能量轨迹从 `1.1R_\odot` 外行时还会记录两个不同的时间尺度：`P_kepler` 是该瞬时状态对应的点质量 Kepler 密切轨道完整周期；`t_exterior` 是模拟实际使用的、从外行边界经远日点返回同一边界的解析时间。由于太阳内部采用扩展质量分布而非点质量势，`P_kepler` 不应与真实的完整“穿日轨道周期”混为一谈。
 

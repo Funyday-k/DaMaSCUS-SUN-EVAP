@@ -81,6 +81,32 @@ int main(int argc, char* argv[])
 	// gather on root while leaving non-root ranks inside the collective.
 	MPI_Barrier(MPI_COMM_WORLD);
 
+	// Different orbital extents must pad with zeros before summing. Include
+	// an empty rank and a second reduction after only one rank grows again.
+	std::vector<double> histogram(rank * 600, static_cast<double>(rank + 1));
+	Allreduce_MPI_Histogram(histogram);
+	Check(histogram.size() == 1800, "histogram extent was not synchronized", rank, failures);
+	if(histogram.size() == 1800)
+	{
+		Check(histogram[0] == 9.0 && histogram[599] == 9.0
+		      && histogram[600] == 7.0 && histogram[1199] == 7.0
+		      && histogram[1200] == 4.0 && histogram[1799] == 4.0,
+		      "variable-length histogram sum lost or duplicated outer bins", rank, failures);
+	}
+	std::fill(histogram.begin(), histogram.end(), 0.0);
+	if(rank == 2)
+	{
+		histogram.resize(2400, 0.0);
+		histogram.back() = 12.5;
+	}
+	Allreduce_MPI_Histogram(histogram);
+	Check(histogram.size() == 2400 && histogram.back() == 12.5
+	      && histogram[1799] == 0.0,
+	      "histogram regrowth did not preserve the farthest contribution", rank, failures);
+	std::vector<double> empty_histogram;
+	Allreduce_MPI_Histogram(empty_histogram);
+	Check(empty_histogram.empty(), "all-empty histogram sum changed its extent", rank, failures);
+
 	std::string mixed_local;
 	if(rank == 0)
 		mixed_local = "rank-0\n";

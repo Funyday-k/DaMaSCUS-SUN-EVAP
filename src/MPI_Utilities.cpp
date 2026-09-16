@@ -19,6 +19,26 @@ void Check_MPI_Result(int result, const char* operation)
 }
 }
 
+void Allreduce_MPI_Histogram(std::vector<double>& histogram, MPI_Comm communicator)
+{
+	uint64_t bins = histogram.size();
+	if(MPI_Allreduce(MPI_IN_PLACE, &bins, 1, MPI_UINT64_T, MPI_MAX, communicator) != MPI_SUCCESS)
+		throw std::runtime_error("Failed to exchange radial histogram sizes.");
+	histogram.resize(bins, 0.0);
+	// MPI uses int counts even when a histogram (or its jackknife blocks)
+	// grows beyond that range. All ranks use the same chunk boundaries.
+	for(std::size_t offset = 0; offset < histogram.size();)
+	{
+		const int count = static_cast<int>(std::min(
+		    histogram.size() - offset,
+		    static_cast<std::size_t>(std::numeric_limits<int>::max())));
+		if(MPI_Allreduce(MPI_IN_PLACE, histogram.data() + offset, count,
+		                 MPI_DOUBLE, MPI_SUM, communicator) != MPI_SUCCESS)
+			throw std::runtime_error("Failed to sum radial histograms.");
+		offset += count;
+	}
+}
+
 struct MPIWorkQueue::WireState
 {
 	uint64_t target_samples = 0;

@@ -46,12 +46,12 @@ struct SnapshotRankState
 	double current_trajectory_simulated_elapsed_sec = 0.0;
 	uint64_t current_trajectory_scatterings = 0;
 	int32_t current_trajectory_captured = 0;
-	std::array<double, TOTAL_BINS> current_trajectory_dt_hist{};
-	std::array<double, TOTAL_BINS> current_trajectory_v2dt_hist{};
-	std::array<double, TOTAL_BINS> captured_dt_hist{};
-	std::array<double, TOTAL_BINS> captured_v2dt_hist{};
-	std::array<double, TOTAL_BINS> captured_dt_sq_hist{};
-	std::array<double, TOTAL_BINS> captured_v2dt_sq_hist{};
+	RadialHistogram current_trajectory_dt_hist = RadialHistogram(NUM_BINS, 0.0);
+	RadialHistogram current_trajectory_v2dt_hist = RadialHistogram(NUM_BINS, 0.0);
+	RadialHistogram captured_dt_hist = RadialHistogram(NUM_BINS, 0.0);
+	RadialHistogram captured_v2dt_hist = RadialHistogram(NUM_BINS, 0.0);
+	RadialHistogram captured_dt_sq_hist = RadialHistogram(NUM_BINS, 0.0);
+	RadialHistogram captured_v2dt_sq_hist = RadialHistogram(NUM_BINS, 0.0);
 	std::vector<SnapshotEvaporationProgressEntry> new_evaporation_events;
 };
 
@@ -94,10 +94,10 @@ struct SnapshotReportState
 	uint64_t numerical_failures = 0;
 	uint64_t snapshot_bincount_captured_samples = 0;
 	uint64_t in_progress_bincount_captured_samples = 0;
-	std::array<double, TOTAL_BINS> captured_dt_hist{};
-	std::array<double, TOTAL_BINS> captured_v2dt_hist{};
-	std::array<double, TOTAL_BINS> captured_dt_sq_hist{};
-	std::array<double, TOTAL_BINS> captured_v2dt_sq_hist{};
+	RadialHistogram captured_dt_hist = RadialHistogram(NUM_BINS, 0.0);
+	RadialHistogram captured_v2dt_hist = RadialHistogram(NUM_BINS, 0.0);
+	RadialHistogram captured_dt_sq_hist = RadialHistogram(NUM_BINS, 0.0);
+	RadialHistogram captured_v2dt_sq_hist = RadialHistogram(NUM_BINS, 0.0);
 	std::vector<SnapshotRankedEvaporationEntry> new_evaporation_events;
 	std::vector<RankProgress> rank_progress;
 };

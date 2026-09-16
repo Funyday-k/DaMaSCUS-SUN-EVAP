@@ -149,23 +149,16 @@ export DAMASCUS_SUN_SOLAR_MODEL=/absolute/path/model_agss09.dat
 To build and run the test suite, configure separately with
 `-DBUILD_TESTING=ON`, build, then run `ctest --test-dir build --output-on-failure`.
 
-The radial residence domain is a compile-time setting because its bin count is
-part of the fixed histogram layout. Keep alternate cutoffs in separate build
-directories and provide both the cutoff and the matching number of exterior
-shells. The default is `1 AU` with `423` exterior bins. For example, a
-5.2-AU comparison build uses:
-
-```bash
-cmake -S . -B build-5p2au \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DBUILD_TESTING=OFF \
-  -DDAMASCUS_RADIAL_DOMAIN_MAX_AU=5.2 \
-  -DDAMASCUS_EXTERIOR_BINS=527
-cmake --build build-5p2au --target DaMaSCUS-SUN --parallel
-```
-
-Grid initialization rejects a mismatched bin count when the generated shells
-either stop short of the chosen domain or reach it before the final bin.
+Bound exterior orbits have no radial cutoff. Their residence histograms grow
+at runtime to cover the full orbit, with a shared grid on every MPI rank.
+The former `DAMASCUS_RADIAL_DOMAIN_MAX_AU` and `DAMASCUS_EXTERIOR_BINS`
+build settings are no longer used. Output row counts depend on the largest
+accepted orbit; readers should use the bin edges and `total_radial_bins` header.
+Snapshot rank files use binary version 9 for variable-length histograms.
+Text headers report `radial_domain_max_AU = unbounded`, while
+`radial_extent_Rsun` is the actual histogram extent. Diagnostic metadata uses
+`outer_domain_removal_AU: null`; legacy removal counters remain zero. Very wide
+orbits increase histogram memory and output size, including jackknife blocks.
 
 ## Configuration
 
@@ -174,7 +167,7 @@ Configuration files use libconfig syntax. The most important controls are:
 | Setting | Meaning |
 | --- | --- |
 | `run_mode` | `"Parameter point"` for the main evaporation workflow, `"Capture"` for capture-rate runs, or `"Parameter scan"` for detector-limit scans. |
-| `sample_size` | In normal mode, the exact target number of complete, valid evaporation events whose bound exterior orbit stays within the default 1-AU radial domain. Captures physically removed at 1 AU contribute residence statistics but not the evaporation-event target. Invalid captures are replaced. In capture mode, this is the exact target number of captures. |
+| `sample_size` | In normal mode, the exact target number of complete, valid evaporation events, with no radial restriction on bound exterior orbits. Invalid captures are replaced. In capture mode, this is the exact target number of captures. |
 | `fixed_seed` | Optional non-negative PRNG seed. `0` or an omitted setting uses nondeterministic seeding; a nonzero value is expanded independently by MPI rank. |
 | `max_trajectories` | Optional hard cap on generated trajectories. `0` or unset means no trajectory-count cap. |
 | `interpolation_points` | Scattering-rate interpolation grid size. `0` disables interpolation; production runs should compare representative values before fixing this. |
@@ -230,14 +223,12 @@ reduction:
   histograms with error estimates. The grid is uniform at `0.001 R_sun`
   through `1.1 R_sun`. From there, shell widths start continuously at
   `0.001 R_sun` and grow geometrically by 2% per shell toward a global
-  `10 R_sun` width cap. The default 1-AU domain ends before that cap is reached
-  and uses 423 exterior shells. Negative-energy
-  exterior Kepler arcs contribute exact shell integrals. A captured orbit whose
-  apoapsis exceeds 1 AU is propagated analytically to its outward 1-AU
-  crossing, marked `outer_domain_removal`, and contributes capture plus
-  residence statistics through that crossing. It does not contribute an
-  evaporation-time event. Captured trajectories stopped by a wall-time guard
-  retain their accepted residence prefix, are counted as computationally
+  `10 R_sun` width cap. Exterior bins are added as needed, with no radial
+  cutoff. Every negative-energy exterior Kepler arc is propagated through
+  apoapsis back to the inbound matching surface, contributing exact shell
+  integrals over the full round trip. The trajectory then continues until
+  evaporation or another termination condition. Captured trajectories stopped
+  by a wall-time guard retain their accepted residence prefix, are counted as computationally
   censored, and are replaced by a new trajectory without entering the invalid
   fraction or the evaporation-time table. Step- and scattering-count guards
   also retain their accepted residence prefix but remain computational
@@ -256,8 +247,8 @@ reduction:
 - `residence_jackknife_blocks.tsv`: exactly 64 deterministic blocks assigned by
   `splitmix64(base_seed, rank, trajectory_id) % 64`. Each block contains
   attempted, captured, completed uncaptured escape, accepted residence,
-  invalid, and outer-domain-removal counts plus its full radial `dt` and
-  `v^2 dt` histograms. The writer refuses to publish the file unless every
+  invalid, and legacy outer-domain-removal counts (always zero in new runs)
+  plus its full radial `dt` and `v^2 dt` histograms. The writer refuses to publish the file unless every
   scalar count and every radial bin closes against `bincount.txt`. It is the
   required input for delete-one-block propagation of capture-rate/residence
   covariance into shell and channel flux uncertainties.
@@ -300,9 +291,8 @@ censoring, and numerical-failure events.
 The bound-exit period is the point-mass osculating Kepler period inferred from
 the negative-energy state at the outward `1.1 R_sun` matching surface. The
 exterior elapsed time is the physically used analytic travel time: through
-apoapsis to the inbound matching surface for contained arcs, or one-way to the
-outward 1-AU removal point for outer-domain arcs. These are kept separate
-because the osculating full period includes a point-mass continuation through
+apoapsis to the inbound matching surface for every bound exterior arc. These
+are kept separate because the osculating full period includes a point-mass continuation through
 the solar interior, whereas the simulation uses the extended solar potential
 there.
 
@@ -317,9 +307,10 @@ When snapshots are enabled, intermediate files are written under `snapshot/`:
   trajectory ID, trajectory wall time, simulated elapsed time, scattering
   count, and the rank-local observation time. An in-progress trajectory that
   has already captured contributes its accumulated residence prefix
-  provisionally. If its bound exterior arc crosses the 1-AU removal surface,
-  the forced publication includes the one-way residence integral through that
-  crossing. Status rows remain comments so data readers see only bincount bins.
+  provisionally. After each bound exterior arc returns, a forced publication
+  includes the complete round-trip residence integral, extending the histogram
+  to the orbit's apoapsis. Status rows remain comments so data readers see only
+  bincount bins.
 - `snapshot_{time}s_evaporation_times.txt`: complete valid evaporation events
   first published by that checkpoint, sorted by `lifetime_unbinding_sec`.
   An event committed concurrently with a snapshot boundary is assigned once to

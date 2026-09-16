@@ -57,39 +57,17 @@ constexpr double BINCOUNT_DENSE_POSITION_TOLERANCE_KM = 2.0e-3 * BIN_WIDTH_KM;
 constexpr int BINCOUNT_DENSE_MAX_RECURSION = 20;
 constexpr double BINCOUNT_GAUSS_LEGENDRE_OFFSET = 0.77459666924148337704;
 
-const std::array<double, TOTAL_BINS + 1>& BincountBinEdgesKm()
+const std::array<double, EXTERIOR_FIRST_CAPPED_BIN + 1>& ExteriorGeometricEdgesKm()
 {
-	static const std::array<double, TOTAL_BINS + 1> edges = []() {
-		std::array<double, TOTAL_BINS + 1> result{};
-		for(std::size_t bin = 0; bin <= static_cast<std::size_t>(NUM_BINS); bin++)
-			result[bin] = static_cast<double>(bin) * BIN_WIDTH_KM;
-
-		double edge_km = BIN_MAX_KM;
+	static const std::array<double, EXTERIOR_FIRST_CAPPED_BIN + 1> edges = []() {
+		std::array<double, EXTERIOR_FIRST_CAPPED_BIN + 1> result{};
+		result[0] = BIN_MAX_KM;
 		double width_km = BIN_WIDTH_KM;
-		for(std::size_t exterior_bin = 0;
-		    exterior_bin < EXTERIOR_BINS;
-		    exterior_bin++)
+		for(std::size_t bin = 0; bin < EXTERIOR_FIRST_CAPPED_BIN; bin++)
 		{
-			if(!(edge_km < RADIAL_DOMAIN_MAX_KM))
-				throw std::logic_error(
-				    "EXTERIOR_BINS creates shells beyond the radial domain");
-			const std::size_t lower_index =
-			    static_cast<std::size_t>(NUM_BINS) + exterior_bin;
-			result[lower_index] = edge_km;
-			edge_km = std::min(
-			    RADIAL_DOMAIN_MAX_KM,
-			    edge_km + std::min(width_km, EXTERIOR_MAX_BIN_WIDTH_KM));
-			result[lower_index + 1] = edge_km;
-			width_km = std::min(
-			    EXTERIOR_MAX_BIN_WIDTH_KM,
-			    width_km * EXTERIOR_BIN_GROWTH_FACTOR);
+			result[bin + 1] = result[bin] + width_km;
+			width_km *= EXTERIOR_BIN_GROWTH_FACTOR;
 		}
-		if(edge_km < RADIAL_DOMAIN_MAX_KM)
-			throw std::logic_error(
-			    "EXTERIOR_BINS does not reach the radial domain boundary");
-		// Keep the public radial-domain boundary bit-for-bit identical to the
-		// termination boundary, independent of accumulated roundoff.
-		result[TOTAL_BINS] = RADIAL_DOMAIN_MAX_KM;
 		return result;
 	}();
 	return edges;
@@ -1189,9 +1167,14 @@ void Compute_Bincount_Interval_Contributions(
 
 double BincountBinLowerKm(std::size_t bin)
 {
-	if(bin > TOTAL_BINS)
-		return std::numeric_limits<double>::quiet_NaN();
-	return BincountBinEdgesKm()[bin];
+	if(bin <= static_cast<std::size_t>(NUM_BINS))
+		return static_cast<double>(bin) * BIN_WIDTH_KM;
+	const std::size_t exterior_bin = bin - NUM_BINS;
+	const auto& edges = ExteriorGeometricEdgesKm();
+	if(exterior_bin <= EXTERIOR_FIRST_CAPPED_BIN)
+		return edges[exterior_bin];
+	return edges.back() + static_cast<double>(exterior_bin - EXTERIOR_FIRST_CAPPED_BIN)
+	    * EXTERIOR_MAX_BIN_WIDTH_KM;
 }
 
 double BincountBinUpperKm(std::size_t bin)
@@ -1201,12 +1184,28 @@ double BincountBinUpperKm(std::size_t bin)
 
 int BincountBinIndexKm(double radius_km)
 {
-	if(!std::isfinite(radius_km) || radius_km < 0.0
-	   || radius_km >= RADIAL_DOMAIN_MAX_KM)
+	if(!std::isfinite(radius_km) || radius_km < 0.0)
 		return -1;
-	const std::array<double, TOTAL_BINS + 1>& edges = BincountBinEdgesKm();
-	const auto upper = std::upper_bound(edges.begin(), edges.end(), radius_km);
-	return static_cast<int>(std::distance(edges.begin(), upper) - 1);
+	if(radius_km < BIN_MAX_KM)
+	{
+		int bin = static_cast<int>(radius_km / BIN_WIDTH_KM);
+		// Correct division roundoff at a grid edge.
+		if(radius_km < BincountBinLowerKm(bin)) --bin;
+		else if(radius_km >= BincountBinUpperKm(bin)) ++bin;
+		return bin;
+	}
+	const auto& edges = ExteriorGeometricEdgesKm();
+	if(radius_km < edges.back())
+		return NUM_BINS + static_cast<int>(
+		    std::upper_bound(edges.begin(), edges.end(), radius_km) - edges.begin()) - 1;
+	const double index = NUM_BINS + EXTERIOR_FIRST_CAPPED_BIN
+	    + std::floor((radius_km - edges.back()) / EXTERIOR_MAX_BIN_WIDTH_KM);
+	if(index >= static_cast<double>(std::numeric_limits<int>::max()))
+		return -1;  // Not representable by BincountContribution::bin.
+	int bin = static_cast<int>(index);
+	if(radius_km < BincountBinLowerKm(bin)) --bin;
+	else if(radius_km >= BincountBinUpperKm(bin)) ++bin;
+	return bin;
 }
 
 bool Compute_Bound_Kepler_Exterior_Arc(
@@ -1253,95 +1252,30 @@ bool Compute_Bound_Kepler_Exterior_Arc(
 	arc.elapsed_time_sec = In_Units(return_time, sec);
 	arc.kepler_period_sec = 2.0 * M_PI / mean_motion_s_inv;
 	arc.apoapsis_km = apoapsis_km;
-	arc.outer_domain_removed =
-	    apoapsis_km > RADIAL_DOMAIN_MAX_KM * (1.0 + 1.0e-12);
-	const double integration_limit_km =
-	    arc.outer_domain_removed ? RADIAL_DOMAIN_MAX_KM : apoapsis_km;
-	const double pass_factor = arc.outer_domain_removed ? 1.0 : 2.0;
-	if(arc.outer_domain_removed)
-	{
-		const double cos_e_start = Clamp_Cosine(
-		    (1.0 - radius_km / semi_major_axis_km) / eccentricity);
-		const double cos_e_terminal = Clamp_Cosine(
-		    (1.0 - RADIAL_DOMAIN_MAX_KM / semi_major_axis_km) / eccentricity);
-		const double e_start = acos(cos_e_start);
-		const double e_terminal = acos(cos_e_terminal);
-		const double sin_e_start =
-		    sqrt(std::max(0.0, 1.0 - cos_e_start * cos_e_start));
-		const double sin_e_terminal =
-		    sqrt(std::max(0.0, 1.0 - cos_e_terminal * cos_e_terminal));
-		arc.elapsed_time_sec =
-		    ((e_terminal - eccentricity * sin_e_terminal)
-		     - (e_start - eccentricity * sin_e_start))
-		    / mean_motion_s_inv;
-
-		const double radius = outward_event.Radius();
-		const double mu = G_Newton * mSun;
-		const libphysica::Vector radial_unit = outward_event.position / radius;
-		const libphysica::Vector angular_momentum_vector =
-		    outward_event.position.Cross(outward_event.velocity);
-		const double angular_momentum = angular_momentum_vector.Norm();
-		const double semi_latus_rectum =
-		    angular_momentum * angular_momentum / mu;
-		const libphysica::Vector eccentricity_vector =
-		    outward_event.velocity.Cross(angular_momentum_vector) / mu
-		    - radial_unit;
-		const double eccentricity_natural = eccentricity_vector.Norm();
-		if(!std::isfinite(angular_momentum) || angular_momentum <= 0.0
-		   || !std::isfinite(semi_latus_rectum) || semi_latus_rectum <= 0.0
-		   || !std::isfinite(eccentricity_natural)
-		   || eccentricity_natural <= 0.0)
-			return false;
-
-		libphysica::Vector axis_x =
-		    eccentricity_vector / eccentricity_natural;
-		const libphysica::Vector axis_z =
-		    angular_momentum_vector / angular_momentum;
-		libphysica::Vector axis_y = axis_z.Cross(axis_x);
-		const double axis_y_norm = axis_y.Norm();
-		if(!std::isfinite(axis_y_norm) || axis_y_norm <= 0.0)
-			return false;
-		axis_y = axis_y / axis_y_norm;
-		axis_x = axis_y.Cross(axis_z).Normalized();
-
-		const double terminal_radius = RADIAL_DOMAIN_MAX_KM * km;
-		const double cos_true_anomaly = Clamp_Cosine(
-		    (semi_latus_rectum / terminal_radius - 1.0)
-		    / eccentricity_natural);
-		const double true_anomaly = acos(cos_true_anomaly);
-		arc.terminal_event = outward_event;
-		arc.terminal_event.time += arc.elapsed_time_sec * sec;
-		arc.terminal_event.position =
-		    terminal_radius
-		    * (cos(true_anomaly) * axis_x + sin(true_anomaly) * axis_y);
-		arc.terminal_event.velocity =
-		    sqrt(mu / semi_latus_rectum)
-		    * (-sin(true_anomaly) * axis_x
-		       + (eccentricity_natural + cos(true_anomaly)) * axis_y);
-		if(!std::isfinite(arc.elapsed_time_sec)
-		   || arc.elapsed_time_sec <= 0.0
-		   || !std::isfinite(arc.terminal_event.Radius())
-		   || !std::isfinite(arc.terminal_event.Speed())
-		   || Radial_Velocity(arc.terminal_event) <= 0.0)
-			return false;
-	}
-
+	const int last_bin_index = BincountBinIndexKm(apoapsis_km);
+	if(last_bin_index < NUM_BINS)
+		return false;
+	GrowRadialHistograms(static_cast<std::size_t>(last_bin_index) + 1,
+	                     arc.dt_hist, arc.v2dt_hist);
 	const int first_bin_index = BincountBinIndexKm(radius_km);
 	if(first_bin_index < NUM_BINS)
 		return false;
 	for(std::size_t bin = static_cast<std::size_t>(first_bin_index);
-	    bin < TOTAL_BINS; bin++)
+	    bin < arc.dt_hist.size(); bin++)
 	{
 		const double lower_radius_km =
 		    std::max(radius_km, BincountBinLowerKm(bin));
 		const double upper_radius_km =
-		    std::min(integration_limit_km, BincountBinUpperKm(bin));
+		    std::min(apoapsis_km, BincountBinUpperKm(bin));
 		if(!(upper_radius_km > lower_radius_km))
 			break;
 
 		const double cos_e_lower = Clamp_Cosine(
 		    (1.0 - lower_radius_km / semi_major_axis_km) / eccentricity);
-		const double cos_e_upper = Clamp_Cosine(
+		// Apoapsis has eccentric anomaly pi exactly. Reconstructing its cosine
+		// from separately converted orbital elements loses residence time on
+		// weakly bound orbits because acos amplifies roundoff near -1.
+		const double cos_e_upper = upper_radius_km >= apoapsis_km ? -1.0 : Clamp_Cosine(
 		    (1.0 - upper_radius_km / semi_major_axis_km) / eccentricity);
 		const double e_lower = acos(cos_e_lower);
 		const double e_upper = acos(cos_e_upper);
@@ -1354,9 +1288,9 @@ bool Compute_Bound_Kepler_Exterior_Arc(
 		    (e_upper - e_lower)
 		    + eccentricity * (sin_e_upper - sin_e_lower);
 		arc.dt_hist[bin] =
-		    pass_factor * delta_mean_anomaly / mean_motion_s_inv;
+		    2.0 * delta_mean_anomaly / mean_motion_s_inv;
 		arc.v2dt_hist[bin] =
-		    pass_factor * mu_km3_s2
+		    2.0 * mu_km3_s2
 		    / (semi_major_axis_km * mean_motion_s_inv)
 		    * delta_v2_primitive;
 		if(!std::isfinite(arc.dt_hist[bin]) || arc.dt_hist[bin] < 0.0
@@ -1423,7 +1357,7 @@ double NormalModeMaxOpticalDepthStep() { return MAX_OPTICAL_DEPTH_STEP; }
 double OpticalDepthRelativeTolerance() { return OPTICAL_DEPTH_RELATIVE_TOLERANCE; }
 const char* BincountIntegrationScheme()
 {
-	return "conservative-hermite-kepler-outer-domain-geometric-capped-v4";
+	return "conservative-hermite-kepler-unbounded-geometric-capped-v5";
 }
 double BincountDensePositionToleranceKm() { return BINCOUNT_DENSE_POSITION_TOLERANCE_KM; }
 double SnapshotProgressPublishWallIntervalSeconds() { return SNAPSHOT_PUBLISH_WALL_INTERVAL_SEC; }
@@ -1633,9 +1567,10 @@ void Trajectory_Simulator::Accumulate_Bincount_Interval(
 	Compute_Bincount_Interval_Contributions(before, after, bincount_contribution_cache);
 	for(const BincountContribution& contribution : bincount_contribution_cache)
 	{
-		if(contribution.bin < 0
-		   || static_cast<std::size_t>(contribution.bin) >= current_bincount.dt_hist.size())
+		if(contribution.bin < 0)
 			continue;
+		GrowRadialHistograms(static_cast<std::size_t>(contribution.bin) + 1,
+		                     current_bincount.dt_hist, current_bincount.v2dt_hist);
 		current_bincount.dt_hist[contribution.bin] += contribution.dt_sec;
 		current_bincount.v2dt_hist[contribution.bin] += contribution.v2dt_km2_per_sec;
 	}
@@ -2382,7 +2317,9 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 						      > current_bincount.max_bound_exit_exterior_time_sec)
 							current_bincount.max_bound_exit_exterior_time_sec =
 							    kepler_arc.elapsed_time_sec;
-						for(std::size_t bin = NUM_BINS; bin < TOTAL_BINS; bin++)
+						GrowRadialHistograms(kepler_arc.dt_hist.size(),
+						                     current_bincount.dt_hist, current_bincount.v2dt_hist);
+						for(std::size_t bin = NUM_BINS; bin < kepler_arc.dt_hist.size(); bin++)
 						{
 							current_bincount.dt_hist[bin] += kepler_arc.dt_hist[bin];
 							current_bincount.v2dt_hist[bin] += kepler_arc.v2dt_hist[bin];
@@ -2391,21 +2328,6 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 						    kepler_arc.elapsed_time_sec;
 					}
 					current_event = to_absolute_event(kepler_arc.terminal_event);
-					if(kepler_arc.outer_domain_removed)
-					{
-						if(current_bincount.is_captured)
-						{
-							if(!std::isfinite(current_bincount.max_radius_after_capture_km)
-							   || RADIAL_DOMAIN_MAX_KM
-							      > current_bincount.max_radius_after_capture_km)
-								current_bincount.max_radius_after_capture_km =
-								    RADIAL_DOMAIN_MAX_KM;
-							current_bincount.t_last_bound = In_Units(current_event.time, sec);
-						}
-						Maybe_Publish_Snapshot_Progress(
-						    In_Units(current_event.time, sec), true);
-						return TrajectoryTerminationReason::OuterDomainRemoval;
-					}
 					if(current_bincount.is_captured)
 					{
 						const double apoapsis_km = kepler_arc.apoapsis_km;

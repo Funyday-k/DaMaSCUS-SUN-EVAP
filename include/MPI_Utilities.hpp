@@ -6,9 +6,16 @@
 #include <cstdint>
 #include <chrono>
 #include <string>
+#include <vector>
 
 namespace DaMaSCUS_SUN
 {
+
+// Sum variable-length radial histograms on every rank. Missing outer bins
+// contribute zero; the result has the largest rank-local extent.
+void Allreduce_MPI_Histogram(
+	std::vector<double>& histogram,
+	MPI_Comm communicator = MPI_COMM_WORLD);
 
 // Collectively concatenate rank-local text in rank order. The concatenated
 // text is returned only on root; every other rank returns an empty string.

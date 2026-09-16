@@ -664,9 +664,9 @@ Simulation_Data::Simulation_Data(unsigned int sample_size, unsigned int max_traj
   capture_target_overshoot(0),
   computing_time(0.0), early_stopped(false), early_stop_reason(SimulationStopReason::None),
   residence_jackknife_block_dt_hist(
-      RESIDENCE_JACKKNIFE_BLOCKS * TOTAL_BINS, 0.0),
+      RESIDENCE_JACKKNIFE_BLOCKS * NUM_BINS, 0.0),
   residence_jackknife_block_v2dt_hist(
-      RESIDENCE_JACKKNIFE_BLOCKS * TOTAL_BINS, 0.0),
+      RESIDENCE_JACKKNIFE_BLOCKS * NUM_BINS, 0.0),
   mpi_rank(0), mpi_processes(1), isoreflection_rings(iso_rings), minimum_speed_threshold(u_min),
   number_of_data_points(std::vector<unsigned long int>(iso_rings, 0)),
   data(iso_rings, std::vector<libphysica::DataPoint>())
@@ -1136,14 +1136,20 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 						number_of_residence_samples++;
 						jackknife_residence_sample_counts[
 						    jackknife_block]++;
-						for(std::size_t b = 0; b < TOTAL_BINS; b++)
+						const std::size_t bins = trajectory.bincount.dt_hist.size();
+						GrowRadialHistograms(bins, captured_dt_hist, captured_v2dt_hist,
+						                     captured_dt_sq_hist, captured_v2dt_sq_hist);
+						GrowRadialHistograms(bins * RESIDENCE_JACKKNIFE_BLOCKS,
+						                     residence_jackknife_block_dt_hist,
+						                     residence_jackknife_block_v2dt_hist);
+						for(std::size_t b = 0; b < bins; b++)
 						{
 							captured_dt_hist[b]   += trajectory.bincount.dt_hist[b];
 							captured_v2dt_hist[b] += trajectory.bincount.v2dt_hist[b];
 							captured_dt_sq_hist[b]   += trajectory.bincount.dt_hist[b] * trajectory.bincount.dt_hist[b];
 							captured_v2dt_sq_hist[b] += trajectory.bincount.v2dt_hist[b] * trajectory.bincount.v2dt_hist[b];
 							const size_t block_offset =
-							    jackknife_block * TOTAL_BINS + b;
+							    b * RESIDENCE_JACKKNIFE_BLOCKS + jackknife_block;
 							residence_jackknife_block_dt_hist[
 							    block_offset] +=
 							    trajectory.bincount.dt_hist[b];
@@ -1491,38 +1497,13 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 	    jackknife_outer_domain_removed_counts,
 	    "before allreduce jackknife outer-domain counts");
 
-	const int histogram_count = static_cast<int>(TOTAL_BINS);
-	MPI_Trace_Point(mpi_rank, "before allreduce captured_dt_hist");
-	MPI_Allreduce(MPI_IN_PLACE, captured_dt_hist.data(), histogram_count, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-	MPI_Trace_Point(mpi_rank, "before allreduce captured_v2dt_hist");
-	MPI_Allreduce(MPI_IN_PLACE, captured_v2dt_hist.data(), histogram_count, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-	MPI_Trace_Point(mpi_rank, "before allreduce captured_dt_sq_hist");
-	MPI_Allreduce(MPI_IN_PLACE, captured_dt_sq_hist.data(), histogram_count, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-	MPI_Trace_Point(mpi_rank, "before allreduce captured_v2dt_sq_hist");
-	MPI_Allreduce(MPI_IN_PLACE, captured_v2dt_sq_hist.data(), histogram_count, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-	const int jackknife_histogram_count =
-	    static_cast<int>(
-	        RESIDENCE_JACKKNIFE_BLOCKS * TOTAL_BINS);
-	MPI_Trace_Point(
-	    mpi_rank,
-	    "before allreduce jackknife dt histograms");
-	MPI_Allreduce(
-	    MPI_IN_PLACE,
-	    residence_jackknife_block_dt_hist.data(),
-	    jackknife_histogram_count,
-	    MPI_DOUBLE,
-	    MPI_SUM,
-	    MPI_COMM_WORLD);
-	MPI_Trace_Point(
-	    mpi_rank,
-	    "before allreduce jackknife v2dt histograms");
-	MPI_Allreduce(
-	    MPI_IN_PLACE,
-	    residence_jackknife_block_v2dt_hist.data(),
-	    jackknife_histogram_count,
-	    MPI_DOUBLE,
-	    MPI_SUM,
-	    MPI_COMM_WORLD);
+	MPI_Trace_Point(mpi_rank, "before allreduce radial histograms");
+	Allreduce_MPI_Histogram(captured_dt_hist);
+	Allreduce_MPI_Histogram(captured_v2dt_hist);
+	Allreduce_MPI_Histogram(captured_dt_sq_hist);
+	Allreduce_MPI_Histogram(captured_v2dt_sq_hist);
+	Allreduce_MPI_Histogram(residence_jackknife_block_dt_hist);
+	Allreduce_MPI_Histogram(residence_jackknife_block_v2dt_hist);
 	MPI_Trace_Point(mpi_rank, "after histogram allreduces");
 	if(evaporation_diagnostics_enabled)
 	{
@@ -2107,7 +2088,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 		throw std::runtime_error(
 		    "residence jackknife scalar counts do not close");
 
-	for(std::size_t bin = 0; bin < TOTAL_BINS; bin++)
+	for(std::size_t bin = 0; bin < captured_dt_hist.size(); bin++)
 	{
 		double dt_sum = 0.0;
 		double v2dt_sum = 0.0;
@@ -2115,7 +2096,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 		    block < RESIDENCE_JACKKNIFE_BLOCKS;
 		    block++)
 		{
-			const std::size_t index = block * TOTAL_BINS + bin;
+			const std::size_t index = bin * RESIDENCE_JACKKNIFE_BLOCKS + block;
 			dt_sum += residence_jackknife_block_dt_hist[index];
 			v2dt_sum += residence_jackknife_block_v2dt_hist[index];
 		}
@@ -2146,20 +2127,20 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 		if(excluded_not_captured_particles > 0)
 			f << "# excluded_incomplete_not_captured = " << excluded_not_captured_particles << "\n";
 		f << "# base_grid_bins = " << NUM_BINS << "\n";
-		f << "# exterior_bins = " << EXTERIOR_BINS << "\n";
-		f << "# total_radial_bins = " << TOTAL_BINS << "\n";
-		f << "# radial_grid = uniform_inner_geometric_width_capped_exterior_v2\n";
+		f << "# exterior_bins = " << captured_dt_hist.size() - NUM_BINS << "\n";
+		f << "# total_radial_bins = " << captured_dt_hist.size() << "\n";
+		f << "# radial_grid = uniform_inner_geometric_width_capped_unbounded_v3\n";
 		f << "# radial_bin_width_Rsun = " << std::scientific << std::setprecision(10)
 		  << BIN_WIDTH_KM / R_SUN_KM << "\n";
 		f << "# exterior_initial_bin_width_Rsun = " << BIN_WIDTH_KM / R_SUN_KM << "\n";
 		f << "# exterior_bin_growth_factor = " << EXTERIOR_BIN_GROWTH_FACTOR << "\n";
 		f << "# exterior_max_bin_width_Rsun = " << EXTERIOR_MAX_BIN_WIDTH_RSUN << "\n";
 		f << "# radial_inner_extent_Rsun = " << BIN_MAX_KM / R_SUN_KM << "\n";
-		f << "# radial_domain_max_AU = " << RADIAL_DOMAIN_MAX_AU << "\n";
-		f << "# radial_extent_Rsun = " << RADIAL_DOMAIN_MAX_RSUN << "\n";
+		f << "# radial_domain_max_AU = unbounded\n";
+		f << "# radial_extent_Rsun = " << BincountBinLowerKm(captured_dt_hist.size()) / R_SUN_KM << "\n";
 		f << "# bin_index  r_lower_Rsun  r_upper_Rsun  residence_dt[s]  residence_v2dt[km2/s]  residence_err_dt[s]  residence_err_v2dt[km2/s]\n";
 		const double residence_samples = static_cast<double>(number_of_residence_samples);
-		for(std::size_t b = 0; b < TOTAL_BINS; b++)
+		for(std::size_t b = 0; b < captured_dt_hist.size(); b++)
 		{
 			const double residence_err_dt =
 			    Snapshot_Bin_Error(captured_dt_hist[b], captured_dt_sq_hist[b], residence_samples);
@@ -2195,7 +2176,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 		blocks << "# format_version = 1\n";
 		blocks << "# block_count = "
 		       << RESIDENCE_JACKKNIFE_BLOCKS << "\n";
-		blocks << "# radial_bins = " << TOTAL_BINS << "\n";
+		blocks << "# radial_bins = " << captured_dt_hist.size() << "\n";
 		blocks << "# base_seed = " << diagnostic_base_seed << "\n";
 		blocks << "# assignment = "
 		          "splitmix64(base_seed,rank,trajectory_id)%"
@@ -2228,9 +2209,9 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 		    block < RESIDENCE_JACKKNIFE_BLOCKS;
 		    block++)
 		{
-			for(std::size_t bin = 0; bin < TOTAL_BINS; bin++)
+			for(std::size_t bin = 0; bin < captured_dt_hist.size(); bin++)
 			{
-				const std::size_t index = block * TOTAL_BINS + bin;
+				const std::size_t index = bin * RESIDENCE_JACKKNIFE_BLOCKS + block;
 				blocks << block << '\t' << bin << '\t'
 				       << residence_jackknife_block_dt_hist[index]
 				       << '\t'
@@ -2562,13 +2543,13 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 			         << "  \"rk_absolute_max_step_s\": " << RK45AbsoluteMaxStepSec() << ",\n"
 			         << "  \"bincount_integration\": \"" << BincountIntegrationScheme() << "\",\n"
 			         << "  \"bincount_dense_position_tolerance_km\": " << BincountDensePositionToleranceKm() << ",\n"
-			         << "  \"radial_grid\": \"uniform_inner_geometric_width_capped_exterior_v2\",\n"
+			         << "  \"radial_grid\": \"uniform_inner_geometric_width_capped_unbounded_v3\",\n"
 			         << "  \"radial_inner_extent_Rsun\": " << BIN_MAX_KM / R_SUN_KM << ",\n"
-			         << "  \"radial_exterior_bins\": " << EXTERIOR_BINS << ",\n"
+			         << "  \"radial_exterior_bins\": " << captured_dt_hist.size() - NUM_BINS << ",\n"
 			         << "  \"radial_exterior_initial_bin_width_Rsun\": " << BIN_WIDTH_KM / R_SUN_KM << ",\n"
 			         << "  \"radial_exterior_bin_growth_factor\": " << EXTERIOR_BIN_GROWTH_FACTOR << ",\n"
 			         << "  \"radial_exterior_max_bin_width_Rsun\": " << EXTERIOR_MAX_BIN_WIDTH_RSUN << ",\n"
-			         << "  \"outer_domain_removal_AU\": " << RADIAL_DOMAIN_MAX_AU << ",\n"
+			         << "  \"outer_domain_removal_AU\": null,\n"
 			         << "  \"interpolation_points\": " << trajectory_diagnostic_config.interpolation_points << ",\n"
 			         << "  \"max_optical_depth_step\": " << NormalModeMaxOpticalDepthStep() << ",\n"
 			         << "  \"optical_depth_relative_tolerance\": " << OpticalDepthRelativeTolerance() << ",\n"
@@ -2578,7 +2559,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 			         << "  \"velocity_unit\": \"km/s\",\n"
 			         << "  \"angular_momentum_unit\": \"km^2/s\",\n"
 			         << "  \"bound_exit_period_definition\": \"point-mass osculating Kepler period at a negative-energy outward crossing of 1.1 Rsun\",\n"
-			         << "  \"bound_exit_exterior_time_definition\": \"analytic elapsed time: round trip through apoapsis for contained arcs; one-way to outward radial-domain removal for outer-domain arcs\",\n"
+			         << "  \"bound_exit_exterior_time_definition\": \"analytic round-trip elapsed time through apoapsis to the inbound matching surface; no radial cutoff\",\n"
 			         << "  \"n_scatter_total_definition\": \"all trajectory scatters, including scatters before first capture\",\n"
 			         << "  \"stop_conditions\": {\"max_free_steps\": " << maximum_free_time_steps
 			         << ", \"max_scatterings\": " << maximum_number_of_scatterings << "},\n"

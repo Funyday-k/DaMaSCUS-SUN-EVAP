@@ -292,8 +292,8 @@ TEST_F(SnapshotIOTest, SharedStatePublishesCurrentTrajectoryProgress)
 	SnapshotSharedState shared_state;
 	shared_state.Initialize(501, 4);
 	shared_state.BeginTrajectory(77, 100.0);
-	std::array<double, TOTAL_BINS> dt_hist{};
-	std::array<double, TOTAL_BINS> v2dt_hist{};
+	RadialHistogram dt_hist = RadialHistogram(NUM_BINS, 0.0);
+	RadialHistogram v2dt_hist = RadialHistogram(NUM_BINS, 0.0);
 	dt_hist[3] = 1.0;
 	v2dt_hist[3] = 4.0;
 	dt_hist[4] = 1.5;
@@ -339,6 +339,28 @@ TEST_F(SnapshotIOTest, SharedStatePublishesCurrentTrajectoryProgress)
 	EXPECT_DOUBLE_EQ(0.0, idle.current_trajectory_v2dt_hist[3]);
 }
 
+TEST_F(SnapshotIOTest, WideHistogramRoundTripPadsShorterCompletedState)
+{
+	const uint64_t run_id = 605;
+	SnapshotRankState state = MakeRoundTripState(run_id);
+	const int outer_bin = BincountBinIndexKm(100.0 * AU_KM);
+	GrowRadialHistograms(outer_bin + 1, state.current_trajectory_dt_hist,
+	                     state.current_trajectory_v2dt_hist);
+	state.current_trajectory_dt_hist[outer_bin] = 12.5;
+	state.current_trajectory_v2dt_hist[outer_bin] = 25.0;
+	const std::string path = rank_snapshot_dir + "wide.bin";
+	ASSERT_TRUE(WriteSnapshotRankState(path, state));
+	SnapshotRankState actual;
+	ASSERT_TRUE(ReadSnapshotRankState(path, run_id, actual));
+	GrowRadialHistograms(outer_bin + 1, state.captured_dt_hist, state.captured_v2dt_hist,
+	                     state.captured_dt_sq_hist, state.captured_v2dt_sq_hist);
+	ExpectStatesEqual(state, actual);
+	EXPECT_DOUBLE_EQ(actual.captured_dt_hist[outer_bin], 0.0);
+
+	state.captured_v2dt_hist.pop_back();
+	EXPECT_FALSE(WriteSnapshotRankState(path, state));
+}
+
 TEST_F(SnapshotIOTest, TextReportListsEachMpiRankActivity)
 {
 	const uint64_t run_id = 606;
@@ -362,8 +384,11 @@ TEST_F(SnapshotIOTest, TextReportListsEachMpiRankActivity)
 	running_captured.current_trajectory_simulated_elapsed_sec = 2500.0;
 	running_captured.current_trajectory_scatterings = 19;
 	running_captured.current_trajectory_captured = 1;
-	running_captured.current_trajectory_dt_hist[TOTAL_BINS - 1] = 42.0;
-	running_captured.current_trajectory_v2dt_hist[TOTAL_BINS - 1] = 84.0;
+	const int outer_bin = BincountBinIndexKm(6.0 * AU_KM);
+	GrowRadialHistograms(outer_bin + 1, running_captured.current_trajectory_dt_hist,
+	                     running_captured.current_trajectory_v2dt_hist);
+	running_captured.current_trajectory_dt_hist[outer_bin] = 42.0;
+	running_captured.current_trajectory_v2dt_hist[outer_bin] = 84.0;
 
 	SnapshotRankState idle;
 	idle.run_id = run_id;
@@ -411,9 +436,13 @@ TEST_F(SnapshotIOTest, TextReportListsEachMpiRankActivity)
 		"# 2\tidle_or_waiting\t0\t0.0000000000e+00\t0.0000000000e+00\t0\t1.0000000000e+01"));
 	EXPECT_NE(std::string::npos, report.find(
 		"# 3\tdone\t0\t0.0000000000e+00\t0.0000000000e+00\t0\t5.0000000000e+00"));
+	std::array<double, 4> values{};
+	ASSERT_TRUE(ReadHistogramBin(SnapshotTextFilePath(snapshot_root, 1, interval), outer_bin, values));
+	EXPECT_DOUBLE_EQ(values[0], 42.0);
+	EXPECT_DOUBLE_EQ(values[1], 84.0);
 }
 
-TEST_F(SnapshotIOTest, CompletedOuterDomainRemovalContributesThroughRadialBoundary)
+TEST_F(SnapshotIOTest, CompletedWideOrbitRetainsExteriorResidence)
 {
 	const uint64_t run_id = 607;
 	const double interval = 10.0;
@@ -423,11 +452,11 @@ TEST_F(SnapshotIOTest, CompletedOuterDomainRemovalContributesThroughRadialBounda
 
 	TrajectoryBincount removed;
 	removed.is_captured = true;
-	removed.outer_domain_removed = true;
-	removed.termination_reason =
-	    TrajectoryTerminationReason::OuterDomainRemoval;
-	removed.dt_hist[TOTAL_BINS - 1] = 12.5;
-	removed.v2dt_hist[TOTAL_BINS - 1] = 25.0;
+	removed.termination_reason = TrajectoryTerminationReason::OutwardEscape;
+	const int outer_bin = BincountBinIndexKm(6.0 * AU_KM);
+	GrowRadialHistograms(outer_bin + 1, removed.dt_hist, removed.v2dt_hist);
+	removed.dt_hist[outer_bin] = 12.5;
+	removed.v2dt_hist[outer_bin] = 25.0;
 	shared_state.RecordCompletedTrajectory(
 	    removed, true, false, {});
 

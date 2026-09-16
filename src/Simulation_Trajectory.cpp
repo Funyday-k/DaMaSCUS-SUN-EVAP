@@ -1242,12 +1242,36 @@ bool Compute_Bound_Kepler_Exterior_Arc(
         const Bincount_Radial_Grid& radial_grid,
         BoundKeplerExteriorArc& arc)
 {
+        auto fail = [&](const char* reason) -> bool
+        {
+                std::cerr
+                    << "Kepler arc construction failed: "
+                    << reason
+                    << " radius_km="
+                    << In_Units(outward_event.Radius(), km)
+                    << " speed_km_s="
+                    << In_Units(outward_event.Speed(), km / sec)
+                    << " radial_velocity_km_s="
+                    << In_Units(
+                           Radial_Velocity(outward_event),
+                           km / sec)
+                    << std::endl;
+
+                return false;
+        };
+
+
 	Event inbound_event;
 	double return_time = 0.0;
 	double apoapsis_radius = 0.0;
 	if(!Bound_Kepler_Return_At_Same_Radius(
-	       outward_event, inbound_event, return_time, apoapsis_radius))
-		return false;
+       outward_event,
+       inbound_event,
+       return_time,
+       apoapsis_radius))
+	{
+        return fail("bound_kepler_return_at_same_radius");
+	}
 
 	const double radius_km = In_Units(outward_event.Radius(), km);
 	const double speed_km_s = In_Units(outward_event.Speed(), km / sec);
@@ -1263,20 +1287,32 @@ bool Compute_Bound_Kepler_Exterior_Arc(
 	    1.0 + 2.0 * specific_energy_km2_s2
 	        * angular_momentum_km2_s * angular_momentum_km2_s
 	        / (mu_km3_s2 * mu_km3_s2);
-	if(!std::isfinite(radius_km) || !std::isfinite(semi_major_axis_km)
-	   || !std::isfinite(eccentricity_squared) || eccentricity_squared < 0.0)
-		return false;
+	if(!std::isfinite(radius_km)
+   || !std::isfinite(semi_major_axis_km)
+   || !std::isfinite(eccentricity_squared)
+   || eccentricity_squared < 0.0)
+	{
+			return fail("invalid_primary_orbital_parameters");
+	}
 	const double eccentricity = sqrt(std::max(0.0, eccentricity_squared));
 	const double mean_motion_s_inv = sqrt(
 	    mu_km3_s2
 	    / (semi_major_axis_km * semi_major_axis_km * semi_major_axis_km));
-	if(!(eccentricity > 1.0e-14 && eccentricity < 1.0)
-	   || !std::isfinite(mean_motion_s_inv) || mean_motion_s_inv <= 0.0)
-		return false;
+	if(!(eccentricity > 1.0e-14 && eccentricity < 1.0))
+			return fail("eccentricity_orbit_not_bound");
+
+	if(!std::isfinite(mean_motion_s_inv)
+	|| mean_motion_s_inv <= 0.0)
+	{
+			return fail("invalid_mean_motion");
+	}
 
 	const double apoapsis_km = In_Units(apoapsis_radius, km);
-	if(!std::isfinite(apoapsis_km) || apoapsis_km < radius_km)
-		return false;
+	if(!std::isfinite(apoapsis_km))
+			return fail("nonfinite_apoapsis");
+
+	if(apoapsis_km < radius_km)
+			return fail("apoapsis_inside_current_radius");
 	arc = BoundKeplerExteriorArc(radial_grid.Bin_Count());
 	arc.terminal_event = inbound_event;
 	arc.elapsed_time_sec = In_Units(return_time, sec);
@@ -1316,11 +1352,23 @@ bool Compute_Bound_Kepler_Exterior_Arc(
 		    outward_event.velocity.Cross(angular_momentum_vector) / mu
 		    - radial_unit;
 		const double eccentricity_natural = eccentricity_vector.Norm();
-		if(!std::isfinite(angular_momentum) || angular_momentum <= 0.0
-		   || !std::isfinite(semi_latus_rectum) || semi_latus_rectum <= 0.0
-		   || !std::isfinite(eccentricity_natural)
-		   || eccentricity_natural <= 0.0)
-			return false;
+	if(!std::isfinite(angular_momentum)
+	|| angular_momentum <= 0.0)
+	{
+			return fail("invalid_outer_angular_momentum");
+	}
+
+	if(!std::isfinite(semi_latus_rectum)
+	|| semi_latus_rectum <= 0.0)
+	{
+			return fail("invalid_outer_semi_latus_rectum");
+	}
+
+	if(!std::isfinite(eccentricity_natural)
+	|| eccentricity_natural <= 0.0)
+	{
+			return fail("invalid_outer_eccentricity");
+	}
 
 		libphysica::Vector axis_x =
 		    eccentricity_vector / eccentricity_natural;
@@ -1328,8 +1376,11 @@ bool Compute_Bound_Kepler_Exterior_Arc(
 		    angular_momentum_vector / angular_momentum;
 		libphysica::Vector axis_y = axis_z.Cross(axis_x);
 		const double axis_y_norm = axis_y.Norm();
-		if(!std::isfinite(axis_y_norm) || axis_y_norm <= 0.0)
-			return false;
+		if(!std::isfinite(axis_y_norm)
+		|| axis_y_norm <= 0.0)
+		{
+				return fail("invalid_outer_axis_basis");
+		}
 		axis_y = axis_y / axis_y_norm;
 		axis_x = axis_y.Cross(axis_z).Normalized();
 
@@ -1352,13 +1403,39 @@ bool Compute_Bound_Kepler_Exterior_Arc(
 		   || !std::isfinite(arc.terminal_event.Radius())
 		   || !std::isfinite(arc.terminal_event.Speed())
 		   || Radial_Velocity(arc.terminal_event) <= 0.0)
-			return false;
+		{
+				return fail("invalid_outer_terminal_event");
+		}
 	}
 
-	const int first_bin_index = radial_grid.Bin_Index_Km(radius_km);
-	if(first_bin_index
-           < static_cast<int>(radial_grid.Inner_Bin_Count()))
-		return false;
+	int first_bin_index =
+		radial_grid.Bin_Index_Km(radius_km);
+
+	const int first_exterior_bin =
+		static_cast<int>(radial_grid.Inner_Bin_Count());
+
+	const double inner_extent_km =
+		radial_grid.Inner_Extent_Km();
+
+	const double inner_edge_tolerance_km =
+		1.0e-10 * std::max(1.0, inner_extent_km);
+
+	if(first_bin_index < first_exterior_bin)
+	{
+			// The outward event can lie exactly on the interior/exterior
+			// matching surface. Due to floating-point edge conventions,
+			// Bin_Index_Km() may return the last interior bin. Treat such
+			// an event as the start of the first exterior bin.
+			if(std::fabs(radius_km - inner_extent_km)
+			<= inner_edge_tolerance_km)
+			{
+					first_bin_index = first_exterior_bin;
+			}
+			else
+			{
+					return fail("outward_event_not_in_exterior_grid");
+			}
+	}
 	for(std::size_t bin = static_cast<std::size_t>(first_bin_index);
 	    bin < radial_grid.Bin_Count(); bin++)
 	{
@@ -1389,9 +1466,21 @@ bool Compute_Bound_Kepler_Exterior_Arc(
 		    pass_factor * mu_km3_s2
 		    / (semi_major_axis_km * mean_motion_s_inv)
 		    * delta_v2_primitive;
-		if(!std::isfinite(arc.dt_hist[bin]) || arc.dt_hist[bin] < 0.0
-		   || !std::isfinite(arc.v2dt_hist[bin]) || arc.v2dt_hist[bin] < 0.0)
-			return false;
+		if(!std::isfinite(arc.dt_hist[bin])
+		|| arc.dt_hist[bin] < 0.0
+		|| !std::isfinite(arc.v2dt_hist[bin])
+		|| arc.v2dt_hist[bin] < 0.0)
+		{
+				std::cerr
+					<< "Kepler arc construction failed: "
+					<< "invalid_histogram_contribution"
+					<< " bin=" << bin
+					<< " dt=" << arc.dt_hist[bin]
+					<< " v2dt=" << arc.v2dt_hist[bin]
+					<< std::endl;
+
+				return false;
+		}
 	}
 	return std::isfinite(arc.elapsed_time_sec) && arc.elapsed_time_sec > 0.0
 	    && std::isfinite(arc.kepler_period_sec) && arc.kepler_period_sec > 0.0;
@@ -3368,3 +3457,4 @@ Event Free_Particle_Propagator::Event_In_3D()
 }
 
 }	// namespace DaMaSCUS_SUN
+//first_bin_index

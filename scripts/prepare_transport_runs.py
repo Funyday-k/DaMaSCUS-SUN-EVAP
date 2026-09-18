@@ -33,10 +33,10 @@ def prepare(destination: Path, phase: str) -> list[dict]:
                               'max_trajectory_wall_time_sec':'0.0','interpolation_points':'0'}
                 text='// Generated transport configuration; sample_size meaning is specified by workflow.\n'+template[template.index('ID ='):]
                 for key,value in replacements.items(): text=re.sub(rf'(?m)^{key}\s*=.*?;',f'{key} = {value};',text)
-                text+=f'\nfixed_seed = {seed};\nouter_boundary_radius_au = {float(outer)};\nproduction_mode = {str(kind!="thermal").lower()};\nthermal_validation_mode = {str(kind=="thermal").lower()};\n'
+                text+=f'\nfixed_seed = {seed};\nouter_removal_radius_rsun = {float(outer)};\nproduction_mode = {str(kind!="thermal").lower()};\nthermal_validation_mode = {str(kind=="thermal").lower()};\n'
                 if kind=='thermal': text+='maximum_number_of_scatterings = 10000;\n'
                 cfg=destination/f'{label}_{kind}_seed{seed_index}.cfg'; cfg.write_text(text)
-                manifest.append({'config':str(cfg.resolve()),'kind':kind,'mass_GeV':mass,'sigma_cm2':10.**exponent,'R_outer_au':outer,'samples':samples,'seed':seed})
+                manifest.append({'config':str(cfg.resolve()),'kind':kind,'mass_GeV':mass,'sigma_cm2':10.**exponent,'R_remove_rsun':outer,'samples':samples,'seed':seed})
     (destination/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
     return manifest
 

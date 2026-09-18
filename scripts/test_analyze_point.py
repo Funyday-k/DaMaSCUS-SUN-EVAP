@@ -42,9 +42,9 @@ class GeometryTests(unittest.TestCase):
     def test_unfinished_histories_and_wrong_workflows_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             p=Path(tmp)
-            (p/'metadata.json').write_text(json.dumps({'schema_version':7,'workflow':'complete_captured_transport','production_accepted':False}))
+            (p/'metadata.json').write_text(json.dumps({'schema_version':8,'workflow':'complete_captured_transport','production_accepted':False}))
             with self.assertRaises(ValueError): require_accepted(p,'complete_captured_transport')
-            (p/'metadata.json').write_text(json.dumps({'schema_version':7,'workflow':'thermal_shape_validation','production_accepted':True}))
+            (p/'metadata.json').write_text(json.dumps({'schema_version':8,'workflow':'thermal_shape_validation','production_accepted':True}))
             with self.assertRaises(ValueError): require_accepted(p,'complete_captured_transport')
 
 class AnalysisContractTests(unittest.TestCase):
@@ -53,10 +53,15 @@ class AnalysisContractTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root=Path(self.tmp.name); self.output=self.root/'transport'; self.capture=self.root/'capture'
         self.output.mkdir(); self.capture.mkdir()
-        self.meta={'schema_version':7,'production_accepted':True,'workflow':'complete_captured_transport',
+        self.meta={'schema_version':8,'production_accepted':True,'workflow':'complete_captured_transport',
             'source_sha256':'fixture-source','seed':101,'mpi_ranks':1,'solar_model':'fixture',
             'halo_model':'SHM','halo_density_GeV_cm3':.4,'m_chi_GeV':.01,'sigma_SD_cm2':1e-32,
-            'R_match_rsun':1.0,'R_outer_au':1100,'requested_samples':64,
+            'R_inj_rsun':2.0,'R_match_rsun':1.0,'R_incident_au':1100,
+            'R_transit_reference_rsun':3,'R_remove_rsun':3,
+            'interpolation_points':0,'rk_position_tolerance_km':1.0,
+            'rk_velocity_tolerance_km_s':.001,'rk_phase_tolerance':1e-7,
+            'max_optical_depth_step':.05,'optical_depth_relative_tolerance':.01,
+            'requested_samples':64,
             'N_completed':64,'N_capt':64,'N_inj':128,'N_outer_removed':32,
             'N_numerical_failures':0,'N_computational_failures':0,
             'radial_edges_km':[0,R_SUN_CM/1e5,2*R_SUN_CM/1e5,3*R_SUN_CM/1e5]}
@@ -97,6 +102,10 @@ class AnalysisContractTests(unittest.TestCase):
     def test_all_reported_diagnostics_have_correct_delete_block_errors(self) -> None:
         result=self.run_analysis()
         self.assertEqual(set(result['central']),set(result['jackknife_se']))
+        self.assertEqual(set(result['central']),set(result['jackknife_bias']))
+        self.assertAlmostEqual(result['jackknife_bias_corrected']['I_tot_s2_cm3'],
+                               result['central']['I_tot_s2_cm3']-result['jackknife_bias']['I_tot_s2_cm3'])
+        self.assertGreater(result['jackknife_bias']['I_tot_s2_cm3'],0)
         self.assertAlmostEqual(result['central']['f_removed'],.5)
         self.assertAlmostEqual(result['jackknife_se']['f_removed'],np.sqrt(.25/63))
         reps=(672-np.array(self.cap['blocks'])[:,1])/(1280-20)
@@ -110,6 +119,17 @@ class AnalysisContractTests(unittest.TestCase):
         with (self.root/'scan/points.csv').open() as stream:
             row=next(csv.DictReader(stream))
         self.assertGreater(float(row['T2_in_K_se']),0)
+        self.assertTrue(np.isfinite(float(row['I_tot_s2_cm3_jackknife_bias'])))
+
+    def test_numerical_signature_mismatch_is_rejected(self) -> None:
+        self.cmeta['interpolation_points']=1000
+        self.write_json(self.capture/'metadata.json',self.cmeta)
+        with self.assertRaisesRegex(ValueError,'interpolation_points'): self.run_analysis()
+
+    def test_removal_cutoff_mismatch_is_rejected(self) -> None:
+        self.cmeta['R_remove_rsun']=550
+        self.write_json(self.capture/'metadata.json',self.cmeta)
+        with self.assertRaisesRegex(ValueError,'R_remove_rsun'): self.run_analysis()
 
     def test_capture_block_mismatch_is_rejected(self) -> None:
         self.cap['blocks'][0][1]+=1

@@ -741,7 +741,10 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 
 	// Configure the simulator
 	Trajectory_Simulator simulator(solar_model, maximum_free_time_steps, maximum_number_of_scatterings, initial_and_final_radius);
-	simulator.outer_removal_radius_km = outer_boundary_radius_au * AU_KM;
+	simulator.outer_removal_radius_km = outer_removal_radius_rsun * R_SUN_KM;
+	// Keep diagnostic paths inside the recorded radial grid during cutoff scans.
+	simulator.outgoing_recording_radius_km =
+	    std::min(outer_removal_radius_rsun, TRANSIT_REFERENCE_RSUN) * R_SUN_KM;
 	simulator.max_trajectory_wall_time_sec = snapshot_cfg.max_trajectory_wall_time_sec;
 	simulator.Enable_Capture_Mode(capture_mode);
 	if(fixed_seed != 0)
@@ -944,13 +947,14 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 			                                                       : std::string();
 			simulator.Enable_Diagnostic_Trace(trace_selected);
 			Event IC = Initial_Conditions(halo_model, solar_model, simulator.PRNG,
-			                                 outer_boundary_radius_au * AU);
-			const bool surface_shift_ok = Hyperbolic_Kepler_Shift(IC, initial_and_final_radius);
+			                                 INCIDENT_SAMPLING_RADIUS_AU * AU);
+			const bool surface_shift_ok = Hyperbolic_Kepler_Shift(IC, INCIDENT_INJECTION_RSUN * rSun)
+			    && Hyperbolic_Kepler_Shift(IC, initial_and_final_radius);
 			BoundKeplerExteriorArc incident_inbound;
 			const bool initial_shift_ok = surface_shift_ok
 			    && Compute_Unbound_Kepler_Exterior_Arc(
 			        Event(0.0, IC.position, (-1.0) * IC.velocity),
-			        outer_boundary_radius_au * AU_KM, incident_inbound);
+			        simulator.outgoing_recording_radius_km, incident_inbound);
 			if(initial_shift_ok)
 				IC.time = 0.0;
 			const std::mt19937 replay_rng_before_simulation = simulator.PRNG;
@@ -2067,10 +2071,9 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 		f << "# exterior_initial_bin_width_Rsun = " << BIN_WIDTH_KM / R_SUN_KM << "\n";
 		f << "# exterior_bin_growth_factor = " << EXTERIOR_BIN_GROWTH_FACTOR << "\n";
 		f << "# exterior_max_bin_width_Rsun = " << EXTERIOR_MAX_BIN_WIDTH_RSUN << "\n";
-		f << "# exterior_max_bin_width_AU = " << EXTERIOR_MAX_BIN_WIDTH_KM / AU_KM << "\n";
 		f << "# radial_inner_extent_Rsun = " << BIN_MAX_KM / R_SUN_KM << "\n";
-		f << "# radial_domain_max_Rsun = " << outer_boundary_radius_au * AU_KM / R_SUN_KM << "\n";
-		f << "# radial_extent_Rsun = " << std::min(outer_boundary_radius_au * AU_KM / R_SUN_KM, BincountBinLowerKm(captured_dt_hist.size()) / R_SUN_KM) << "\n";
+		f << "# radial_domain_max_Rsun = " << outer_removal_radius_rsun << "\n";
+		f << "# radial_extent_Rsun = " << std::min(outer_removal_radius_rsun, BincountBinLowerKm(captured_dt_hist.size()) / R_SUN_KM) << "\n";
 		f << "# bin_index  r_lower_Rsun  r_upper_Rsun  residence_dt[s]  residence_v2dt[km2/s]  residence_err_dt[s]  residence_err_v2dt[km2/s]\n";
 		const double residence_samples = static_cast<double>(number_of_residence_samples);
 		for(std::size_t b = 0; b < captured_dt_hist.size(); b++)
@@ -2082,7 +2085,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 
 			f << b << "\t" << std::scientific << std::setprecision(10)
 			  << BincountBinLowerKm(b) / R_SUN_KM << "\t"
-			  << std::min(outer_boundary_radius_au * AU_KM / R_SUN_KM, BincountBinUpperKm(b) / R_SUN_KM) << "\t"
+			  << std::min(outer_removal_radius_rsun, BincountBinUpperKm(b) / R_SUN_KM) << "\t"
 			  << captured_dt_hist[b] << "\t" << captured_v2dt_hist[b]
 			  << "\t" << residence_err_dt << "\t" << residence_err_v2dt << "\n";
 		}
@@ -2402,7 +2405,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 			         << "  \"radial_exterior_initial_bin_width_Rsun\": " << BIN_WIDTH_KM / R_SUN_KM << ",\n"
 			         << "  \"radial_exterior_bin_growth_factor\": " << EXTERIOR_BIN_GROWTH_FACTOR << ",\n"
 			         << "  \"radial_exterior_max_bin_width_Rsun\": " << EXTERIOR_MAX_BIN_WIDTH_RSUN << ",\n"
-			         << "  \"outer_domain_removal_AU\": " << outer_boundary_radius_au << ",\n"
+			         << "  \"outer_domain_removal_Rsun\": " << outer_removal_radius_rsun << ",\n"
 			         << "  \"interpolation_points\": " << trajectory_diagnostic_config.interpolation_points << ",\n"
 			         << "  \"max_optical_depth_step\": " << NormalModeMaxOpticalDepthStep() << ",\n"
 			         << "  \"optical_depth_relative_tolerance\": " << OpticalDepthRelativeTolerance() << ",\n"
@@ -2627,7 +2630,7 @@ void Simulation_Data::Print_Capture_Mode_Summary(unsigned int mpi_rank)
 		          << "CAPTURE MODE summary" << std::endl
 		          << std::endl
 		          << "Termination condition:\t\tpost-scatter E < 0" << std::endl
-		          << "File output:\t\t\tschema-7 capture products" << std::endl
+		          << "File output:\t\t\tschema-8 capture products" << std::endl
 		          << "Simulated trajectories:\t\t" << number_of_trajectories << std::endl
 		          << "Capture-classified trajectories:\t" << Valid_Trajectories() << std::endl
 		          << "Unresolved non-captures:\t\t" << (number_of_trajectories - Valid_Trajectories()) << std::endl
@@ -3036,7 +3039,7 @@ void Simulation_Data::Write_Transport_Products(const std::string& dir, obscura::
         if(!f || std::rename(tmp.c_str(),path.c_str())!=0)
             throw std::runtime_error("Cannot publish "+path);
     };
-    const auto edges=BuildRadialGrid(outer_boundary_radius_au*AU_KM);
+    const auto edges=BuildRadialGrid(outer_removal_radius_rsun*R_SUN_KM);
     std::ostringstream reference; reference << std::setprecision(17);
     reference << "r_cm\tT_K\tn_H_cm3\tphi_minus_center_km2_s2\n";
     const double center_escape2=std::pow(In_Units(solar.Local_Escape_Speed(0.0),km/sec),2);
@@ -3116,7 +3119,7 @@ void Simulation_Data::Write_Transport_Products(const std::string& dir, obscura::
     }
     const auto stamp=std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
     std::ostringstream meta; meta << std::setprecision(17);
-    meta << "{\n\"schema_version\":7,\n\"production_accepted\":" << (Production_Ready()?"true":"false")
+    meta << "{\n\"schema_version\":8,\n\"production_accepted\":" << (Production_Ready()?"true":"false")
          << ",\n\"workflow\":\"" << (fixed_injection_capture_run?"fixed_injection_capture":(thermal_shape_run?"thermal_shape_validation":"complete_captured_transport"))
          << "\",\n\"git_commit\":\"" << GIT_COMMIT_HASH << "\",\n\"source_sha256\":\"" << DAMASCUS_SOURCE_SHA256
          << "\",\n\"compiler\":\"" << DAMASCUS_COMPILER << "\",\n\"build_type\":\"" << DAMASCUS_BUILD_TYPE
@@ -3126,14 +3129,24 @@ void Simulation_Data::Write_Transport_Products(const std::string& dir, obscura::
          << ",\n\"solar_model\":\"AGSS09\",\n\"halo_model\":\"" << "see input.cfg" << "\",\n\"halo_density_GeV_cm3\":" << In_Units(halo.DM_density,GeV/(cm*cm*cm))
          << ",\n\"DM_fraction\":" << DM.fractional_density
          << ",\n\"m_chi_GeV\":" << In_Units(DM.mass,GeV) << ",\n\"sigma_SD_cm2\":" << In_Units(DM.Sigma_Proton(),cm*cm)
+         << ",\n\"R_inj_rsun\":" << INCIDENT_INJECTION_RSUN
          << ",\n\"R_match_rsun\":" << In_Units(initial_and_final_radius,rSun)
-         << ",\n\"R_outer_au\":" << outer_boundary_radius_au << ",\n\"requested_samples\":" << requested_captured_particles
+         << ",\n\"R_incident_au\":" << INCIDENT_SAMPLING_RADIUS_AU
+         << ",\n\"R_transit_reference_rsun\":" << std::min(outer_removal_radius_rsun, TRANSIT_REFERENCE_RSUN)
+         << ",\n\"R_remove_rsun\":" << outer_removal_radius_rsun
+         << ",\n\"interpolation_points\":" << interpolation_points
+         << ",\n\"rk_position_tolerance_km\":" << RK45PositionToleranceKm()
+         << ",\n\"rk_velocity_tolerance_km_s\":" << RK45VelocityToleranceKmPerSec()
+         << ",\n\"rk_phase_tolerance\":" << RK45PhaseTolerance()
+         << ",\n\"max_optical_depth_step\":" << NormalModeMaxOpticalDepthStep()
+         << ",\n\"optical_depth_relative_tolerance\":" << OpticalDepthRelativeTolerance()
+         << ",\n\"requested_samples\":" << requested_captured_particles
          << ",\n\"N_inj\":" << number_of_trajectories << ",\n\"N_capt\":" << number_of_captured_particles << ",\n\"N_completed\":" << number_of_residence_samples
          << ",\n\"N_outer_removed\":" << number_of_outer_domain_removed_particles << ",\n\"N_numerical_failures\":" << number_of_numerical_failures
          << ",\n\"N_computational_failures\":" << number_of_computational_truncations << ",\n\"runtime_seconds\":" << computing_time
          << ",\n\"captured_end\":\"validated escape at matching surface or outer removal\",\n\"post_evap\":\"separate outgoing occupation from validated escape to recording boundary; excluded from captured_dt\""
-         << ",\n\"incident_inbound\":\"all successfully propagated incident particles, configured outer sphere to solar surface; separate from captured residence\""
-         << ",\n\"transit_uncaptured\":\"unscattered solar-intersecting incident subset from outer inbound crossing through Sun to outer outbound crossing; not a full halo density\""
+         << ",\n\"incident_inbound\":\"all successfully propagated incident particles, diagnostic reference sphere to solar surface; separate from captured residence\""
+         << ",\n\"transit_uncaptured\":\"unscattered solar-intersecting incident subset from diagnostic reference inward through Sun and outward to the same reference; not a full halo density\""
          << ",\n\"restart_supported\":false,\n\"radial_edges_km\":[";
     for(std::size_t i=0;i<edges.size();++i) { if(i) meta << ','; meta << edges[i]; }
     meta << "]\n}\n"; publish("metadata.json",meta.str());

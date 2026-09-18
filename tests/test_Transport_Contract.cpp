@@ -19,7 +19,7 @@ Event ellipse(double e, double r, double peri) {
 double sum(const RadialHistogram& x){return std::accumulate(x.begin(),x.end(),0.0);}
 }
 TEST(TransportContract, GridRetainsNativeGeometryAndClipsFinalShell) {
-    for(double outer:{1100.0,3000.0,10000.0,DEFAULT_OUTER_BOUNDARY_AU*AU_KM/R_SUN_KM}) {
+    for(double outer:{550.0,DEFAULT_OUTER_REMOVAL_RSUN,2200.0}) {
         auto edges=BuildRadialGrid(outer*R_SUN_KM);
         EXPECT_DOUBLE_EQ(edges.front(),0.0); EXPECT_DOUBLE_EQ(edges.back(),outer*R_SUN_KM);
         for(std::size_t b=0;b+1<edges.size();++b) {
@@ -58,14 +58,14 @@ TEST(TransportContract, RemovalIsOneWayAndPreservesEnergyAngularMomentum) {
     EXPECT_LT(arc.elapsed_time_sec,complete.elapsed_time_sec/2);
     EXPECT_FALSE(TrajectoryTerminationInvalidatesResidenceBincount(TrajectoryTerminationReason::OuterDomainRemoval));
 }
-TEST(TransportContract, WideBoundOrbitStopsAtTheShared1100AUSurface) {
+TEST(TransportContract, WideBoundOrbitStopsAtThe1100SolarRadiusCutoff) {
     const double peri=0.5*rSun, apo=2000*AU;
     const double e=(apo-peri)/(apo+peri);
     const Event out=ellipse(e,1.2*rSun,peri);
     BoundKeplerExteriorArc arc;
-    ASSERT_TRUE(Compute_Bound_Kepler_Exterior_Arc(out,arc,DEFAULT_OUTER_BOUNDARY_AU*AU_KM));
+    ASSERT_TRUE(Compute_Bound_Kepler_Exterior_Arc(out,arc,DEFAULT_OUTER_REMOVAL_RSUN*R_SUN_KM));
     EXPECT_TRUE(arc.outer_removed);
-    EXPECT_NEAR(In_Units(arc.terminal_event.Radius(),AU),DEFAULT_OUTER_BOUNDARY_AU,1e-7);
+    EXPECT_NEAR(In_Units(arc.terminal_event.Radius(),rSun),DEFAULT_OUTER_REMOVAL_RSUN,1e-7);
     EXPECT_GT(arc.terminal_event.position.Dot(arc.terminal_event.velocity),0.0);
     EXPECT_NEAR(sum(arc.dt_hist)/arc.elapsed_time_sec,1.0,1e-10);
     EXPECT_GT(arc.dt_hist.back(),0.0);
@@ -90,19 +90,20 @@ TEST(TransportContract, Incoming1100AUPathClosesAtTheSolarSurface) {
     std::mt19937 prng(20260918u);
     for(int i=0;i<32;++i) {
         const Event sampled=Initial_Conditions(halo,sun,prng);
-        EXPECT_NEAR(In_Units(sampled.Radius(),AU),DEFAULT_OUTER_BOUNDARY_AU,1e-9);
+        EXPECT_NEAR(In_Units(sampled.Radius(),AU),INCIDENT_SAMPLING_RADIUS_AU,1e-9);
         Event surface=sampled;
+        ASSERT_TRUE(Hyperbolic_Kepler_Shift(surface,INCIDENT_INJECTION_RSUN*rSun));
         ASSERT_TRUE(Hyperbolic_Kepler_Shift(surface,rSun));
         EXPECT_NEAR(In_Units(surface.Radius(),rSun),1.0,1e-10);
         EXPECT_LT(surface.position.Dot(surface.velocity),0.0);
         BoundKeplerExteriorArc inbound;
         ASSERT_TRUE(Compute_Unbound_Kepler_Exterior_Arc(
             Event(0.0,surface.position,(-1.0)*surface.velocity),
-            DEFAULT_OUTER_BOUNDARY_AU*AU_KM,inbound));
+            TRANSIT_REFERENCE_RSUN*R_SUN_KM,inbound));
         EXPECT_NEAR(sum(inbound.dt_hist)/inbound.elapsed_time_sec,1.0,1e-10);
         EXPECT_GT(inbound.dt_hist[BincountBinIndexKm(R_SUN_KM)],0.0);
         EXPECT_GT(inbound.dt_hist.back(),0.0);
-        EXPECT_NEAR(In_Units(inbound.terminal_event.Radius(),AU),DEFAULT_OUTER_BOUNDARY_AU,1e-9);
+        EXPECT_NEAR(In_Units(inbound.terminal_event.Radius(),rSun),TRANSIT_REFERENCE_RSUN,1e-9);
         EXPECT_NEAR(inbound.terminal_event.Angular_Momentum()/sampled.Angular_Momentum(),1.0,1e-9);
     }
 }
@@ -113,6 +114,49 @@ TEST(TransportContract, SolarPotentialMatchesExteriorAtTheSurface) {
     EXPECT_NEAR(std::pow(sun.Local_Escape_Speed((1-1e-11)*rSun),2)/analytic,1.0,1e-9);
     EXPECT_NEAR(sun.Mass(rSun)/mSun,1.0,1e-10);
 }
+TEST(TransportContract, SolarSurfaceOneSidedCrossingsRemainFinite) {
+    Solar_Model sun;
+    const double eps=1e-8;
+    const double rplus=(1+eps)*rSun, rminus=(1-eps)*rSun;
+    const double escape2=2*G_Newton*mSun/rSun;
+    EXPECT_NEAR(std::pow(sun.Local_Escape_Speed(rminus),2)/escape2,1.0,1e-7);
+    EXPECT_NEAR(std::pow(sun.Local_Escape_Speed(rplus),2)/escape2,1.0,1e-7);
+
+    // The inward hyperbola maps from just outside the Sun to the numerical
+    // matching surface without any missing exterior shell time.
+    Event inbound(0.0,libphysica::Vector({rplus,0.0,0.0}),
+                  libphysica::Vector({-700*km/sec,100*km/sec,0.0}));
+    ASSERT_TRUE(Hyperbolic_Kepler_Shift(inbound,rSun));
+    EXPECT_NEAR(In_Units(inbound.Radius(),rSun),1.0,1e-10);
+    EXPECT_LT(inbound.position.Dot(inbound.velocity),0.0);
+    BoundKeplerExteriorArc outgoing;
+    ASSERT_TRUE(Compute_Unbound_Kepler_Exterior_Arc(
+        Event(0.0,inbound.position,(-1.0)*inbound.velocity),
+        TRANSIT_REFERENCE_RSUN*R_SUN_KM,outgoing));
+    EXPECT_GT(outgoing.dt_hist[BincountBinIndexKm(R_SUN_KM)],0.0);
+    EXPECT_NEAR(sum(outgoing.dt_hist)/outgoing.elapsed_time_sec,1.0,1e-9);
+
+    const double peri=.5*rSun, apo=5*rSun, e=(apo-peri)/(apo+peri);
+    BoundKeplerExteriorArc bound;
+    ASSERT_TRUE(Compute_Bound_Kepler_Exterior_Arc(ellipse(e,rplus,peri),bound,
+                                                  DEFAULT_OUTER_REMOVAL_RSUN*R_SUN_KM));
+    EXPECT_FALSE(bound.outer_removed);
+    EXPECT_NEAR(In_Units(bound.terminal_event.Radius(),rSun),1+eps,1e-9);
+    EXPECT_NEAR(sum(bound.dt_hist)/bound.elapsed_time_sec,1.0,1e-8);
+
+    const double mu=In_Units(G_Newton*mSun,km*km*km/(sec*sec));
+    const double r0=In_Units(rplus,km), vt=100.0;
+    for(double offset:{-1e-10,1e-10}) {
+        const double vr=std::sqrt(2*mu/r0*(1+offset)-vt*vt);
+        const Event state(0.0,libphysica::Vector({rplus,0.0,0.0}),
+                          libphysica::Vector({vr*km/sec,vt*km/sec,0.0}));
+        BoundKeplerExteriorArc arc;
+        ASSERT_TRUE(offset<0
+            ? Compute_Bound_Kepler_Exterior_Arc(state,arc,DEFAULT_OUTER_REMOVAL_RSUN*R_SUN_KM)
+            : Compute_Unbound_Kepler_Exterior_Arc(state,TRANSIT_REFERENCE_RSUN*R_SUN_KM,arc));
+        EXPECT_NEAR(sum(arc.dt_hist)/arc.elapsed_time_sec,1.0,1e-8);
+    }
+}
 
 TEST(TransportContract, CaptureAndTransportShareFirstCollisionAccuracy) {
     // Low positive incident energy exposed the former coarse capture-only
@@ -121,13 +165,15 @@ TEST(TransportContract, CaptureAndTransportShareFirstCollisionAccuracy) {
     Solar_Model sun;
     obscura::DM_Particle_SD dm(0.01*GeV);
     dm.Set_Sigma_Proton(1e-32*cm*cm);
-    const Event initial(0.0,
+    Event initial(0.0,
         libphysica::Vector({-742895.7231921622*km,183547.0308320915*km,-7389.508476071721*km}),
         libphysica::Vector({115.6738867389554*km/sec,-529.697120864836*km/sec,230.2163702333374*km/sec}));
+    ASSERT_TRUE(Hyperbolic_Kepler_Shift(initial,TRAJECTORY_BOUNDARY_RSUN*rSun));
+    initial.time=0.0;
     unsigned captures=0;
     for(unsigned seed=1;seed<=8;++seed) {
         SCOPED_TRACE(seed);
-        Trajectory_Simulator capture(sun,100000,128,1.1*rSun), transport(sun,100000,128,1.1*rSun);
+        Trajectory_Simulator capture(sun,100000,128,TRAJECTORY_BOUNDARY_RSUN*rSun), transport(sun,100000,128,TRAJECTORY_BOUNDARY_RSUN*rSun);
         capture.Enable_Capture_Mode(true); capture.Fix_PRNG_Seed(seed); transport.Fix_PRNG_Seed(seed);
         const auto a=capture.Simulate(initial,dm,0), b=transport.Simulate(initial,dm,0);
         if(b.bincount.is_captured) {

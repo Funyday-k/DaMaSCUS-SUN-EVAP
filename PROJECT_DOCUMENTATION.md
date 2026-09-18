@@ -1,6 +1,6 @@
 # DaMaSCUS-SUN 项目完整技术文档
 
-> 2026-09-18 后续边界修订：本文件保留历史实现说明；当前代码的统一 1100 AU 入射/移除球面、1 R_sun 匹配面和 1 AU 外层分箱上限见 [BOUNDARY_1100AU_REVISION.md](BOUNDARY_1100AU_REVISION.md)。
+> 2026-09-18 后续边界修订：本文件保留历史实现说明；当前代码的独立入射/移除尺度、1 R_sun 匹配面和 10 R_sun 外层分箱上限见 [BOUNDARY_1100RSUN_REVISION.md](BOUNDARY_1100RSUN_REVISION.md)。
 
 > 2026-09-18：当前计算定义、输出和执行状态见 [TRANSPORT_REVISION_20260918.md](TRANSPORT_REVISION_20260918.md)。下文保留历史架构说明；其中 1 AU 移除、无界外轨道、finite-age、wall-time 前缀和旧联合归一化描述不适用于 schema-6 production。
 

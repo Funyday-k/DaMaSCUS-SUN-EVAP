@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Analyze schema-7 complete histories with an independent fixed-injection capture run.
+"""Analyze schema-8 complete histories with an independent fixed-injection capture run.
 
 All densities use cm; trajectory moments are supplied in seconds and km^2/s.
 No published detector sensitivity is inferred from a continuum flux threshold.
@@ -27,7 +27,7 @@ def read_json(path: Path) -> dict:
 def require_accepted(path: Path, workflow: str) -> dict:
     """Require an accepted, explicitly identified production product."""
     meta = read_json(path / 'metadata.json')
-    if meta.get('schema_version') != 7 or meta.get('workflow') != workflow:
+    if meta.get('schema_version') != 8 or meta.get('workflow') != workflow:
         raise ValueError(f'{path}: wrong schema or workflow')
     if not meta.get('source_sha256') or not meta.get('seed'):
         raise ValueError(f'{path}: missing source hash or reproducible seed')
@@ -79,7 +79,9 @@ def read_transport_blocks(directory: Path, meta: dict) -> tuple[np.ndarray,np.nd
     edges=np.asarray(meta['radial_edges_km'],dtype=float)*1e5
     if (edges.ndim!=1 or len(edges)<3 or not np.all(np.isfinite(edges))
         or edges[0]!=0 or np.any(np.diff(edges)<=0)
-        or not np.any(np.isclose(edges,R_SUN_CM,rtol=1e-12,atol=0))):
+        or not np.any(np.isclose(edges,R_SUN_CM,rtol=1e-12,atol=0))
+        or not np.isclose(edges[-1]/R_SUN_CM,meta['R_remove_rsun'],rtol=1e-12)
+        or meta['R_transit_reference_rsun']>meta['R_remove_rsun']):
         raise ValueError('invalid radial edges or missing solar surface')
     bins=len(edges)-1
     data=np.loadtxt(directory/'radial_blocks.tsv',skiprows=1,ndmin=2)
@@ -117,7 +119,7 @@ def read_incident_inbound(directory: Path, meta: dict, edges_cm: np.ndarray) -> 
         or np.any(data[:,3:]<0) or not np.array_equal(data[:,0],np.arange(bins))
         or not np.allclose(data[:,1:3]*1e5,
                            np.column_stack([edges_cm[:-1],edges_cm[1:]]),rtol=1e-14,atol=0)
-        or (meta['N_inj']>0 and data[-1,3]<=0)):
+        or (meta['N_inj']>0 and data[:,3].sum()<=0)):
         raise ValueError('invalid incident inbound shell moments')
     return data
 
@@ -224,7 +226,11 @@ def analyze(output: Path, capture: Path, sigma_v: float = 3e-26,
         raise ValueError('sigma_v must be finite and positive')
     m = require_accepted(output,'complete_captured_transport')
     c = require_accepted(capture,'fixed_injection_capture')
-    for key in ['m_chi_GeV','sigma_SD_cm2','solar_model','halo_model','halo_density_GeV_cm3','source_sha256','R_match_rsun','R_outer_au']:
+    for key in ['m_chi_GeV','sigma_SD_cm2','solar_model','halo_model','halo_density_GeV_cm3',
+                'source_sha256','R_inj_rsun','R_match_rsun','R_incident_au',
+                'R_transit_reference_rsun','R_remove_rsun','interpolation_points',
+                'rk_position_tolerance_km','rk_velocity_tolerance_km_s','rk_phase_tolerance',
+                'max_optical_depth_step','optical_depth_relative_tolerance']:
         if m[key] != c[key]:
             raise ValueError(f'capture/transport mismatch: {key}')
     if physical_config(output)!=physical_config(capture):
@@ -309,10 +315,20 @@ def analyze(output: Path, capture: Path, sigma_v: float = 3e-26,
     def variance(x: list) -> np.ndarray:
         a=np.asarray(x); return (BLOCKS-1)/BLOCKS*((a-a.mean(axis=0))**2).sum(axis=0)
     errors=np.sqrt(variance(transport_reps)+variance(capture_reps))
-    result={'analysis_version':1,'physical_config':physical_config(output),
+    transport_array=np.asarray(transport_reps,dtype=float)
+    capture_array=np.asarray(capture_reps,dtype=float)
+    central_array=np.asarray([point[key] for key in keys],dtype=float)
+    # Delete-block bias is evaluated independently for transport and capture,
+    # then added. In particular, I=integral(mu^2 dV) has positive plug-in bias.
+    bias=(BLOCKS-1)*(transport_array.mean(axis=0)-central_array)
+    bias+=(BLOCKS-1)*(capture_array.mean(axis=0)-central_array)
+    corrected=central_array-bias
+    result={'analysis_version':2,'physical_config':physical_config(output),
             'solar_reference_sha256':hashlib.sha256((output/'solar_reference.tsv').read_bytes()).hexdigest(),
             'metadata':m,'capture_metadata':c,'sigma_v_cm3_s':sigma_v,'central':point,
             'jackknife_se':dict(zip(keys,errors)),
+            'jackknife_bias':dict(zip(keys,bias)),
+            'jackknife_bias_corrected':dict(zip(keys,corrected)),
             'uncertainty':'independent capture and transport delete-block variances added; each replicate recomputes all nonlinear observables',
             'neutrino_model':'direct nu+antinu all-flavor source benchmark, unattenuated, no detector likelihood'}
     if neutrino_flux_requirement is not None:

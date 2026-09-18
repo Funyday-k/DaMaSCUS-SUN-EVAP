@@ -1441,7 +1441,7 @@ double NormalModeMaxOpticalDepthStep() { return MAX_OPTICAL_DEPTH_STEP; }
 double OpticalDepthRelativeTolerance() { return OPTICAL_DEPTH_RELATIVE_TOLERANCE; }
 const char* BincountIntegrationScheme()
 {
-	return "conservative-hermite-kepler-shared-outer-boundary-v7";
+	return "conservative-hermite-kepler-separate-boundaries-v8";
 }
 double BincountDensePositionToleranceKm() { return BINCOUNT_DENSE_POSITION_TOLERANCE_KM; }
 double SnapshotProgressPublishWallIntervalSeconds() { return SNAPSHOT_PUBLISH_WALL_INTERVAL_SEC; }
@@ -2819,7 +2819,7 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
     if(!terminate_on_capture && termination_reason == TrajectoryTerminationReason::OutwardEscape)
     {
         BoundKeplerExteriorArc outgoing;
-        const double end_km = outer_removal_radius_km;
+        const double end_km = outgoing_recording_radius_km;
         if(Compute_Unbound_Kepler_Exterior_Arc(current_event, end_km, outgoing)) {
             if(current_bincount.is_captured) {
                 current_bincount.post_evap_dt_hist = std::move(outgoing.dt_hist);

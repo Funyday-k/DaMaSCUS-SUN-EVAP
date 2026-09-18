@@ -1,6 +1,6 @@
 # Post-capture transport revision — 2026-09-18
 
-**历史版本说明：** 以下定义及验证属于 schema-6、旧 2/1.1/1100 R_sun 边界。当前代码使用统一 1100 AU 外边界、1 R_sun 匹配面及 schema-7 输出，见 [BOUNDARY_1100AU_REVISION.md](BOUNDARY_1100AU_REVISION.md)。旧结果未重标为新版结果。
+**历史版本说明：** 以下定义及验证属于 schema-6、旧 2/1.1/1100 R_sun 边界。当前代码采用独立入射与移除尺度、1 R_sun 匹配面及 schema-8 输出，见 [BOUNDARY_1100RSUN_REVISION.md](BOUNDARY_1100RSUN_REVISION.md)。旧结果未重标为新版结果。
 
 本轮以用户提供的 ARTICLE_REVISION_PLAN.md 和 CODE_AND_FUTURE_WORK_PLAN.md 为修改依据。它们是研究建议；本文逐项区分已实现的接口、已执行的验证和仍需计算的研究工作。原始代码基线：`8d5dadb4a94ec1b9b5f3027fef1e8941e82667e9`。
 

@@ -12,12 +12,15 @@ from analyze_point import rank_seeds
 
 def comparison_signature(record: dict) -> str:
     """Keep every source/model setting except the three explicitly scanned axes."""
-    if record.get('analysis_version')!=1 or not record.get('physical_config') or not record.get('solar_reference_sha256'):
+    if record.get('analysis_version')!=2 or not record.get('physical_config') or not record.get('solar_reference_sha256'):
         raise ValueError('missing analysis provenance; rerun analyze_point.py')
     meta=record['metadata']
     physical={k:v for k,v in record['physical_config'].items()
               if k not in {'DM_mass','DM_cross_section_nucleon'}}
-    settings={key:meta[key] for key in ['source_sha256','solar_model','halo_model','halo_density_GeV_cm3','R_match_rsun']}
+    settings={key:meta[key] for key in ['source_sha256','solar_model','halo_model','halo_density_GeV_cm3',
+              'R_inj_rsun','R_match_rsun','R_incident_au','interpolation_points',
+              'rk_position_tolerance_km','rk_velocity_tolerance_km_s','rk_phase_tolerance',
+              'max_optical_depth_step','optical_depth_relative_tolerance']}
     settings.update(physical=physical,solar_reference=record['solar_reference_sha256'],
                     sigma_v=record['sigma_v_cm3_s'],analysis=record['analysis_version'])
     return json.dumps(settings,sort_keys=True,allow_nan=False)
@@ -32,7 +35,7 @@ def summarize(files: list[Path], destination: Path) -> None:
     for file in files:
         record=json.loads(file.read_text()); m=record['metadata']; c=record['capture_metadata']
         for meta,workflow in [(m,'complete_captured_transport'),(c,'fixed_injection_capture')]:
-            if (meta.get('production_accepted') is not True or meta.get('schema_version')!=7
+            if (meta.get('production_accepted') is not True or meta.get('schema_version')!=8
                 or meta.get('workflow')!=workflow or meta.get('N_numerical_failures')!=0
                 or meta.get('N_computational_failures')!=0):
                 raise ValueError(f'{file}: rejected production')
@@ -42,7 +45,7 @@ def summarize(files: list[Path], destination: Path) -> None:
         signature=current
         if rank_seeds(m) & rank_seeds(c):
             raise ValueError('capture/transport MPI RNG streams overlap')
-        groups[(m['m_chi_GeV'],m['sigma_SD_cm2'],m['R_outer_au'])].append(record)
+        groups[(m['m_chi_GeV'],m['sigma_SD_cm2'],m['R_remove_rsun'])].append(record)
     rows=[]
     for (mass,sigma,outer),group in sorted(groups.items()):
         used=set()
@@ -51,7 +54,7 @@ def summarize(files: list[Path], destination: Path) -> None:
             if used & streams:
                 raise ValueError('seed repeats or shared capture normalization across alleged independent runs')
             used.update(streams)
-        row={'mass_GeV':mass,'sigma_cm2':sigma,'R_outer_au':outer,'seeds':len(group),
+        row={'mass_GeV':mass,'sigma_cm2':sigma,'R_remove_rsun':outer,'seeds':len(group),
              'sigma_v_cm3_s':group[0]['sigma_v_cm3_s']}
         for key in group[0]['central']:
             vals=[g['central'][key] for g in group]
@@ -64,12 +67,16 @@ def summarize(files: list[Path], destination: Path) -> None:
             row[key]=float(np.mean(vals))
             seed=float(np.std(vals,ddof=1)) if len(vals)>1 else 0.0
             row[key+'_se']=max(max(errors),seed)
+            biases=[g['jackknife_bias'].get(key) for g in group]
+            if any(v is None or not np.isfinite(v) for v in biases):
+                raise ValueError(f'missing/nonfinite jackknife bias for {key}')
+            row[key+'_jackknife_bias']=float(np.mean(biases))
         rows.append(row)
     slopes=[]
-    for mass,outer in sorted({(r['mass_GeV'],r['R_outer_au']) for r in rows}):
-        scan=sorted((r for r in rows if r['mass_GeV']==mass and r['R_outer_au']==outer),key=lambda r:r['sigma_cm2'])
+    for mass,outer in sorted({(r['mass_GeV'],r['R_remove_rsun']) for r in rows}):
+        scan=sorted((r for r in rows if r['mass_GeV']==mass and r['R_remove_rsun']==outer),key=lambda r:r['sigma_cm2'])
         for a,b in zip(scan,scan[1:]):
-            rec={'mass_GeV':mass,'R_outer_au':outer,'sigma_low':a['sigma_cm2'],'sigma_high':b['sigma_cm2']}
+            rec={'mass_GeV':mass,'R_remove_rsun':outer,'sigma_low':a['sigma_cm2'],'sigma_high':b['sigma_cm2']}
             for key in ['C_s_inv','tau_out_s','I_out_s2_cm3','V_eff_out_cm3','A_out_cm3']:
                 x,y=a.get(key),b.get(key)
                 rec['s_'+key]=(float(np.log(y/x)/np.log(b['sigma_cm2']/a['sigma_cm2']))

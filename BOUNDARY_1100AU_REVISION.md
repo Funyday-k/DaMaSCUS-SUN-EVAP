@@ -1,4 +1,6 @@
-# Unified 1100 AU transport boundary
+# Historical unified 1100 AU transport boundary
+
+**Superseded by [the schema-8 separate-boundary revision](BOUNDARY_1100RSUN_REVISION.md).** This file records the earlier schema-7 model and must not be used as the current production prescription.
 
 The configuration key `outer_boundary_radius_au` defaults to `1100.0`. It is the **one** configurable outer surface for incident sampling, unbound outgoing recording, and bound-orbit removal. The old `outer_removal_radius_rsun` key is rejected with a migration message. The numerical/analytic matching surface is the solar surface, `1 R_sun`; there is no separate injection-radius constant.
 

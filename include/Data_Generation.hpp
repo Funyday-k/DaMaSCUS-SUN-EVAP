@@ -247,7 +247,8 @@ class Simulation_Data
 
   public:
 	std::vector<std::vector<libphysica::DataPoint>> data;
-	double outer_boundary_radius_au = DEFAULT_OUTER_BOUNDARY_AU;
+	double outer_removal_radius_rsun = DEFAULT_OUTER_REMOVAL_RSUN;
+	unsigned int interpolation_points = 0;
 	bool fixed_injection_capture_run = false;
 	bool thermal_shape_run = false;
 	bool abort_on_invalid_trajectory = false;

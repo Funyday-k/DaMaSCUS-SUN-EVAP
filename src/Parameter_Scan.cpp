@@ -182,15 +182,16 @@ void Configuration::Import_Parameter_Scan_Parameter()
 		std::exit(EXIT_FAILURE);
 	}
 	capture_mode = (run_mode == "Capture");
-    if(config.exists("outer_removal_radius_rsun"))
-        throw std::invalid_argument("outer_removal_radius_rsun was replaced by outer_boundary_radius_au");
     if(config.exists("outer_boundary_radius_au")) {
-        const auto& radius = config.lookup("outer_boundary_radius_au");
+        throw std::invalid_argument("outer_boundary_radius_au is obsolete; use outer_removal_radius_rsun (in R_sun)");
+    }
+    if(config.exists("outer_removal_radius_rsun")) {
+        const auto& radius = config.lookup("outer_removal_radius_rsun");
         switch(radius.getType()) {
-            case Setting::TypeInt: outer_boundary_radius_au = static_cast<int>(radius); break;
-            case Setting::TypeInt64: outer_boundary_radius_au = static_cast<long long>(radius); break;
-            case Setting::TypeFloat: outer_boundary_radius_au = static_cast<double>(radius); break;
-            default: throw std::invalid_argument("outer_boundary_radius_au must be a number");
+            case Setting::TypeInt: outer_removal_radius_rsun = static_cast<int>(radius); break;
+            case Setting::TypeInt64: outer_removal_radius_rsun = static_cast<long long>(radius); break;
+            case Setting::TypeFloat: outer_removal_radius_rsun = static_cast<double>(radius); break;
+            default: throw std::invalid_argument("outer_removal_radius_rsun must be a number");
         }
     }
     auto read_bool = [&](const char* key, bool& value) {
@@ -201,11 +202,11 @@ void Configuration::Import_Parameter_Scan_Parameter()
     read_bool("thermal_validation_mode", thermal_validation_mode);
 	if(thermal_validation_mode && (production_mode || run_mode != "Parameter point"))
 		throw std::invalid_argument("thermal validation is a separate shape-only workflow");
-	if(!std::isfinite(outer_boundary_radius_au)
-	   || outer_boundary_radius_au * AU_KM <= BIN_MAX_KM)
-		throw std::invalid_argument("outer_boundary_radius_au must exceed the native 1.1-solar-radius grid");
+	if(!std::isfinite(outer_removal_radius_rsun)
+	   || outer_removal_radius_rsun <= NUM_BINS * BIN_WIDTH_KM / R_SUN_KM)
+		throw std::invalid_argument("outer_removal_radius_rsun must exceed the native 1.1-solar-radius grid");
 	const bool parameter_scan_mode = (run_mode == "Parameter scan");
-    if(parameter_scan_mode && (production_mode || outer_boundary_radius_au != DEFAULT_OUTER_BOUNDARY_AU))
+    if(parameter_scan_mode && (production_mode || outer_removal_radius_rsun != DEFAULT_OUTER_REMOVAL_RSUN))
     {
         throw std::invalid_argument("transport production and custom outer boundaries require individual Parameter point/Capture runs");
     }

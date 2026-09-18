@@ -173,7 +173,7 @@ TEST(TestSimulationUtilities, TestInitialConditions)
 	obscura::Standard_Halo_Model SHM;
 	// SHM.Set_Observer_Velocity(libphysica::Vector({0, 0, 0}));
 
-	double R_distance	= 1000 * AU;
+	double R_distance	= INJECTION_RADIUS_RSUN * rSun;
 	unsigned int trials = 1000;
 	// ACT & ASSERT
 	for(unsigned int i = 0; i < trials; i++)
@@ -183,7 +183,7 @@ TEST(TestSimulationUtilities, TestInitialConditions)
 		double v	= IC.Speed();
 		double vesc = SSM.Local_Escape_Speed(r);
 		double Jmax = rSun * sqrt(v * v + SSM.Local_Escape_Speed(rSun) * SSM.Local_Escape_Speed(rSun));
-		ASSERT_GE(IC.Radius(), R_distance);
+		ASSERT_NEAR(IC.Radius()/R_distance, 1.0, 1e-12);
 		ASSERT_GE(IC.Speed(), vesc);
 		ASSERT_LE(IC.Angular_Momentum(), Jmax);
 		ASSERT_GE(IC.Angular_Momentum(), 0.0);
@@ -207,7 +207,7 @@ TEST(TestSimulationUtilities, TestInitialSpeedSamplingAdaptsToHaloParameters)
 	std::mt19937 prng(20260910u);
 	const unsigned int trials = 5000;
 	const unsigned int grid_points = 8192;
-	const double distant_escape_squared = std::pow(solar_model.Local_Escape_Speed(1000.0 * AU), 2.0);
+	const double distant_escape_squared = std::pow(solar_model.Local_Escape_Speed(INJECTION_RADIUS_RSUN * rSun), 2.0);
 	const double surface_escape_squared = std::pow(solar_model.Local_Escape_Speed(rSun), 2.0);
 	// Mutate one halo repeatedly: a cached envelope must not survive a change
 	// in dispersion or observer velocity. The final case also exercises s=0.
@@ -280,8 +280,8 @@ TEST(TestSimulationUtilities, TestHyperbolicKeplerShift)
 		const double energy_initial = Kepler_Energy(IC);
 		const double angular_momentum_initial = IC.Angular_Momentum();
 
-		ASSERT_TRUE(Hyperbolic_Kepler_Shift(IC, 5.0 * rSun));
-		ASSERT_NEAR(IC.Radius(), 5.0 * rSun, 1.0e-10 * rSun);
+		ASSERT_TRUE(Hyperbolic_Kepler_Shift(IC, 1.5 * rSun));
+		ASSERT_NEAR(IC.Radius(), 1.5 * rSun, 1.0e-10 * rSun);
 		EXPECT_LT(Radial_Velocity_For_Test(IC), 0.0);
 		Expect_Relative_Near(Kepler_Energy(IC), energy_initial, 1.0e-10);
 		Expect_Relative_Near(IC.Angular_Momentum(), angular_momentum_initial, 1.0e-10);

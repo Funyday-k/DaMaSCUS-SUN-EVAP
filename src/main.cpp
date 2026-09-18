@@ -3,6 +3,9 @@
 #include <cstring>	 // for strlen
 #include <exception>
 #include <iostream>
+#include <fstream>
+#include <sstream>
+#include <cstdio>
 #include <mpi.h>
 
 #include "libphysica/Natural_Units.hpp"
@@ -104,8 +107,21 @@ int main(int argc, char* argv[])
 			MPI_Bcast(&success, 1, MPI_INT, 0, MPI_COMM_WORLD);
 			return success != 0;
 		};
-		if(!cfg.capture_mode && !root_output_succeeded([&]() {
+		if(!root_output_succeeded([&]() {
 			data_set.Prepare_Output_Directory(output_path);
+            // Read first: argv[1] may itself be the saved input.cfg on a rerun.
+            std::ifstream input_config(argv[1], std::ios::binary);
+            if(!input_config) throw std::runtime_error("Cannot read input configuration");
+            std::ostringstream config_contents;
+            config_contents << input_config.rdbuf();
+            if(input_config.bad() || config_contents.str().empty())
+                throw std::runtime_error("Cannot read complete input configuration");
+            const std::string saved_path = output_path + "input.cfg";
+            const std::string temporary_path = saved_path + ".tmp";
+            std::ofstream saved_config(temporary_path, std::ios::binary);
+            saved_config << config_contents.str(); saved_config.close();
+            if(!saved_config || std::rename(temporary_path.c_str(), saved_path.c_str()) != 0)
+                throw std::runtime_error("Cannot save input configuration");
 		}))
 		{
 			MPI_Finalize();
@@ -120,6 +136,9 @@ int main(int argc, char* argv[])
 					  << std::endl;
 		SSM.Interpolate_Total_DM_Scattering_Rate(*cfg.DM, cfg.interpolation_points, cfg.interpolation_points);
 
+		data_set.outer_removal_radius_rsun = cfg.outer_removal_radius_rsun;
+		data_set.thermal_shape_run = cfg.thermal_validation_mode;
+		data_set.abort_on_invalid_trajectory = cfg.production_mode;
 		data_set.Generate_Data(*cfg.DM, SSM, *cfg.DM_distr, cfg.snapshot_config, cfg.fixed_seed, cfg.capture_mode);
 		if(cfg.capture_mode)
 			data_set.Print_Capture_Mode_Summary(mpi_rank);
@@ -133,6 +152,15 @@ int main(int argc, char* argv[])
 		{
 			MPI_Finalize();
 			return 1;
+		}
+
+		if(!root_output_succeeded([&]() {
+			data_set.Write_Transport_Products(output_path, *cfg.DM, *cfg.DM_distr, SSM);
+		})) { MPI_Finalize(); return 1; }
+		if(cfg.production_mode && !data_set.Production_Ready())
+		{
+			if(mpi_rank == 0) std::cerr << "Production rejected: incomplete histories, failed trajectories, or unmet target. See metadata.json." << std::endl;
+			MPI_Finalize(); return 2;
 		}
 
 	}

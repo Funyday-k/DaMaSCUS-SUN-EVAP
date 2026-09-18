@@ -162,6 +162,8 @@ int main(int argc, char* argv[])
 		    DEFAULT_MAXIMUM_FREE_TIME_STEPS,
 		    cfg.maximum_number_of_scatterings,
 		    TRAJECTORY_BOUNDARY_RSUN * rSun);
+		simulator.Enable_Capture_Mode(cfg.run_mode == "Capture");
+		simulator.outer_removal_radius_km = cfg.outer_removal_radius_rsun * R_SUN_KM;
 		simulator.current_trajectory_id =
 		    requested_trajectory_id > 0
 		    ? requested_trajectory_id - 1

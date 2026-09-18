@@ -153,3 +153,21 @@ TEST(TestParameterScan, TestCriticalProbabilityDoesNotStallSquareTrace)
 	rmdir(results.c_str());
 	rmdir(root.c_str());
 }
+
+TEST(TestParameterScan, TransportControlsAreTypedAndNeverSilentlyIgnored)
+{
+    std::ifstream source(PROJECT_DIR "tests/config_capture_minimal.cfg");
+    const std::string text((std::istreambuf_iterator<char>(source)),std::istreambuf_iterator<char>());
+    const std::string path="/tmp/damascus_transport_config_"+std::to_string(getpid())+".cfg";
+    for(const auto& literal : {"3000", "3000.0", "3000L"}) {
+        { std::ofstream out(path); out << text << "\nouter_removal_radius_rsun = " << literal << ";\nproduction_mode = true;\n"; }
+        Configuration cfg(path,1);
+        EXPECT_DOUBLE_EQ(cfg.outer_removal_radius_rsun,3000.0);
+        EXPECT_TRUE(cfg.production_mode);
+    }
+    for(const auto& invalid : {"outer_removal_radius_rsun = \"3000\";", "production_mode = 1;", "thermal_validation_mode = \"false\";"}) {
+        { std::ofstream out(path); out << text << "\n" << invalid << "\n"; }
+        EXPECT_THROW(Configuration cfg(path,1),std::invalid_argument);
+    }
+    std::remove(path.c_str());
+}

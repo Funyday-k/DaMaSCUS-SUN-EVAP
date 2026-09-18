@@ -338,7 +338,7 @@ TEST(PhysicsValidation, InitialImpactParameterIsUniformInArea)
 	{
 		const Event event = Initial_Conditions(halo_model, solar_model, prng);
 		const double maximum_angular_momentum = rSun * std::sqrt(
-		    event.Speed() * event.Speed()
+		    event.Speed() * event.Speed() - std::pow(solar_model.Local_Escape_Speed(event.Radius()),2.0)
 		    + std::pow(solar_model.Local_Escape_Speed(rSun), 2.0));
 		const double area_coordinate = std::pow(
 		    event.Angular_Momentum() / maximum_angular_momentum, 2.0);

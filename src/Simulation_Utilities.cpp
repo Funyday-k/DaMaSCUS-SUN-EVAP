@@ -309,7 +309,11 @@ Event Initial_Conditions(obscura::DM_Distribution& halo_model, Solar_Model& sola
 	if(!Finite_Positive(initial_position.Norm()))
 		throw std::runtime_error("Initial_Conditions(): sampled position is zero or non-finite.");
 
-	return Event(0.0, initial_position, initial_velocity);
+	Event incident(0.0, initial_position, initial_velocity);
+	if(!Hyperbolic_Kepler_Shift(incident, INJECTION_RADIUS_RSUN * rSun))
+		throw std::runtime_error("Initial_Conditions(): injection shift failed.");
+	incident.time = 0.0;
+	return incident;
 }
 
 // 3. Analytically propagate a particle at event on a hyperbolic Kepler orbit to a radius R (without passing the periapsis)

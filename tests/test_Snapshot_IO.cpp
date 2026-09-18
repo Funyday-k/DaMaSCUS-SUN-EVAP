@@ -493,7 +493,7 @@ TEST_F(SnapshotIOTest, CompletedWideOrbitRetainsExteriorResidence)
 	    report.find("\t1.2500000000e+01\t2.5000000000e+01\t"));
 }
 
-TEST_F(SnapshotIOTest, CompletedCapturedCensoringContributesUnlessNumericallyInvalid)
+TEST_F(SnapshotIOTest, IncompleteCapturedHistoriesAreExcluded)
 {
 	SnapshotSharedState shared_state;
 	shared_state.Initialize(608, 0);
@@ -524,10 +524,10 @@ TEST_F(SnapshotIOTest, CompletedCapturedCensoringContributesUnlessNumericallyInv
 	    shared_state.CopyForSnapshot(
 	        1, 10.0, 10.0, 0, evaporation_end);
 	EXPECT_EQ(2U, checkpoint.local_captured);
-	EXPECT_EQ(1U, checkpoint.local_numerical_failures);
-	EXPECT_EQ(1U, checkpoint.bincount_captured_samples);
-	EXPECT_DOUBLE_EQ(3.0, checkpoint.captured_dt_hist[7]);
-	EXPECT_DOUBLE_EQ(12.0, checkpoint.captured_v2dt_hist[7]);
+	EXPECT_EQ(2U, checkpoint.local_numerical_failures);
+	EXPECT_EQ(0U, checkpoint.bincount_captured_samples);
+	EXPECT_DOUBLE_EQ(0.0, checkpoint.captured_dt_hist[7]);
+	EXPECT_DOUBLE_EQ(0.0, checkpoint.captured_v2dt_hist[7]);
 }
 
 TEST_F(SnapshotIOTest, FourLogicalRanksProgressFromPartialToMergedWithoutDowngrade)

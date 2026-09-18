@@ -54,3 +54,14 @@
 !/examples/
 /examples/*
 !/examples/*.cfg
+
+# Schema-6 transport analysis and current contract.
+!/TRANSPORT_REVISION_20260918.md
+!/scripts/
+/scripts/*
+!/scripts/analyze_point.py
+!/scripts/analyze_thermal.py
+!/scripts/prepare_transport_runs.py
+!/scripts/halo_focused_density.py
+!/scripts/summarize_transport_scan.py
+!/scripts/test_analyze_point.py

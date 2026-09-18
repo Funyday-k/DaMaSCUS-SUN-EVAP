@@ -3,6 +3,8 @@
 Dark Matter Simulation Code for the Sun, with capture- and evaporation-focused
 extensions.
 
+Current schema-6 transport definitions and research status: [transport revision](TRANSPORT_REVISION_20260918.md).
+
 ## Overview
 
 DaMaSCUS-SUN-EVAP builds on
@@ -19,7 +21,7 @@ The current code path is centered on two practical modes:
   histogram output path.
 - **Parameter-point simulation**: the main evaporation workflow for one mass and
   cross section. It accumulates time-weighted radial histograms, records complete
-  valid evaporation events, and can emit wall-clock snapshot progress files for
+  captured histories ending in escape or outer-orbit removal, and can emit wall-clock snapshot progress files for
   long MPI runs.
 
 The older parameter-scan machinery is still present, but the most actively
@@ -149,16 +151,11 @@ export DAMASCUS_SUN_SOLAR_MODEL=/absolute/path/model_agss09.dat
 To build and run the test suite, configure separately with
 `-DBUILD_TESTING=ON`, build, then run `ctest --test-dir build --output-on-failure`.
 
-Bound exterior orbits have no radial cutoff. Their residence histograms grow
-at runtime to cover the full orbit, with a shared grid on every MPI rank.
-The former `DAMASCUS_RADIAL_DOMAIN_MAX_AU` and `DAMASCUS_EXTERIOR_BINS`
-build settings are no longer used. Output row counts depend on the largest
-accepted orbit; readers should use the bin edges and `total_radial_bins` header.
-Snapshot rank files use binary version 9 for variable-length histograms.
-Text headers report `radial_domain_max_AU = unbounded`, while
-`radial_extent_Rsun` is the actual histogram extent. Diagnostic metadata uses
-`outer_domain_removal_AU: null`; legacy removal counters remain zero. Very wide
-orbits increase histogram memory and output size, including jackknife blocks.
+Bound exterior orbits return analytically unless their aphelion reaches the configured
+`outer_removal_radius_rsun` (default 1100). Such histories end at the first outward
+crossing of that surface and count separately from physical escape. The native
+geometric grid is clipped at that surface. Injection remains distinct at 2 R_sun,
+with numerical/analytic matching at 1.1 R_sun. Snapshot files are progress products.
 
 ## Configuration
 
@@ -167,7 +164,10 @@ Configuration files use libconfig syntax. The most important controls are:
 | Setting | Meaning |
 | --- | --- |
 | `run_mode` | `"Parameter point"` for the main evaporation workflow, `"Capture"` for capture-rate runs, or `"Parameter scan"` for detector-limit scans. |
-| `sample_size` | In normal mode, the exact target number of complete, valid evaporation events, with no radial restriction on bound exterior orbits. Invalid captures are replaced. In capture mode, this is the exact target number of captures. |
+| `sample_size` | In Parameter point mode, the exact number of complete captured histories (escape or outer removal). In Capture mode, the exact number of incident trials. Invalid histories invalidate production even if replacements reach the target. |
+| `production_mode` | Stop issuing new trajectories after any failed/truncated history, drain in-flight work, and exit nonzero; an unmet target also fails. Final metadata always records acceptance. |
+| `outer_removal_radius_rsun` | Outer bound-orbit removal radius, default 1100, required to exceed 2. |
+| `thermal_validation_mode` | Separate Parameter point shape workflow allowing computationally limited histories; never absolute production. |
 | `fixed_seed` | Optional non-negative PRNG seed. `0` or an omitted setting uses nondeterministic seeding; a nonzero value is expanded independently by MPI rank. |
 | `max_trajectories` | Optional hard cap on generated trajectories. `0` or unset means no trajectory-count cap. |
 | `interpolation_points` | Scattering-rate interpolation grid size. `0` disables interpolation; production runs should compare representative values before fixing this. |
@@ -219,24 +219,18 @@ repeated bound Kepler returns to stall its MPI batch.
 For non-capture parameter-point runs, the final files are written after MPI
 reduction:
 
-- `bincount.txt`: capture-conditioned residence-time and `v^2 dt` radial
-  histograms with error estimates. The grid is uniform at `0.001 R_sun`
-  through `1.1 R_sun`. From there, shell widths start continuously at
-  `0.001 R_sun` and grow geometrically by 2% per shell toward a global
-  `10 R_sun` width cap. Exterior bins are added as needed, with no radial
-  cutoff. Every negative-energy exterior Kepler arc is propagated through
-  apoapsis back to the inbound matching surface, contributing exact shell
-  integrals over the full round trip. The trajectory then continues until
-  evaporation or another termination condition. Captured trajectories stopped
-  by a wall-time guard retain their accepted residence prefix, are counted as computationally
-  censored, and are replaced by a new trajectory without entering the invalid
-  fraction or the evaporation-time table. Step- and scattering-count guards
-  also retain their accepted residence prefix but remain computational
-  truncations. Numerical failures are excluded from residence statistics.
-  Accepted numerical RK
-  intervals are conservatively split using
-  adaptive Hermite dense output. Uncaptured residence histograms are not
-  written because capture membership gates every residence contribution.
+- Schema-6 `metadata.json`, `radial_blocks.tsv`, `block_counts.tsv`,
+  `trajectory_summary.tsv`, `orbit_class_blocks.tsv`, `capture_summary.json`,
+  `termination_counts.tsv`, `solar_reference.tsv`, and `input.cfg` are the inputs
+  for `scripts/analyze_point.py`. Pair transport with an independent fixed-incident
+  capture run. See the transport revision for units and acceptance rules.
+- `bincount.txt`: legacy capture-conditioned residence and velocity-moment output.
+  The grid is uniform at 0.001 R_sun through 1.1 R_sun, then grows by 2% per shell
+  with a 10 R_sun width cap, clipped at the removal surface. Analytic exterior
+  arcs use a round trip or a one-way removal arc as appropriate. Computational
+  and numerical failures do not enter production residence. Prefixes may appear
+  only in the explicitly labelled thermal shape workflow. Use schema-6 products
+  for the new independent capture normalization.
 - `evaporation_times.txt`: compact complete-event table with
   `rank trajectory_id lifetime_unbinding_sec r_capture_Rsun E_capture_eV
   dE_capture_eV`, followed by the number of negative-energy exterior arcs,
@@ -247,11 +241,10 @@ reduction:
 - `residence_jackknife_blocks.tsv`: exactly 64 deterministic blocks assigned by
   `splitmix64(base_seed, rank, trajectory_id) % 64`. Each block contains
   attempted, captured, completed uncaptured escape, accepted residence,
-  invalid, and legacy outer-domain-removal counts (always zero in new runs)
+  invalid, and outer-orbit-removal counts
   plus its full radial `dt` and `v^2 dt` histograms. The writer refuses to publish the file unless every
-  scalar count and every radial bin closes against `bincount.txt`. It is the
-  required input for delete-one-block propagation of capture-rate/residence
-  covariance into shell and channel flux uncertainties.
+  scalar count and every radial bin closes against `bincount.txt`. This legacy joint-run product does not replace the independent capture and
+  transport blocks used by the schema-6 analysis.
 - `invalid_trajectories.tsv`: always-on, replayable ledger for trajectories
   excluded by numerical or computational validity rules. It is header-only
   when no invalid trajectory occurred. Each row records the failure stage,

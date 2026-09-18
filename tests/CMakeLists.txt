@@ -269,3 +269,17 @@ add_test(NAME test_Installed_Quickstart
 		-DTEST_OUTPUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/installed_smoke
 		-P ${PROJECT_SOURCE_DIR}/cmake/TestInstalledSmoke.cmake)
 set_tests_properties(test_Installed_Quickstart PROPERTIES TIMEOUT 30 LABELS "build;install")
+
+add_executable(test_Transport_Contract test_Transport_Contract.cpp)
+target_include_directories(test_Transport_Contract PRIVATE ${GENERATED_DIR})
+target_link_libraries(test_Transport_Contract PRIVATE lib_damascus_sun gtest_main)
+add_test(NAME test_Transport_Contract COMMAND test_Transport_Contract WORKING_DIRECTORY ${TESTS_DIR})
+set_tests_properties(test_Transport_Contract PROPERTIES TIMEOUT 30 LABELS "physics-validation;unit")
+
+if(Python3_Interpreter_FOUND)
+  execute_process(COMMAND ${Python3_EXECUTABLE} -c "import numpy, scipy" RESULT_VARIABLE HAVE_TRANSPORT_PYTHON OUTPUT_QUIET ERROR_QUIET)
+  if(HAVE_TRANSPORT_PYTHON EQUAL 0)
+    add_test(NAME test_Transport_Analysis COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/test_analyze_point.py)
+    set_tests_properties(test_Transport_Analysis PROPERTIES TIMEOUT 30 LABELS "physics-validation;unit")
+  endif()
+endif()

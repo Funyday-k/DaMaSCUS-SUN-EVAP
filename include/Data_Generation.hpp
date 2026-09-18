@@ -70,6 +70,9 @@ struct EvaporationRecord
 	double first_bound_exit_exterior_time_sec = std::numeric_limits<double>::quiet_NaN();
 	double last_bound_exit_exterior_time_sec = std::numeric_limits<double>::quiet_NaN();
 	double max_bound_exit_exterior_time_sec = std::numeric_limits<double>::quiet_NaN();
+	double first_aphelion_km = std::numeric_limits<double>::quiet_NaN();
+	double last_aphelion_km = std::numeric_limits<double>::quiet_NaN();
+	double max_aphelion_km = std::numeric_limits<double>::quiet_NaN();
 };
 
 struct CompactEvaporationEvent
@@ -88,6 +91,9 @@ struct CompactEvaporationEvent
 	double first_bound_exit_exterior_time_sec = std::numeric_limits<double>::quiet_NaN();
 	double last_bound_exit_exterior_time_sec = std::numeric_limits<double>::quiet_NaN();
 	double max_bound_exit_exterior_time_sec = std::numeric_limits<double>::quiet_NaN();
+	double first_aphelion_km = std::numeric_limits<double>::quiet_NaN();
+	double last_aphelion_km = std::numeric_limits<double>::quiet_NaN();
+	double max_aphelion_km = std::numeric_limits<double>::quiet_NaN();
 };
 
 struct TrajectoryReplayRecord
@@ -154,7 +160,8 @@ enum class SimulationStopReason
 	None = 0,
 	MaxTrajectoriesReached = 1,
 	CaptureTargetNotReached = 2,
-	InitialShiftFailureFractionExceeded = 3
+	InitialShiftFailureFractionExceeded = 3,
+	RejectedTrajectory = 4
 };
 
 class Simulation_Data
@@ -201,6 +208,8 @@ class Simulation_Data
 	RadialHistogram captured_v2dt_sq_hist = RadialHistogram(NUM_BINS, 0.0);    // Σ (per-traj v²dt)²
 	std::vector<double> residence_jackknife_block_dt_hist;
 	std::vector<double> residence_jackknife_block_v2dt_hist;
+	RadialHistogram transit_block_dt, transit_block_v2dt, post_evap_block_dt, post_evap_block_v2dt;
+	std::array<RadialHistogram,5> aphelion_block_dt;
 	std::array<unsigned long int, RESIDENCE_JACKKNIFE_BLOCKS> jackknife_attempted_counts{};
 	std::array<unsigned long int, RESIDENCE_JACKKNIFE_BLOCKS> jackknife_captured_counts{};
 	std::array<unsigned long int, RESIDENCE_JACKKNIFE_BLOCKS> jackknife_completed_escape_counts{};
@@ -226,6 +235,8 @@ class Simulation_Data
 	// MPI
 	int mpi_rank, mpi_processes;
 	void Perform_MPI_Reductions(bool capture_mode);
+	void Gather_Invalid_Trajectories();
+	void Write_Invalid_Trajectories(const std::string& output_dir);
 
 	// Reflection samples remain active inputs to parameter-scan detector limits.
 	unsigned int isoreflection_rings;
@@ -235,6 +246,12 @@ class Simulation_Data
 
   public:
 	std::vector<std::vector<libphysica::DataPoint>> data;
+	double outer_removal_radius_rsun = DEFAULT_OUTER_REMOVAL_RSUN;
+	bool fixed_injection_capture_run = false;
+	bool thermal_shape_run = false;
+	bool abort_on_invalid_trajectory = false;
+	bool Production_Ready() const;
+	void Write_Transport_Products(const std::string& output_dir, obscura::DM_Particle& DM, obscura::DM_Distribution& halo_model, Solar_Model& solar_model);
 
 	Simulation_Data(unsigned int sample_size, unsigned int max_trajectories, double u_min = 0.0, unsigned int iso_rings = 1);
 

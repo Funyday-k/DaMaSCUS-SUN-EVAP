@@ -564,7 +564,7 @@ TEST(TestSimulationTrajectory, TestSurvivalInvalidTerminationReasons)
 	EXPECT_TRUE(TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason::OuterDomainRemoval));
 }
 
-TEST(TestSimulationTrajectory, TestResidenceBincountRejectsOnlyNumericalTerminations)
+TEST(TestSimulationTrajectory, TestResidenceBincountRejectsIncompleteHistories)
 {
 	EXPECT_TRUE(TrajectoryTerminationInvalidatesResidenceBincount(
 	    TrajectoryTerminationReason::NumericalFailure));
@@ -579,11 +579,11 @@ TEST(TestSimulationTrajectory, TestResidenceBincountRejectsOnlyNumericalTerminat
 
 	EXPECT_FALSE(TrajectoryTerminationInvalidatesResidenceBincount(
 	    TrajectoryTerminationReason::OutwardEscape));
-	EXPECT_FALSE(TrajectoryTerminationInvalidatesResidenceBincount(
+	EXPECT_TRUE(TrajectoryTerminationInvalidatesResidenceBincount(
 	    TrajectoryTerminationReason::WallTimeLimit));
-	EXPECT_FALSE(TrajectoryTerminationInvalidatesResidenceBincount(
+	EXPECT_TRUE(TrajectoryTerminationInvalidatesResidenceBincount(
 	    TrajectoryTerminationReason::MaxFreeSteps));
-	EXPECT_FALSE(TrajectoryTerminationInvalidatesResidenceBincount(
+	EXPECT_TRUE(TrajectoryTerminationInvalidatesResidenceBincount(
 	    TrajectoryTerminationReason::MaxScatterings));
 	EXPECT_FALSE(TrajectoryTerminationInvalidatesResidenceBincount(
 	    TrajectoryTerminationReason::OuterDomainRemoval));

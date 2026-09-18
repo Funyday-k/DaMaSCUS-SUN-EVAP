@@ -54,7 +54,7 @@ void RemoveTestOutputDir(const std::string& directory)
 	std::remove((directory + "bincount.txt").c_str());
 	std::remove((directory + "evaporation_times.txt").c_str());
 	std::remove((directory + "run_metadata.json").c_str());
-	std::remove((directory + "trajectory_summary.tsv").c_str());
+	std::remove((directory + "diagnostic_trajectory_summary.tsv").c_str());
 	std::remove((directory + "trajectory_events.tsv").c_str());
 	std::remove((directory + "invalid_trajectories.tsv").c_str());
 	std::remove((directory + "residence_jackknife_blocks.tsv").c_str());
@@ -183,7 +183,7 @@ TEST(TestDataGeneration, TestComputationallyTruncatedNonCaptureIsExcludedFromCap
 	}
 }
 
-TEST(TestDataGeneration, TestWallTimeCutoffIsNotAnInvalidTrajectory)
+TEST(TestDataGeneration, TestWallTimeCutoffRejectsProduction)
 {
 	Solar_Model SSM;
 	obscura::Standard_Halo_Model SHM;
@@ -209,16 +209,16 @@ TEST(TestDataGeneration, TestWallTimeCutoffIsNotAnInvalidTrajectory)
 	{
 		EXPECT_TRUE(FileContains(
 		    output_dir + "bincount.txt",
-		    "# computational_truncations = 0"));
+		    "# computational_truncations = 1"));
 		EXPECT_TRUE(FileContains(
 		    output_dir + "bincount.txt",
-		    "# invalid_trajectory_records = 0"));
+		    "# invalid_trajectory_records = 1"));
 		EXPECT_TRUE(FileContains(
 		    output_dir + "bincount.txt",
 		    "# termination_wall_time_limit_uncaptured = 1"));
 		EXPECT_TRUE(FileContains(
 		    output_dir + "invalid_trajectories.tsv",
-		    "# record_count = 0"));
+		    "# record_count = 1"));
 		RemoveTestOutputDir(output_dir);
 	}
 }
@@ -460,12 +460,12 @@ TEST(TestDataGeneration, TestDefaultOutputContract)
 		EXPECT_TRUE(FileContains(output_dir + "evaporation_times.txt", "P_kepler_first_bound_exit_sec"));
 		EXPECT_TRUE(FileContains(
 		    output_dir + "bincount.txt",
-		    "# bincount_integration = conservative-hermite-kepler-unbounded-geometric-capped-v5"));
-		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# radial_domain_max_AU = unbounded"));
+		    "# bincount_integration = conservative-hermite-kepler-outer-removal-v6"));
+		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# radial_domain_max_Rsun = "));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# total_radial_bins = 1100"));
 		EXPECT_TRUE(FileContains(
 		    output_dir + "bincount.txt",
-		    "# radial_grid = uniform_inner_geometric_width_capped_unbounded_v3"));
+		    "# radial_grid = uniform_inner_geometric_width_capped_v4"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# exterior_bins = 0"));
 		EXPECT_TRUE(FileContains(
 		    output_dir + "bincount.txt",
@@ -482,11 +482,11 @@ TEST(TestDataGeneration, TestDefaultOutputContract)
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# simulation_time_seconds = "));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# completed_outward_escapes = 1"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# unresolved_not_captured_trajectories = 0"));
-		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# termination_outward_escape_uncaptured = 1"));
+		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# termination_physical_escape_uncaptured = 1"));
 		EXPECT_FALSE(FileExists(output_dir + "evaporation_diagnostics.txt"));
-		EXPECT_FALSE(FileExists(output_dir + "run_metadata.json"));
-		EXPECT_FALSE(FileExists(output_dir + "trajectory_summary.tsv"));
-		EXPECT_FALSE(FileExists(output_dir + "trajectory_events.tsv"));
+		EXPECT_TRUE(FileExists(output_dir + "run_metadata.json"));
+		EXPECT_TRUE(FileExists(output_dir + "diagnostic_trajectory_summary.tsv"));
+		EXPECT_TRUE(FileExists(output_dir + "trajectory_events.tsv"));
 		EXPECT_FALSE(FileExists(output_dir + std::string("evaporation_") + "summary.txt"));
 		EXPECT_FALSE(FileExists(output_dir + std::string("evaporation_") + "mode_summary.txt"));
 		EXPECT_FALSE(FileExists(output_dir + std::string("evaporation_") + "mode_" + "bincount.txt"));
@@ -527,7 +527,7 @@ TEST(TestDataGeneration, TestTrajectoryDiagnosticOutputContract)
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"schema_version\": \"trajectory-diagnostic-v5\""));
 		EXPECT_TRUE(FileContains(
 		    output_dir + "run_metadata.json",
-		    "\"bincount_integration\": \"conservative-hermite-kepler-unbounded-geometric-capped-v5\""));
+		    "\"bincount_integration\": \"conservative-hermite-kepler-outer-removal-v6\""));
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"interpolation_points\": 20"));
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"evaporation_event_reconciliation\": true"));
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"escape_radius_invariant\": true"));
@@ -537,10 +537,10 @@ TEST(TestDataGeneration, TestTrajectoryDiagnosticOutputContract)
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"trace_selection_invariant\": true"));
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"replay_state_invariant\": true"));
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"bound_exit_orbit_invariant\": true"));
-		EXPECT_TRUE(FileContains(output_dir + "trajectory_summary.tsv", "t_first_unbinding_s"));
-		EXPECT_TRUE(FileContains(output_dir + "trajectory_summary.tsv", "n_recapture"));
-		EXPECT_TRUE(FileContains(output_dir + "trajectory_summary.tsv", "P_kepler_max_bound_exit_s"));
-		EXPECT_TRUE(FileContains(output_dir + "trajectory_summary.tsv", "rng_state_before_simulation"));
+		EXPECT_TRUE(FileContains(output_dir + "diagnostic_trajectory_summary.tsv", "t_first_unbinding_s"));
+		EXPECT_TRUE(FileContains(output_dir + "diagnostic_trajectory_summary.tsv", "n_recapture"));
+		EXPECT_TRUE(FileContains(output_dir + "diagnostic_trajectory_summary.tsv", "P_kepler_max_bound_exit_s"));
+		EXPECT_TRUE(FileContains(output_dir + "diagnostic_trajectory_summary.tsv", "rng_state_before_simulation"));
 		EXPECT_TRUE(FileContains(output_dir + "trajectory_events.tsv", "event_type"));
 		EXPECT_TRUE(FileContains(output_dir + "trajectory_events.tsv", "scatter_pre"));
 		EXPECT_TRUE(FileContains(output_dir + "trajectory_events.tsv", "scatter_post"));

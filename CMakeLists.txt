@@ -72,6 +72,27 @@ if(DAMASCUS_ENABLE_NATIVE_ARCH)
   endif()
 endif()
 
+# Fingerprint shipped numerical/build inputs only. Ignored local analysis scripts
+# must not make an otherwise identical clean checkout scientifically incompatible.
+file(GLOB DAMASCUS_HASH_FILES CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/include/*.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/*.cmake")
+foreach(relative_file IN ITEMS CMakeLists.txt src/CMakeLists.txt tests/CMakeLists.txt
+    include/version.hpp.in data/model_agss09.dat
+    scripts/analyze_point.py scripts/analyze_thermal.py scripts/prepare_transport_runs.py
+    scripts/halo_focused_density.py scripts/summarize_transport_scan.py)
+  list(APPEND DAMASCUS_HASH_FILES "${CMAKE_CURRENT_SOURCE_DIR}/${relative_file}")
+endforeach()
+list(SORT DAMASCUS_HASH_FILES)
+set(DAMASCUS_SOURCE_HASH_INPUT "")
+foreach(hash_file IN LISTS DAMASCUS_HASH_FILES)
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${hash_file}")
+  file(SHA256 "${hash_file}" file_digest)
+  file(RELATIVE_PATH hash_name "${CMAKE_CURRENT_SOURCE_DIR}" "${hash_file}")
+  string(APPEND DAMASCUS_SOURCE_HASH_INPUT "${hash_name}:${file_digest}\n")
+endforeach()
+string(SHA256 DAMASCUS_SOURCE_SHA256 "${DAMASCUS_SOURCE_HASH_INPUT}")
 set(GENERATED_DIR ${PROJECT_BINARY_DIR}/generated)
 set(INCLUDE_DIR   ${PROJECT_SOURCE_DIR}/include)
 set(SRC_DIR       ${PROJECT_SOURCE_DIR}/src)
@@ -223,6 +244,12 @@ set(VERSION_HEADER ${GENERATED_DIR}/version.hpp)
 add_custom_target(generate_version_header ALL
   COMMAND ${CMAKE_COMMAND}
     "-DSOURCE_DIR=${PROJECT_SOURCE_DIR}"
+    "-DDAMASCUS_SOURCE_SHA256=${DAMASCUS_SOURCE_SHA256}"
+    "-DCMAKE_CXX_COMPILER_ID=${CMAKE_CXX_COMPILER_ID}"
+    "-DCMAKE_CXX_COMPILER_VERSION=${CMAKE_CXX_COMPILER_VERSION}"
+    "-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
+    "-DDAMASCUS_ENABLE_LTO=${DAMASCUS_ENABLE_LTO}"
+    "-DDAMASCUS_ENABLE_NATIVE_ARCH=${DAMASCUS_ENABLE_NATIVE_ARCH}"
     "-DTEMPLATE=${VERSION_HEADER_TEMPLATE}"
     "-DOUTPUT=${VERSION_HEADER}"
     "-DPROJECT_NAME=${PROJECT_NAME}"

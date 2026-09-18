@@ -646,7 +646,7 @@ bool WriteSnapshotReportFile(
 		file << "# exterior_grid = geometric_width_capped_unbounded\n";
 		file << "# exterior_bin_growth_factor = " << EXTERIOR_BIN_GROWTH_FACTOR << "\n";
 		file << "# exterior_max_bin_width_Rsun = " << EXTERIOR_MAX_BIN_WIDTH_RSUN << "\n";
-		file << "# radial_domain_max_AU = unbounded\n";
+		file << "# radial_domain = progress_only_not_a_production_product\n";
 		file << "# radial_extent_Rsun = " << BincountBinLowerKm(report.captured_dt_hist.size()) / R_SUN_KM << "\n";
 		file << "# in_progress_bincount_included = "
 		     << (report.in_progress_bincount_captured_samples > 0 ? 1 : 0)

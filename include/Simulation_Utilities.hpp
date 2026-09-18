@@ -12,6 +12,7 @@
 
 namespace DaMaSCUS_SUN
 {
+constexpr double INJECTION_RADIUS_RSUN = 2.0;
 
 // 1. Event class
 struct Event

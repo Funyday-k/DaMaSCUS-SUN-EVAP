@@ -33,7 +33,8 @@ enum class MPIWorkStopReason : uint64_t
 {
 	None = 0,
 	MaxTrajectoriesReached = 1,
-	InitialShiftFailureFractionExceeded = 2
+	InitialShiftFailureFractionExceeded = 2,
+	RejectedTrajectory = 3
 };
 
 struct MPIWorkOutcome
@@ -42,6 +43,8 @@ struct MPIWorkOutcome
 	bool initial_shift_failure = false;
 	bool numerical_failure = false;
 	bool computational_truncation = false;
+	// Production stops issuing work after a failed history; in-flight work drains.
+	bool reject_run = false;
 };
 
 // Public diagnostic snapshot of the dynamic trajectory queue. Claims are

@@ -182,7 +182,28 @@ void Configuration::Import_Parameter_Scan_Parameter()
 		std::exit(EXIT_FAILURE);
 	}
 	capture_mode = (run_mode == "Capture");
+    if(config.exists("outer_removal_radius_rsun")) {
+        const auto& radius = config.lookup("outer_removal_radius_rsun");
+        switch(radius.getType()) {
+            case Setting::TypeInt: outer_removal_radius_rsun = static_cast<int>(radius); break;
+            case Setting::TypeInt64: outer_removal_radius_rsun = static_cast<long long>(radius); break;
+            case Setting::TypeFloat: outer_removal_radius_rsun = static_cast<double>(radius); break;
+            default: throw std::invalid_argument("outer_removal_radius_rsun must be a number");
+        }
+    }
+    auto read_bool = [&](const char* key, bool& value) {
+        if(config.exists(key) && !config.lookupValue(key, value))
+            throw std::invalid_argument(std::string(key)+" must be a boolean");
+    };
+    read_bool("production_mode", production_mode);
+    read_bool("thermal_validation_mode", thermal_validation_mode);
+	if(thermal_validation_mode && (production_mode || run_mode != "Parameter point"))
+		throw std::invalid_argument("thermal validation is a separate shape-only workflow");
+	if(!std::isfinite(outer_removal_radius_rsun) || outer_removal_radius_rsun <= INJECTION_RADIUS_RSUN)
+		throw std::invalid_argument("outer_removal_radius_rsun must exceed the injection radius");
 	const bool parameter_scan_mode = (run_mode == "Parameter scan");
+    if(parameter_scan_mode && (production_mode || outer_removal_radius_rsun != DEFAULT_OUTER_REMOVAL_RSUN))
+        throw std::invalid_argument("transport production and custom removal require individual Parameter point/Capture runs");
 	try
 	{
 		const int configured_rings = config.lookup("isoreflection_rings");

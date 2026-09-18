@@ -25,8 +25,8 @@ namespace DaMaSCUS_SUN
 
 class SnapshotRecorder;
 
-// The numerical trajectory, injection surface, and exterior Kepler matching
-// surface are deliberately identical.
+// Physical injection, numerical matching, and outer-orbit removal are distinct.
+constexpr double DEFAULT_OUTER_REMOVAL_RSUN = 1100.0;
 constexpr double TRAJECTORY_BOUNDARY_RSUN = 1.1;
 constexpr double R_SUN_KM = 6.957e5;  // km
 constexpr double AU_KM = 1.495978707e8;  // IAU 2012 exact astronomical unit [km]
@@ -78,6 +78,8 @@ void Compute_Bincount_Interval_Contributions(
 double BincountBinLowerKm(std::size_t bin);
 double BincountBinUpperKm(std::size_t bin);
 int BincountBinIndexKm(double radius_km);
+// Native geometry clipped at the requested recording boundary [km].
+std::vector<double> BuildRadialGrid(double outer_radius_km);
 
 struct BoundKeplerExteriorArc
 {
@@ -85,6 +87,7 @@ struct BoundKeplerExteriorArc
 	double elapsed_time_sec = 0.0;
 	double kepler_period_sec = 0.0;
 	double apoapsis_km = 0.0;
+	bool outer_removed = false;
 	RadialHistogram dt_hist = RadialHistogram(NUM_BINS, 0.0);
 	RadialHistogram v2dt_hist = RadialHistogram(NUM_BINS, 0.0);
 };
@@ -92,7 +95,10 @@ struct BoundKeplerExteriorArc
 // Analytically propagate a negative-specific-energy outward crossing from the
 // 1.1 R_sun matching surface through apoapsis and back to the same radius.
 // The returned histograms contain the entire round-trip residence.
-bool Compute_Bound_Kepler_Exterior_Arc(const Event& outward_event, BoundKeplerExteriorArc& arc);
+bool Compute_Bound_Kepler_Exterior_Arc(const Event& outward_event, BoundKeplerExteriorArc& arc,
+    double removal_radius_km = std::numeric_limits<double>::infinity());
+// Exact hyperbolic shell moments, between two radii on one outgoing branch.
+bool Compute_Unbound_Kepler_Exterior_Arc(const Event& outward_event, double end_radius_km, BoundKeplerExteriorArc& arc);
 
 enum class TrajectoryTerminationReason
 {
@@ -107,7 +113,7 @@ enum class TrajectoryTerminationReason
 	NumericalFailure = 8,
 	CaptureMode = 9,
 	EnergyDriftEscape = 10,
-	OuterDomainRemoval = 11  // Reserved for legacy diagnostic records; never emitted.
+	OuterDomainRemoval = 11  // Complete bound history at the outer removal surface.
 };
 
 enum class TrajectoryNumericalFailureDetail
@@ -181,9 +187,8 @@ bool SnapshotProgressPublishDue(
 // evaporation event, but the accepted trajectory prefix remains usable.
 bool TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason reason);
 
-// Residence bincounts retain every physically captured trajectory through its
-// last accepted state, including computational censoring. Only a numerical
-// failure makes the accumulated path unreliable.
+// Production residence requires a completed physical history. Computational
+// prefixes are usable only in the explicitly separate thermal shape workflow.
 bool TrajectoryTerminationInvalidatesResidenceBincount(
 	TrajectoryTerminationReason reason);
 
@@ -241,7 +246,14 @@ struct TrajectoryBincount
 	double first_bound_exit_exterior_time_sec = std::numeric_limits<double>::quiet_NaN();
 	double last_bound_exit_exterior_time_sec = std::numeric_limits<double>::quiet_NaN();
 	double max_bound_exit_exterior_time_sec = std::numeric_limits<double>::quiet_NaN();
-	bool outer_domain_removed = false;  // legacy diagnostic field; false for new trajectories
+	double first_aphelion_km = std::numeric_limits<double>::quiet_NaN();
+	double last_aphelion_km = std::numeric_limits<double>::quiet_NaN();
+	double max_aphelion_km = std::numeric_limits<double>::quiet_NaN();
+	RadialHistogram transit_dt_hist = RadialHistogram(NUM_BINS, 0.0);
+	RadialHistogram transit_v2dt_hist = RadialHistogram(NUM_BINS, 0.0);
+	RadialHistogram post_evap_dt_hist = RadialHistogram(NUM_BINS, 0.0);
+	RadialHistogram post_evap_v2dt_hist = RadialHistogram(NUM_BINS, 0.0);
+	bool outer_domain_removed = false;
 	TrajectoryTerminationReason termination_reason = TrajectoryTerminationReason::Unknown;
 	TrajectoryNumericalFailureDetail numerical_failure_detail =
 	    TrajectoryNumericalFailureDetail::None;
@@ -352,7 +364,8 @@ class Trajectory_Simulator
 	std::mt19937 PRNG;
 	unsigned long int maximum_time_steps;
 	unsigned long int maximum_scatterings;
-	double maximum_distance;
+	double maximum_distance;  // numerical matching / validated escape surface
+	double outer_removal_radius_km = DEFAULT_OUTER_REMOVAL_RSUN * R_SUN_KM;
 
 	// 单条轨迹的 wall-clock 时间上限（秒）。超过后 Propagate_Freely 会返回 WallTimeLimit，
 	// 防止任一 rank 被单条病态轨迹卡死从而阻塞 snapshot / MPI_Barrier。

@@ -416,6 +416,8 @@ MPIWorkQueueState MPIWorkQueue::Complete(
 			throw std::logic_error(
 			    "MPIWorkQueue::Complete(): accepted target overshot.");
 
+        if(outcome.reject_run)
+            state.stop_reason = static_cast<uint64_t>(MPIWorkStopReason::RejectedTrajectory);
 		if(state.stop_reason
 		   == static_cast<uint64_t>(MPIWorkStopReason::None))
 		{

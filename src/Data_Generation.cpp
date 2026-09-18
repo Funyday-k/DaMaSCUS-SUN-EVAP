@@ -98,16 +98,19 @@ bool Completed_Outward_Escape(TrajectoryTerminationReason reason)
 
 bool Is_Computational_Truncation(TrajectoryTerminationReason reason)
 {
-	// A wall-time stop is an intentional observation cutoff: its accepted
-	// captured path remains usable for the residence bincount, and the scheduler
-	// must replace it with a new trajectory rather than count it as invalid work.
-	return reason == TrajectoryTerminationReason::MaxFreeSteps
+	// Safety stops are unresolved histories and invalidate production.
+	return reason == TrajectoryTerminationReason::WallTimeLimit
+	    || reason == TrajectoryTerminationReason::MaxFreeSteps
 	    || reason == TrajectoryTerminationReason::MaxScatterings;
 }
 
 bool Is_Numerical_Termination(TrajectoryTerminationReason reason)
 {
-	return TrajectoryTerminationInvalidatesResidenceBincount(reason);
+	return reason == TrajectoryTerminationReason::NumericalFailure
+	    || reason == TrajectoryTerminationReason::NonFiniteState
+	    || reason == TrajectoryTerminationReason::EnergyDriftEscape
+	    || reason == TrajectoryTerminationReason::SpeedLimit
+	    || reason == TrajectoryTerminationReason::Unknown;
 }
 
 bool Build_Evaporation_Record(const TrajectoryBincount& bincount, int mpi_rank, unsigned long int trajectory_id, double completion_wall_time_sec, EvaporationRecord& rec)
@@ -154,9 +157,8 @@ bool Build_Evaporation_Record(const TrajectoryBincount& bincount, int mpi_rank, 
 	rec.boundary_escape_observed = survival_valid && bincount.boundary_escape_observed;
 	rec.survival_valid = survival_valid;
 	rec.numerically_invalid_escape = numerically_invalid_escape;
-	// Wall-time termination is a valid computational censor: its accepted
-	// residence prefix is retained, but no compact evaporation-time event is
-	// emitted. A radial-domain removal remains a separate physical exclusion.
+	// Keep the legacy censor flag for diagnostics. Computational prefixes do not
+	// enter production occupation; outer-orbit removal is a separate complete outcome.
 	rec.censored = survival_valid
 	            && !event_observed
 	            && bincount.termination_reason
@@ -181,6 +183,9 @@ bool Build_Evaporation_Record(const TrajectoryBincount& bincount, int mpi_rank, 
 	rec.first_bound_exit_exterior_time_sec = bincount.first_bound_exit_exterior_time_sec;
 	rec.last_bound_exit_exterior_time_sec = bincount.last_bound_exit_exterior_time_sec;
 	rec.max_bound_exit_exterior_time_sec = bincount.max_bound_exit_exterior_time_sec;
+	rec.max_aphelion_km = bincount.max_aphelion_km;
+	rec.last_aphelion_km = bincount.last_aphelion_km;
+	rec.first_aphelion_km = bincount.first_aphelion_km;
 	return true;
 }
 
@@ -188,7 +193,7 @@ const char* Termination_Reason_Key(TrajectoryTerminationReason reason)
 {
 	switch(reason)
 	{
-		case TrajectoryTerminationReason::OutwardEscape: return "outward_escape";
+		case TrajectoryTerminationReason::OutwardEscape: return "physical_escape";
 		case TrajectoryTerminationReason::Scatter: return "scatter";
 		case TrajectoryTerminationReason::WallTimeLimit: return "wall_time_limit";
 		case TrajectoryTerminationReason::MaxFreeSteps: return "max_free_steps";
@@ -198,7 +203,7 @@ const char* Termination_Reason_Key(TrajectoryTerminationReason reason)
 		case TrajectoryTerminationReason::NumericalFailure: return "numerical_failure";
 		case TrajectoryTerminationReason::CaptureMode: return "capture_mode";
 		case TrajectoryTerminationReason::EnergyDriftEscape: return "energy_drift_escape";
-		case TrajectoryTerminationReason::OuterDomainRemoval: return "outer_domain_removal";
+		case TrajectoryTerminationReason::OuterDomainRemoval: return "outer_orbit_removed";
 		case TrajectoryTerminationReason::Unknown:
 		default: return "unknown";
 	}
@@ -400,6 +405,8 @@ const char* Stop_Reason_Key(SimulationStopReason reason)
 			return "capture_target_not_reached";
 		case SimulationStopReason::InitialShiftFailureFractionExceeded:
 			return "initial_shift_failure_fraction_exceeded";
+		case SimulationStopReason::RejectedTrajectory:
+			return "production_rejected_trajectory";
 		case SimulationStopReason::None:
 		default:
 			return "none";
@@ -416,6 +423,8 @@ const char* Stop_Reason_Display(SimulationStopReason reason)
 			return "capture target not reached";
 		case SimulationStopReason::InitialShiftFailureFractionExceeded:
 			return "initial shift failure fraction exceeded";
+		case SimulationStopReason::RejectedTrajectory:
+			return "production_rejected_trajectory";
 		case SimulationStopReason::None:
 		default:
 			return "none";
@@ -698,6 +707,9 @@ void Simulation_Data::Configure_Trajectory_Diagnostics(const TrajectoryDiagnosti
 
 void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, SnapshotConfig snapshot_cfg, unsigned int fixed_seed, bool capture_mode)
 {
+	fixed_injection_capture_run = capture_mode;
+	// Scalar captured histories are required output, independent of event tracing.
+	evaporation_diagnostics_enabled = !capture_mode;
 	if(capture_mode)
 		snapshot_cfg.enabled = false;
 	if(snapshot_cfg.enabled && !IsValidSnapshotIntervalSeconds(snapshot_cfg.interval_seconds))
@@ -709,6 +721,10 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 		if(mpi_thread_level < MPI_THREAD_FUNNELED)
 			throw std::runtime_error("snapshot heartbeat requires MPI_THREAD_FUNNELED or stronger thread support");
 	}
+	if(fixed_seed == 0) {
+        if(mpi_rank == 0) { std::random_device rd; do { fixed_seed=rd(); } while(fixed_seed==0); }
+        MPI_Bcast(&fixed_seed,1,MPI_UNSIGNED,0,MPI_COMM_WORLD);
+    }
 	diagnostic_base_seed = fixed_seed;
 	diagnostic_run_id = 0;
 	if(evaporation_diagnostics_enabled && mpi_rank == 0)
@@ -725,6 +741,7 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 
 	// Configure the simulator
 	Trajectory_Simulator simulator(solar_model, maximum_free_time_steps, maximum_number_of_scatterings, initial_and_final_radius);
+	simulator.outer_removal_radius_km = outer_removal_radius_rsun * R_SUN_KM;
 	simulator.max_trajectory_wall_time_sec = snapshot_cfg.max_trajectory_wall_time_sec;
 	simulator.Enable_Capture_Mode(capture_mode);
 	if(fixed_seed != 0)
@@ -901,9 +918,9 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 		const double time_elapsed = elapsed_since_start();
 		const double sample_rate = (time_elapsed > 0.0) ? static_cast<double>(accepted_samples) / time_elapsed : 0.0;
 		libphysica::Print_Progress_Bar(progress, 0, 44, time_elapsed);
-		std::cout << (capture_mode ? " captured_particles=" : " valid_evaporation_samples=")
+		std::cout << (capture_mode ? " incident_trials=" : " completed_captured_histories=")
 		          << accepted_samples << "/" << requested_captured_particles
-		          << (capture_mode ? " captured_particle_rate[1/s]=" : " valid_evaporation_sample_rate[1/s]=")
+		          << (capture_mode ? " incident_trial_rate[1/s]=" : " completed_captured_history_rate[1/s]=")
 		          << libphysica::Round(sample_rate)
 		          << std::endl;
 		progress_line_printed = true;
@@ -957,7 +974,7 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 			bool invalid_recorded = false;
 			auto record_invalid_trajectory = [&](InvalidTrajectoryStage stage)
 			{
-				if(capture_mode || invalid_recorded)
+				if(invalid_recorded)
 					return;
 				InvalidTrajectoryRecord record;
 				record.rank = mpi_rank;
@@ -1075,8 +1092,9 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 			const bool accepted_residence_sample =
 			    !capture_mode
 			    && trajectory.bincount.is_captured
-			    && !TrajectoryTerminationInvalidatesResidenceBincount(
-			        trajectory.bincount.termination_reason);
+			    && (!TrajectoryTerminationInvalidatesResidenceBincount(
+			        trajectory.bincount.termination_reason)
+                    || (thermal_shape_run && Is_Computational_Truncation(trajectory.bincount.termination_reason)));
 
 			if(trajectory.bincount.is_captured)
 			{
@@ -1100,9 +1118,8 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 				else if(trajectory.bincount.termination_reason
 				        == TrajectoryTerminationReason::WallTimeLimit)
 				{
-					// This trajectory contributes its accepted residence prefix but
-					// has no observed evaporation time. It is intentionally replaced
-					// by another work-queue claim.
+					// Diagnostic counter only: production rejects the parameter point,
+					// even if another work-queue claim reaches the requested count.
 					number_of_censored_captured_particles++;
 				}
 				else
@@ -1206,6 +1223,28 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 				}
 			}
 
+            if(!capture_mode) {
+                auto add_block = [&](const RadialHistogram& dt, const RadialHistogram& v2dt,
+                                     RadialHistogram& bdt, RadialHistogram& bv2dt) {
+                    GrowRadialHistograms(dt.size()*RESIDENCE_JACKKNIFE_BLOCKS,bdt,bv2dt);
+                    for(std::size_t b=0;b<dt.size();++b) {
+                        const std::size_t j=b*RESIDENCE_JACKKNIFE_BLOCKS+jackknife_block;
+                        bdt[j]+=dt[b]; bv2dt[j]+=v2dt[b];
+                    }
+                };
+                if(accepted_residence_sample) {
+                    add_block(trajectory.bincount.post_evap_dt_hist,trajectory.bincount.post_evap_v2dt_hist,post_evap_block_dt,post_evap_block_v2dt);
+                    const double ap=trajectory.bincount.max_aphelion_km/R_SUN_KM;
+                    const std::size_t cls = !std::isfinite(ap) || ap<10 ? 0 : (ap<83 ? 1 : (ap<215 ? 2 : (ap<1100 ? 3 : 4)));
+                    auto& hist=aphelion_block_dt[cls];
+                    GrowRadialHistograms(trajectory.bincount.dt_hist.size()*RESIDENCE_JACKKNIFE_BLOCKS,hist);
+                    for(std::size_t b=0;b<trajectory.bincount.dt_hist.size();++b)
+                        hist[b*RESIDENCE_JACKKNIFE_BLOCKS+jackknife_block]+=trajectory.bincount.dt_hist[b];
+                } else if(completed_outward_escape && !trajectory.bincount.is_captured && trajectory.number_of_scatterings==0) {
+                    add_block(trajectory.bincount.transit_dt_hist,trajectory.bincount.transit_v2dt_hist,transit_block_dt,transit_block_v2dt);
+                }
+            }
+
 			if(snapshot_state)
 			{
 				const bool count_as_residence_sample =
@@ -1224,8 +1263,8 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 			MPIWorkOutcome outcome;
 			outcome.accepted_sample =
 			    capture_mode
-			    ? trajectory.bincount.is_captured
-			    : accepted_evaporation_sample;
+			    ? true  // fixed incident count in Capture mode
+			    : accepted_residence_sample;
 			outcome.initial_shift_failure = !initial_shift_ok;
 			outcome.numerical_failure =
 			    !initial_shift_ok
@@ -1235,6 +1274,8 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 			outcome.computational_truncation =
 			    Is_Computational_Truncation(
 			        trajectory.bincount.termination_reason);
+			outcome.reject_run = abort_on_invalid_trajectory
+                && (outcome.numerical_failure || outcome.computational_truncation);
 			return outcome;
 		};
 
@@ -1297,6 +1338,9 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 			    SimulationStopReason::
 			        InitialShiftFailureFractionExceeded;
 			break;
+		case MPIWorkStopReason::RejectedTrajectory:
+            early_stop_reason = SimulationStopReason::RejectedTrajectory;
+            break;
 		case MPIWorkStopReason::None:
 		default:
 			break;
@@ -1439,8 +1483,12 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 	early_stop_reason = static_cast<SimulationStopReason>(global_stop_reason);
 	early_stopped = early_stop_reason != SimulationStopReason::None;
 
+	Gather_Invalid_Trajectories();
+
 	if(capture_mode)
 	{
+		MPI_Allreduce(MPI_IN_PLACE,jackknife_attempted_counts.data(),RESIDENCE_JACKKNIFE_BLOCKS,MPI_UNSIGNED_LONG,MPI_SUM,MPI_COMM_WORLD);
+		MPI_Allreduce(MPI_IN_PLACE,jackknife_captured_counts.data(),RESIDENCE_JACKKNIFE_BLOCKS,MPI_UNSIGNED_LONG,MPI_SUM,MPI_COMM_WORLD);
 		MPI_Trace_Point(mpi_rank, "before allreduce computing_time capture");
 		MPI_Allreduce(MPI_IN_PLACE, &computing_time, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
 		MPI_Trace_Point(mpi_rank, "leave Perform_MPI_Reductions capture");
@@ -1498,6 +1546,11 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 	    "before allreduce jackknife outer-domain counts");
 
 	MPI_Trace_Point(mpi_rank, "before allreduce radial histograms");
+	Allreduce_MPI_Histogram(transit_block_dt);
+	Allreduce_MPI_Histogram(transit_block_v2dt);
+	Allreduce_MPI_Histogram(post_evap_block_dt);
+	Allreduce_MPI_Histogram(post_evap_block_v2dt);
+	for(auto& hist: aphelion_block_dt) Allreduce_MPI_Histogram(hist);
 	Allreduce_MPI_Histogram(captured_dt_hist);
 	Allreduce_MPI_Histogram(captured_v2dt_hist);
 	Allreduce_MPI_Histogram(captured_dt_sq_hist);
@@ -1514,7 +1567,7 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 
 		constexpr int EVAPORATION_MPI_INT_FIELDS = 8;
 		constexpr int EVAPORATION_MPI_UINT_FIELDS = 6;
-		constexpr int EVAPORATION_MPI_DOUBLE_FIELDS = 32;
+		constexpr int EVAPORATION_MPI_DOUBLE_FIELDS = 35;
 		std::vector<int> local_evap_ints(local_evap_count * EVAPORATION_MPI_INT_FIELDS);
 		std::vector<unsigned long long> local_evap_uints(local_evap_count * EVAPORATION_MPI_UINT_FIELDS);
 		std::vector<double> local_evap_doubles(local_evap_count * EVAPORATION_MPI_DOUBLE_FIELDS);
@@ -1568,6 +1621,9 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 29] = evaporation_records[i].first_bound_exit_exterior_time_sec;
 			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 30] = evaporation_records[i].last_bound_exit_exterior_time_sec;
 			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 31] = evaporation_records[i].max_bound_exit_exterior_time_sec;
+			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 34] = evaporation_records[i].max_aphelion_km;
+			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 33] = evaporation_records[i].last_aphelion_km;
+			local_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 32] = evaporation_records[i].first_aphelion_km;
 		}
 
 		std::vector<int> recv_counts, displacements;
@@ -1664,6 +1720,9 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 				evaporation_records[i].first_bound_exit_exterior_time_sec = global_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 29];
 				evaporation_records[i].last_bound_exit_exterior_time_sec = global_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 30];
 				evaporation_records[i].max_bound_exit_exterior_time_sec = global_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 31];
+				evaporation_records[i].max_aphelion_km = global_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 34];
+				evaporation_records[i].last_aphelion_km = global_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 33];
+				evaporation_records[i].first_aphelion_km = global_evap_doubles[EVAPORATION_MPI_DOUBLE_FIELDS*i + 32];
 			}
 			compact_evaporation_events.reserve(evaporation_records.size());
 			for(const auto& record : evaporation_records)
@@ -1716,157 +1775,6 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 		}
 	}
 
-	// Invalid trajectories are rare but scientifically high leverage because
-	// excluding a long-lived capture can bias the residence measure. Gather a
-	// compact, replayable ledger even when full trajectory diagnostics are off.
-	std::ostringstream local_invalid_stream;
-	local_invalid_stream << std::scientific << std::setprecision(17);
-	for(const auto& record : invalid_trajectory_records)
-	{
-		local_invalid_stream
-		    << record.rank << '\t'
-		    << record.trajectory_id << '\t'
-		    << static_cast<int>(record.failure_stage) << '\t'
-		    << TerminationReason_Index(record.termination_reason) << '\t'
-		    << NumericalFailureDetail_Index(
-		           record.numerical_failure_detail)
-		    << '\t'
-		    << (record.initial_shift_ok ? 1 : 0) << '\t'
-		    << (record.is_captured ? 1 : 0) << '\t'
-		    << (record.survival_valid ? 1 : 0) << '\t'
-		    << (record.event_observed ? 1 : 0) << '\t'
-		    << record.number_of_scatterings << '\t'
-		    << record.number_of_bound_to_unbound << '\t'
-		    << record.number_of_recaptures << '\t'
-		    << record.t_capture_s << '\t'
-		    << record.t_termination_s << '\t'
-		    << record.final_r_rsun << '\t'
-		    << record.final_vr_km_s << '\t'
-		    << record.final_speed_km_s << '\t'
-		    << record.final_energy_eV << '\t'
-		    << record.max_r_after_capture_rsun << '\t'
-		    << record.max_free_energy_drift_eV << '\t'
-		    << record.max_free_energy_drift_rel << '\t'
-		    << record.failure_energy_before_step_eV << '\t'
-		    << record.failure_energy_after_step_eV << '\t'
-		    << record.failure_energy_at_boundary_eV << '\t'
-		    << record.failure_reference_energy_eV << '\t'
-		    << record.failure_boundary_vr_km_s << '\t'
-		    << record.failure_attempted_step_s << '\t'
-		    << record.failure_accepted_step_s << '\t'
-		    << record.initial_time_s;
-		for(double value : record.initial_position_km)
-			local_invalid_stream << '\t' << value;
-		for(double value : record.initial_velocity_km_s)
-			local_invalid_stream << '\t' << value;
-		local_invalid_stream
-		    << '\t' << Encode_PRNG_State(record.rng_state_before_initial_conditions)
-		    << '\t' << Encode_PRNG_State(record.rng_state_before_simulation)
-		    << '\n';
-	}
-	const std::string local_invalid_text = local_invalid_stream.str();
-	MPI_Trace_Point(mpi_rank, "before gather invalid ledger");
-	const std::string combined_invalid_text =
-	    Gather_MPI_Text_To_Root(local_invalid_text);
-	MPI_Trace_Point(mpi_rank, "after gather invalid ledger");
-	invalid_trajectory_records.clear();
-	if(mpi_rank == 0)
-	{
-		std::istringstream lines(combined_invalid_text);
-		std::string line;
-		while(std::getline(lines, line))
-		{
-			if(line.empty())
-				continue;
-			InvalidTrajectoryRecord record;
-			int failure_stage = 0;
-			int termination_reason = 0;
-			int numerical_failure_detail = 0;
-			int initial_shift_ok = 0;
-			int is_captured = 0;
-			int survival_valid = 0;
-			int event_observed = 0;
-			std::string initial_rng_state;
-			std::string simulation_rng_state;
-			std::istringstream fields(line);
-			fields
-			    >> record.rank
-			    >> record.trajectory_id
-			    >> failure_stage
-			    >> termination_reason
-			    >> numerical_failure_detail
-			    >> initial_shift_ok
-			    >> is_captured
-			    >> survival_valid
-			    >> event_observed
-			    >> record.number_of_scatterings
-			    >> record.number_of_bound_to_unbound
-			    >> record.number_of_recaptures;
-			auto read_double = [&](double& value)
-			{
-				std::string token;
-				fields >> token;
-				if(!fields)
-					return;
-				char* end = nullptr;
-				errno = 0;
-				value = std::strtod(token.c_str(), &end);
-				if(end == token.c_str() || *end != '\0' || errno == ERANGE)
-					fields.setstate(std::ios::failbit);
-			};
-			read_double(record.t_capture_s);
-			read_double(record.t_termination_s);
-			read_double(record.final_r_rsun);
-			read_double(record.final_vr_km_s);
-			read_double(record.final_speed_km_s);
-			read_double(record.final_energy_eV);
-			read_double(record.max_r_after_capture_rsun);
-			read_double(record.max_free_energy_drift_eV);
-			read_double(record.max_free_energy_drift_rel);
-			read_double(record.failure_energy_before_step_eV);
-			read_double(record.failure_energy_after_step_eV);
-			read_double(record.failure_energy_at_boundary_eV);
-			read_double(record.failure_reference_energy_eV);
-			read_double(record.failure_boundary_vr_km_s);
-			read_double(record.failure_attempted_step_s);
-			read_double(record.failure_accepted_step_s);
-			read_double(record.initial_time_s);
-			for(double& value : record.initial_position_km)
-				read_double(value);
-			for(double& value : record.initial_velocity_km_s)
-				read_double(value);
-			fields >> initial_rng_state >> simulation_rng_state;
-			if(!fields)
-				throw std::runtime_error(
-				    "Perform_MPI_Reductions(): failed to parse invalid trajectory record.");
-			record.failure_stage = static_cast<InvalidTrajectoryStage>(failure_stage);
-			record.termination_reason = static_cast<TrajectoryTerminationReason>(
-			    TerminationReason_Index(
-			        static_cast<TrajectoryTerminationReason>(termination_reason)));
-			record.numerical_failure_detail =
-			    static_cast<TrajectoryNumericalFailureDetail>(
-			        NumericalFailureDetail_Index(
-			            static_cast<TrajectoryNumericalFailureDetail>(
-			                numerical_failure_detail)));
-			record.initial_shift_ok = initial_shift_ok != 0;
-			record.is_captured = is_captured != 0;
-			record.survival_valid = survival_valid != 0;
-			record.event_observed = event_observed != 0;
-			record.rng_state_before_initial_conditions =
-			    Decode_PRNG_State(std::move(initial_rng_state));
-			record.rng_state_before_simulation =
-			    Decode_PRNG_State(std::move(simulation_rng_state));
-			invalid_trajectory_records.push_back(std::move(record));
-		}
-		std::sort(
-		    invalid_trajectory_records.begin(),
-		    invalid_trajectory_records.end(),
-		    [](const InvalidTrajectoryRecord& lhs, const InvalidTrajectoryRecord& rhs) {
-			    if(lhs.rank != rhs.rank)
-				    return lhs.rank < rhs.rank;
-			    return lhs.trajectory_id < rhs.trajectory_id;
-		    });
-	}
 
 	if(evaporation_diagnostics_enabled)
 	{
@@ -1956,6 +1864,8 @@ void Simulation_Data::Prepare_Output_Directory(const std::string& output_dir) co
 	if(!Ensure_Directory_Exists(output_dir))
 		throw std::runtime_error("failed to create output directory " + output_dir);
 
+	// Invalidate any previous completion marker before starting a replacement run.
+	std::remove((output_dir+"/metadata.json").c_str());
 	// Use an exclusive temporary file so a preflight never overwrites a result.
 	std::string pattern = output_dir + "/.write_probe_XXXXXX";
 	std::vector<char> filename(pattern.begin(), pattern.end());
@@ -2013,7 +1923,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 		f << "# mpi_scheduler_work_claims = " << mpi_scheduler_work_claims << "\n";
 		f << "# mpi_scheduler_peak_in_flight = " << mpi_scheduler_peak_in_flight << "\n";
 		f << "# capture_target_overshoot = " << capture_target_overshoot << "\n";
-		f << "# sample_target_type = valid_complete_evaporation_within_radial_domain\n";
+		f << "# sample_target_type = complete_captured_histories\n";
 		f << "# invalid_trajectory_records = " << invalid_trajectory_records.size() << "\n";
 		f << "# residence_jackknife_blocks = "
 		  << RESIDENCE_JACKKNIFE_BLOCKS << "\n";
@@ -2129,15 +2039,15 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 		f << "# base_grid_bins = " << NUM_BINS << "\n";
 		f << "# exterior_bins = " << captured_dt_hist.size() - NUM_BINS << "\n";
 		f << "# total_radial_bins = " << captured_dt_hist.size() << "\n";
-		f << "# radial_grid = uniform_inner_geometric_width_capped_unbounded_v3\n";
+		f << "# radial_grid = uniform_inner_geometric_width_capped_v4\n";
 		f << "# radial_bin_width_Rsun = " << std::scientific << std::setprecision(10)
 		  << BIN_WIDTH_KM / R_SUN_KM << "\n";
 		f << "# exterior_initial_bin_width_Rsun = " << BIN_WIDTH_KM / R_SUN_KM << "\n";
 		f << "# exterior_bin_growth_factor = " << EXTERIOR_BIN_GROWTH_FACTOR << "\n";
 		f << "# exterior_max_bin_width_Rsun = " << EXTERIOR_MAX_BIN_WIDTH_RSUN << "\n";
 		f << "# radial_inner_extent_Rsun = " << BIN_MAX_KM / R_SUN_KM << "\n";
-		f << "# radial_domain_max_AU = unbounded\n";
-		f << "# radial_extent_Rsun = " << BincountBinLowerKm(captured_dt_hist.size()) / R_SUN_KM << "\n";
+		f << "# radial_domain_max_Rsun = " << outer_removal_radius_rsun << "\n";
+		f << "# radial_extent_Rsun = " << std::min(outer_removal_radius_rsun, BincountBinLowerKm(captured_dt_hist.size()) / R_SUN_KM) << "\n";
 		f << "# bin_index  r_lower_Rsun  r_upper_Rsun  residence_dt[s]  residence_v2dt[km2/s]  residence_err_dt[s]  residence_err_v2dt[km2/s]\n";
 		const double residence_samples = static_cast<double>(number_of_residence_samples);
 		for(std::size_t b = 0; b < captured_dt_hist.size(); b++)
@@ -2149,7 +2059,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 
 			f << b << "\t" << std::scientific << std::setprecision(10)
 			  << BincountBinLowerKm(b) / R_SUN_KM << "\t"
-			  << BincountBinUpperKm(b) / R_SUN_KM << "\t"
+			  << std::min(outer_removal_radius_rsun, BincountBinUpperKm(b) / R_SUN_KM) << "\t"
 			  << captured_dt_hist[b] << "\t" << captured_v2dt_hist[b]
 			  << "\t" << residence_err_dt << "\t" << residence_err_v2dt << "\n";
 		}
@@ -2255,7 +2165,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 	remove_stale_output(output_dir + "/not_captured_bincount.txt");
 	remove_stale_output(output_dir + "/evaporation_diagnostics.txt");
 	remove_stale_output(output_dir + "/run_metadata.json");
-	remove_stale_output(output_dir + "/trajectory_summary.tsv");
+	remove_stale_output(output_dir + "/diagnostic_trajectory_summary.tsv");
 	remove_stale_output(output_dir + "/trajectory_events.tsv");
 	remove_stale_output(output_dir + "/invalid_trajectories.tsv");
 	remove_stale_output(output_dir + "/evaporation_" + "summary.txt");
@@ -2269,87 +2179,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 	if(!evaporation_times_ok)
 		throw std::runtime_error("failed to write evaporation_times.txt in " + output_dir);
 
-	// 4. Always-on replay ledger for trajectories excluded by numerical or
-	// computational validity rules. A header-only file is written when no
-	// invalid trajectory occurred so downstream checks never need to guess.
-	{
-		const std::string invalid_path = output_dir + "/invalid_trajectories.tsv";
-		std::ofstream invalid(invalid_path);
-		invalid << "# DaMaSCUS-SUN invalid trajectory replay ledger\n";
-		invalid << "# format_version = 1\n";
-		invalid << "# base_seed = " << diagnostic_base_seed << "\n";
-		invalid << "# rank_seed_definition = base_seed + 1000003*rank\n";
-		invalid << "# record_count = " << invalid_trajectory_records.size() << "\n";
-		invalid << "# replay_definition = restore rng_state_before_simulation and simulate from the listed shifted initial state\n";
-		invalid << "# rng_state_encoding = comma-separated std::mt19937 words\n";
-		invalid << "# units = time:s position:km velocity:km/s radius:Rsun energy:eV\n";
-			invalid << "rank\ttrajectory_id\tfailure_stage\ttermination_reason"
-			        << "\tnumerical_failure_detail\tinitial_shift_ok"
-			        << "\tis_captured\tsurvival_valid\tevent_observed\tn_scatter"
-		        << "\tn_bound_to_unbound\tn_recapture\tt_capture_s\tt_termination_s"
-		        << "\tfinal_r_Rsun\tfinal_vr_km_s\tfinal_speed_km_s\tfinal_energy_eV"
-			        << "\tmax_r_after_capture_Rsun\tmax_free_energy_drift_eV"
-			        << "\tmax_free_energy_drift_rel"
-			        << "\tfailure_energy_before_step_eV"
-			        << "\tfailure_energy_after_step_eV"
-			        << "\tfailure_energy_at_boundary_eV"
-			        << "\tfailure_reference_energy_eV"
-			        << "\tfailure_boundary_vr_km_s"
-			        << "\tfailure_attempted_step_s"
-			        << "\tfailure_accepted_step_s"
-			        << "\tinitial_time_s"
-		        << "\tinitial_x_km\tinitial_y_km\tinitial_z_km"
-		        << "\tinitial_vx_km_s\tinitial_vy_km_s\tinitial_vz_km_s"
-		        << "\trng_state_before_initial_conditions\trng_state_before_simulation\n";
-		invalid << std::scientific << std::setprecision(17);
-		for(const auto& record : invalid_trajectory_records)
-		{
-			invalid
-			    << record.rank << '\t'
-				    << record.trajectory_id << '\t'
-				    << Invalid_Trajectory_Stage_Key(record.failure_stage) << '\t'
-				    << Termination_Reason_Key(record.termination_reason) << '\t'
-				    << TrajectoryNumericalFailureDetailKey(
-				           record.numerical_failure_detail)
-				    << '\t'
-				    << (record.initial_shift_ok ? 1 : 0) << '\t'
-			    << (record.is_captured ? 1 : 0) << '\t'
-			    << (record.survival_valid ? 1 : 0) << '\t'
-			    << (record.event_observed ? 1 : 0) << '\t'
-			    << record.number_of_scatterings << '\t'
-			    << record.number_of_bound_to_unbound << '\t'
-			    << record.number_of_recaptures << '\t'
-			    << record.t_capture_s << '\t'
-			    << record.t_termination_s << '\t'
-			    << record.final_r_rsun << '\t'
-			    << record.final_vr_km_s << '\t'
-			    << record.final_speed_km_s << '\t'
-			    << record.final_energy_eV << '\t'
-				    << record.max_r_after_capture_rsun << '\t'
-				    << record.max_free_energy_drift_eV << '\t'
-				    << record.max_free_energy_drift_rel << '\t'
-				    << record.failure_energy_before_step_eV << '\t'
-				    << record.failure_energy_after_step_eV << '\t'
-				    << record.failure_energy_at_boundary_eV << '\t'
-				    << record.failure_reference_energy_eV << '\t'
-				    << record.failure_boundary_vr_km_s << '\t'
-				    << record.failure_attempted_step_s << '\t'
-				    << record.failure_accepted_step_s << '\t'
-				    << record.initial_time_s;
-			for(double value : record.initial_position_km)
-				invalid << '\t' << value;
-			for(double value : record.initial_velocity_km_s)
-				invalid << '\t' << value;
-			invalid
-			    << '\t' << Encode_PRNG_State(record.rng_state_before_initial_conditions)
-			    << '\t' << Encode_PRNG_State(record.rng_state_before_simulation)
-			    << '\n';
-		}
-		close_output(invalid, invalid_path);
-		std::cout << "Invalid trajectory ledger:\t" << invalid_path
-		          << " (" << invalid_trajectory_records.size() << " records)"
-		          << std::endl;
-	}
+	Write_Invalid_Trajectories(output_dir);
 
 	if(evaporation_diagnostics_enabled)
 	{
@@ -2543,13 +2373,13 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 			         << "  \"rk_absolute_max_step_s\": " << RK45AbsoluteMaxStepSec() << ",\n"
 			         << "  \"bincount_integration\": \"" << BincountIntegrationScheme() << "\",\n"
 			         << "  \"bincount_dense_position_tolerance_km\": " << BincountDensePositionToleranceKm() << ",\n"
-			         << "  \"radial_grid\": \"uniform_inner_geometric_width_capped_unbounded_v3\",\n"
+			         << "  \"radial_grid\": \"uniform_inner_geometric_width_capped_v4\",\n"
 			         << "  \"radial_inner_extent_Rsun\": " << BIN_MAX_KM / R_SUN_KM << ",\n"
 			         << "  \"radial_exterior_bins\": " << captured_dt_hist.size() - NUM_BINS << ",\n"
 			         << "  \"radial_exterior_initial_bin_width_Rsun\": " << BIN_WIDTH_KM / R_SUN_KM << ",\n"
 			         << "  \"radial_exterior_bin_growth_factor\": " << EXTERIOR_BIN_GROWTH_FACTOR << ",\n"
 			         << "  \"radial_exterior_max_bin_width_Rsun\": " << EXTERIOR_MAX_BIN_WIDTH_RSUN << ",\n"
-			         << "  \"outer_domain_removal_AU\": null,\n"
+			         << "  \"outer_domain_removal_AU\": " << In_Units(outer_removal_radius_rsun*rSun,AU) << ",\n"
 			         << "  \"interpolation_points\": " << trajectory_diagnostic_config.interpolation_points << ",\n"
 			         << "  \"max_optical_depth_step\": " << NormalModeMaxOpticalDepthStep() << ",\n"
 			         << "  \"optical_depth_relative_tolerance\": " << OpticalDepthRelativeTolerance() << ",\n"
@@ -2559,7 +2389,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 			         << "  \"velocity_unit\": \"km/s\",\n"
 			         << "  \"angular_momentum_unit\": \"km^2/s\",\n"
 			         << "  \"bound_exit_period_definition\": \"point-mass osculating Kepler period at a negative-energy outward crossing of 1.1 Rsun\",\n"
-			         << "  \"bound_exit_exterior_time_definition\": \"analytic round-trip elapsed time through apoapsis to the inbound matching surface; no radial cutoff\",\n"
+			         << "  \"bound_exit_exterior_time_definition\": \"analytic round-trip return or one-way time to outer removal surface\",\n"
 			         << "  \"n_scatter_total_definition\": \"all trajectory scatters, including scatters before first capture\",\n"
 			         << "  \"stop_conditions\": {\"max_free_steps\": " << maximum_free_time_steps
 			         << ", \"max_scatterings\": " << maximum_number_of_scatterings << "},\n"
@@ -2587,7 +2417,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 			       ? value : std::numeric_limits<double>::quiet_NaN();
 		};
 		{
-			std::ofstream summary(output_dir + "/trajectory_summary.tsv");
+			std::ofstream summary(output_dir + "/diagnostic_trajectory_summary.tsv");
 			summary << "run_id\trank\ttrajectory_id\trng_stream\trng_counter\tstatus\ttermination_reason\tevent_observed"
 			        << "\tt_capture_s\tt_first_unbinding_s\tt_final_unbinding_s\tt_escape_s\tt_censor_s"
 			        << "\tlifetime_first_unbinding_s\tlifetime_final_unbinding_s\tlifetime_validated_escape_s"
@@ -2653,7 +2483,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 				summary << '\t' << (traced ? replay->rng_state_before_initial_conditions : std::string())
 				        << '\t' << (traced ? replay->rng_state_before_simulation : std::string()) << '\n';
 			}
-			close_output(summary, output_dir + "/trajectory_summary.tsv");
+			close_output(summary, output_dir + "/diagnostic_trajectory_summary.tsv");
 		}
 
 		{
@@ -2774,7 +2604,7 @@ void Simulation_Data::Print_Capture_Mode_Summary(unsigned int mpi_rank)
 		          << "CAPTURE MODE summary" << std::endl
 		          << std::endl
 		          << "Termination condition:\t\tpost-scatter E < 0" << std::endl
-		          << "File output:\t\t\tdisabled" << std::endl
+		          << "File output:\t\t\tschema-6 capture products" << std::endl
 		          << "Simulated trajectories:\t\t" << number_of_trajectories << std::endl
 		          << "Capture-classified trajectories:\t" << Valid_Trajectories() << std::endl
 		          << "Unresolved non-captures:\t\t" << (number_of_trajectories - Valid_Trajectories()) << std::endl
@@ -2917,6 +2747,358 @@ void Simulation_Data::Print_Summary(unsigned int mpi_rank)
 
 		std::cout << SEPARATOR << std::endl;
 	}
+}
+
+bool Simulation_Data::Production_Ready() const
+{
+    if(thermal_shape_run) return false;
+    if(number_of_numerical_failures || number_of_computational_truncations) return false;
+    if(fixed_injection_capture_run) return number_of_trajectories == requested_captured_particles;
+    return number_of_residence_samples >= requested_captured_particles
+        && number_of_residence_samples == number_of_captured_particles;
+}
+
+void Simulation_Data::Write_Invalid_Trajectories(const std::string& output_dir)
+{
+	// 4. Always-on replay ledger for trajectories excluded by numerical or
+	// computational validity rules. A header-only file is written when no
+	// invalid trajectory occurred so downstream checks never need to guess.
+	{
+		const std::string invalid_path = output_dir + "/invalid_trajectories.tsv";
+		std::ofstream invalid(invalid_path);
+		invalid << "# DaMaSCUS-SUN invalid trajectory replay ledger\n";
+		invalid << "# format_version = 1\n";
+		invalid << "# base_seed = " << diagnostic_base_seed << "\n";
+		invalid << "# rank_seed_definition = base_seed + 1000003*rank\n";
+		invalid << "# record_count = " << invalid_trajectory_records.size() << "\n";
+		invalid << "# replay_definition = restore rng_state_before_simulation and simulate from the listed shifted initial state\n";
+		invalid << "# rng_state_encoding = comma-separated std::mt19937 words\n";
+		invalid << "# units = time:s position:km velocity:km/s radius:Rsun energy:eV\n";
+			invalid << "rank\ttrajectory_id\tfailure_stage\ttermination_reason"
+			        << "\tnumerical_failure_detail\tinitial_shift_ok"
+			        << "\tis_captured\tsurvival_valid\tevent_observed\tn_scatter"
+		        << "\tn_bound_to_unbound\tn_recapture\tt_capture_s\tt_termination_s"
+		        << "\tfinal_r_Rsun\tfinal_vr_km_s\tfinal_speed_km_s\tfinal_energy_eV"
+			        << "\tmax_r_after_capture_Rsun\tmax_free_energy_drift_eV"
+			        << "\tmax_free_energy_drift_rel"
+			        << "\tfailure_energy_before_step_eV"
+			        << "\tfailure_energy_after_step_eV"
+			        << "\tfailure_energy_at_boundary_eV"
+			        << "\tfailure_reference_energy_eV"
+			        << "\tfailure_boundary_vr_km_s"
+			        << "\tfailure_attempted_step_s"
+			        << "\tfailure_accepted_step_s"
+			        << "\tinitial_time_s"
+		        << "\tinitial_x_km\tinitial_y_km\tinitial_z_km"
+		        << "\tinitial_vx_km_s\tinitial_vy_km_s\tinitial_vz_km_s"
+		        << "\trng_state_before_initial_conditions\trng_state_before_simulation\n";
+		invalid << std::scientific << std::setprecision(17);
+		for(const auto& record : invalid_trajectory_records)
+		{
+			invalid
+			    << record.rank << '\t'
+				    << record.trajectory_id << '\t'
+				    << Invalid_Trajectory_Stage_Key(record.failure_stage) << '\t'
+				    << Termination_Reason_Key(record.termination_reason) << '\t'
+				    << TrajectoryNumericalFailureDetailKey(
+				           record.numerical_failure_detail)
+				    << '\t'
+				    << (record.initial_shift_ok ? 1 : 0) << '\t'
+			    << (record.is_captured ? 1 : 0) << '\t'
+			    << (record.survival_valid ? 1 : 0) << '\t'
+			    << (record.event_observed ? 1 : 0) << '\t'
+			    << record.number_of_scatterings << '\t'
+			    << record.number_of_bound_to_unbound << '\t'
+			    << record.number_of_recaptures << '\t'
+			    << record.t_capture_s << '\t'
+			    << record.t_termination_s << '\t'
+			    << record.final_r_rsun << '\t'
+			    << record.final_vr_km_s << '\t'
+			    << record.final_speed_km_s << '\t'
+			    << record.final_energy_eV << '\t'
+				    << record.max_r_after_capture_rsun << '\t'
+				    << record.max_free_energy_drift_eV << '\t'
+				    << record.max_free_energy_drift_rel << '\t'
+				    << record.failure_energy_before_step_eV << '\t'
+				    << record.failure_energy_after_step_eV << '\t'
+				    << record.failure_energy_at_boundary_eV << '\t'
+				    << record.failure_reference_energy_eV << '\t'
+				    << record.failure_boundary_vr_km_s << '\t'
+				    << record.failure_attempted_step_s << '\t'
+				    << record.failure_accepted_step_s << '\t'
+				    << record.initial_time_s;
+			for(double value : record.initial_position_km)
+				invalid << '\t' << value;
+			for(double value : record.initial_velocity_km_s)
+				invalid << '\t' << value;
+			invalid
+			    << '\t' << Encode_PRNG_State(record.rng_state_before_initial_conditions)
+			    << '\t' << Encode_PRNG_State(record.rng_state_before_simulation)
+			    << '\n';
+		}
+		invalid.close();
+		if(!invalid) throw std::runtime_error("Cannot write "+invalid_path);
+		std::cout << "Invalid trajectory ledger:\t" << invalid_path
+		          << " (" << invalid_trajectory_records.size() << " records)"
+		          << std::endl;
+	}
+
+}
+
+void Simulation_Data::Gather_Invalid_Trajectories()
+{
+	// Invalid trajectories are rare but scientifically high leverage because
+	// excluding a long-lived capture can bias the residence measure. Gather a
+	// compact, replayable ledger even when full trajectory diagnostics are off.
+	std::ostringstream local_invalid_stream;
+	local_invalid_stream << std::scientific << std::setprecision(17);
+	for(const auto& record : invalid_trajectory_records)
+	{
+		local_invalid_stream
+		    << record.rank << '\t'
+		    << record.trajectory_id << '\t'
+		    << static_cast<int>(record.failure_stage) << '\t'
+		    << TerminationReason_Index(record.termination_reason) << '\t'
+		    << NumericalFailureDetail_Index(
+		           record.numerical_failure_detail)
+		    << '\t'
+		    << (record.initial_shift_ok ? 1 : 0) << '\t'
+		    << (record.is_captured ? 1 : 0) << '\t'
+		    << (record.survival_valid ? 1 : 0) << '\t'
+		    << (record.event_observed ? 1 : 0) << '\t'
+		    << record.number_of_scatterings << '\t'
+		    << record.number_of_bound_to_unbound << '\t'
+		    << record.number_of_recaptures << '\t'
+		    << record.t_capture_s << '\t'
+		    << record.t_termination_s << '\t'
+		    << record.final_r_rsun << '\t'
+		    << record.final_vr_km_s << '\t'
+		    << record.final_speed_km_s << '\t'
+		    << record.final_energy_eV << '\t'
+		    << record.max_r_after_capture_rsun << '\t'
+		    << record.max_free_energy_drift_eV << '\t'
+		    << record.max_free_energy_drift_rel << '\t'
+		    << record.failure_energy_before_step_eV << '\t'
+		    << record.failure_energy_after_step_eV << '\t'
+		    << record.failure_energy_at_boundary_eV << '\t'
+		    << record.failure_reference_energy_eV << '\t'
+		    << record.failure_boundary_vr_km_s << '\t'
+		    << record.failure_attempted_step_s << '\t'
+		    << record.failure_accepted_step_s << '\t'
+		    << record.initial_time_s;
+		for(double value : record.initial_position_km)
+			local_invalid_stream << '\t' << value;
+		for(double value : record.initial_velocity_km_s)
+			local_invalid_stream << '\t' << value;
+		local_invalid_stream
+		    << '\t' << Encode_PRNG_State(record.rng_state_before_initial_conditions)
+		    << '\t' << Encode_PRNG_State(record.rng_state_before_simulation)
+		    << '\n';
+	}
+	const std::string local_invalid_text = local_invalid_stream.str();
+	MPI_Trace_Point(mpi_rank, "before gather invalid ledger");
+	const std::string combined_invalid_text =
+	    Gather_MPI_Text_To_Root(local_invalid_text);
+	MPI_Trace_Point(mpi_rank, "after gather invalid ledger");
+	invalid_trajectory_records.clear();
+	if(mpi_rank == 0)
+	{
+		std::istringstream lines(combined_invalid_text);
+		std::string line;
+		while(std::getline(lines, line))
+		{
+			if(line.empty())
+				continue;
+			InvalidTrajectoryRecord record;
+			int failure_stage = 0;
+			int termination_reason = 0;
+			int numerical_failure_detail = 0;
+			int initial_shift_ok = 0;
+			int is_captured = 0;
+			int survival_valid = 0;
+			int event_observed = 0;
+			std::string initial_rng_state;
+			std::string simulation_rng_state;
+			std::istringstream fields(line);
+			fields
+			    >> record.rank
+			    >> record.trajectory_id
+			    >> failure_stage
+			    >> termination_reason
+			    >> numerical_failure_detail
+			    >> initial_shift_ok
+			    >> is_captured
+			    >> survival_valid
+			    >> event_observed
+			    >> record.number_of_scatterings
+			    >> record.number_of_bound_to_unbound
+			    >> record.number_of_recaptures;
+			auto read_double = [&](double& value)
+			{
+				std::string token;
+				fields >> token;
+				if(!fields)
+					return;
+				char* end = nullptr;
+				errno = 0;
+				value = std::strtod(token.c_str(), &end);
+				if(end == token.c_str() || *end != '\0' || errno == ERANGE)
+					fields.setstate(std::ios::failbit);
+			};
+			read_double(record.t_capture_s);
+			read_double(record.t_termination_s);
+			read_double(record.final_r_rsun);
+			read_double(record.final_vr_km_s);
+			read_double(record.final_speed_km_s);
+			read_double(record.final_energy_eV);
+			read_double(record.max_r_after_capture_rsun);
+			read_double(record.max_free_energy_drift_eV);
+			read_double(record.max_free_energy_drift_rel);
+			read_double(record.failure_energy_before_step_eV);
+			read_double(record.failure_energy_after_step_eV);
+			read_double(record.failure_energy_at_boundary_eV);
+			read_double(record.failure_reference_energy_eV);
+			read_double(record.failure_boundary_vr_km_s);
+			read_double(record.failure_attempted_step_s);
+			read_double(record.failure_accepted_step_s);
+			read_double(record.initial_time_s);
+			for(double& value : record.initial_position_km)
+				read_double(value);
+			for(double& value : record.initial_velocity_km_s)
+				read_double(value);
+			fields >> initial_rng_state >> simulation_rng_state;
+			if(!fields)
+				throw std::runtime_error(
+				    "Perform_MPI_Reductions(): failed to parse invalid trajectory record.");
+			record.failure_stage = static_cast<InvalidTrajectoryStage>(failure_stage);
+			record.termination_reason = static_cast<TrajectoryTerminationReason>(
+			    TerminationReason_Index(
+			        static_cast<TrajectoryTerminationReason>(termination_reason)));
+			record.numerical_failure_detail =
+			    static_cast<TrajectoryNumericalFailureDetail>(
+			        NumericalFailureDetail_Index(
+			            static_cast<TrajectoryNumericalFailureDetail>(
+			                numerical_failure_detail)));
+			record.initial_shift_ok = initial_shift_ok != 0;
+			record.is_captured = is_captured != 0;
+			record.survival_valid = survival_valid != 0;
+			record.event_observed = event_observed != 0;
+			record.rng_state_before_initial_conditions =
+			    Decode_PRNG_State(std::move(initial_rng_state));
+			record.rng_state_before_simulation =
+			    Decode_PRNG_State(std::move(simulation_rng_state));
+			invalid_trajectory_records.push_back(std::move(record));
+		}
+		std::sort(
+		    invalid_trajectory_records.begin(),
+		    invalid_trajectory_records.end(),
+		    [](const InvalidTrajectoryRecord& lhs, const InvalidTrajectoryRecord& rhs) {
+			    if(lhs.rank != rhs.rank)
+				    return lhs.rank < rhs.rank;
+			    return lhs.trajectory_id < rhs.trajectory_id;
+		    });
+	}
+
+}
+
+void Simulation_Data::Write_Transport_Products(const std::string& dir, obscura::DM_Particle& DM, obscura::DM_Distribution& halo, Solar_Model& solar)
+{
+    if(mpi_rank != 0) return;
+    if(!Ensure_Directory_Exists(dir)) throw std::runtime_error("Cannot create transport output directory");
+    // metadata.json is the commit marker; never leave an old accepted marker on failure.
+    std::remove((dir+"/metadata.json").c_str());
+    auto publish = [&](const std::string& name, const std::string& content) {
+        const std::string path=dir+"/"+name, tmp=path+".tmp";
+        std::ofstream f(tmp); f << content; f.close();
+        if(!f || std::rename(tmp.c_str(),path.c_str())!=0)
+            throw std::runtime_error("Cannot publish "+path);
+    };
+    const auto edges=BuildRadialGrid(outer_removal_radius_rsun*R_SUN_KM);
+    std::ostringstream reference; reference << std::setprecision(17);
+    reference << "r_cm\tT_K\tn_H_cm3\tphi_minus_center_km2_s2\n";
+    const double center_escape2=std::pow(In_Units(solar.Local_Escape_Speed(0.0),km/sec),2);
+    for(int j=0;j<=4096;++j) {
+        const double radius=rSun*j/4096.0;
+        reference << In_Units(radius,cm) << '\t' << In_Units(solar.Temperature(radius),Kelvin) << '\t'
+            << In_Units(solar.Number_Density_Nucleus(radius,0),1/(cm*cm*cm)) << '\t'
+            << .5*(center_escape2-std::pow(In_Units(solar.Local_Escape_Speed(radius),km/sec),2)) << '\n';
+    }
+    publish("solar_reference.tsv",reference.str());
+
+    const double geom=In_Units(M_PI*rSun*rSun*halo.DM_density*DM.fractional_density/DM.mass
+        *(halo.Average_Speed()+2*G_Newton*mSun/rSun*halo.Eta_Function(0.0)),1/sec);
+    auto value=[](const RadialHistogram& h,std::size_t j){return j<h.size()?h[j]:0.0;};
+    std::ostringstream capture; capture << std::setprecision(17);
+    capture << "{\n\"fixed_injection\":" << (fixed_injection_capture_run?"true":"false")
+        << ",\n\"N_inj\":" << number_of_trajectories << ",\n\"N_capt\":" << number_of_captured_particles
+        << ",\n\"C_geom_s_inv\":" << geom << ",\n\"f_cap\":"
+        << (number_of_trajectories?static_cast<double>(number_of_captured_particles)/number_of_trajectories:0)
+        << ",\n\"blocks\":[";
+    for(std::size_t k=0;k<RESIDENCE_JACKKNIFE_BLOCKS;++k) {
+        if(k) capture << ',';
+        capture << '[' << jackknife_attempted_counts[k] << ',' << jackknife_captured_counts[k] << ']';
+    }
+    capture << "]\n}\n"; publish("capture_summary.json",capture.str());
+    std::ostringstream counts; counts << "termination_reason\tcaptured\tuncaptured\n";
+    for(int i=0;i<TRAJECTORY_TERMINATION_REASON_COUNT;++i)
+        counts << Termination_Reason_Key(static_cast<TrajectoryTerminationReason>(i)) << '\t'
+            << captured_termination_reason_counts[i] << '\t' << uncaptured_termination_reason_counts[i] << '\n';
+    publish("termination_counts.tsv",counts.str());
+    if(fixed_injection_capture_run) Write_Invalid_Trajectories(dir);
+    if(!fixed_injection_capture_run) {
+        std::ostringstream blocks, classes, samples; blocks << std::setprecision(17); classes << std::setprecision(17);
+        blocks << "block\tbin\tr_low_km\tr_high_km\tcaptured_dt_s\tcaptured_v2dt_km2_s\ttransit_uncaptured_dt_s\ttransit_uncaptured_v2dt_km2_s\tpost_evap_dt_s\tpost_evap_v2dt_km2_s\n";
+        classes << "class\tblock\tbin\tdt_s\n";
+        samples << "block\tcompleted_captured\n";
+        for(std::size_t k=0;k<RESIDENCE_JACKKNIFE_BLOCKS;++k) {
+            samples << k << '\t' << jackknife_residence_sample_counts[k] << '\n';
+            for(std::size_t b=0;b+1<edges.size();++b) {
+                const std::size_t j=b*RESIDENCE_JACKKNIFE_BLOCKS+k;
+                blocks << k << '\t' << b << '\t' << edges[b] << '\t' << edges[b+1]
+                    << '\t' << value(residence_jackknife_block_dt_hist,j) << '\t' << value(residence_jackknife_block_v2dt_hist,j)
+                    << '\t' << value(transit_block_dt,j) << '\t' << value(transit_block_v2dt,j)
+                    << '\t' << value(post_evap_block_dt,j) << '\t' << value(post_evap_block_v2dt,j) << '\n';
+                for(std::size_t c=0;c<5;++c)
+                    if(value(aphelion_block_dt[c],j)>0) classes << c << '\t' << k << '\t' << b << '\t' << value(aphelion_block_dt[c],j) << '\n';
+            }
+        }
+        publish("radial_blocks.tsv",blocks.str()); publish("block_counts.tsv",samples.str()); publish("orbit_class_blocks.tsv",classes.str());
+        std::ostringstream summary; summary << std::setprecision(17);
+        summary << "trajectory_id\trank\tseed\tblock_id\tcapture_time_s\tcapture_radius_km\tcapture_energy_eV\tcapture_dE_eV\ttermination_reason\tt_end_s\tmax_radius_km\tmax_aphelion_km\tn_scatter\tn_bound_to_unbound\tn_recapture\ttau_in_s\ttau_out_s\tn_exterior_arcs\tfirst_aphelion_km\tlast_aphelion_km\tmax_kepler_period_s\n";
+        for(const auto& rec:evaporation_records) {
+            summary << rec.trajectory_id << '\t' << rec.rank << '\t' << diagnostic_base_seed << '\t'
+                << Residence_Jackknife_Block(diagnostic_base_seed,rec.rank,rec.trajectory_id) << '\t'
+                << rec.t_capture << '\t' << rec.r_first_negative_km << '\t' << rec.E_first_negative_eV << '\t' << rec.dE_first_negative_from_prev_eV << '\t'
+                << Termination_Reason_Key(rec.termination_reason) << '\t' << rec.t_termination-rec.t_capture << '\t'
+                << rec.max_radius_after_capture_km << '\t' << rec.max_aphelion_km << '\t' << rec.number_of_scatterings << '\t'
+                << rec.number_of_bound_to_unbound << '\t' << rec.number_of_recaptures << '\t' << rec.time_inside_sun_after_capture_sec << '\t'
+                << rec.time_outside_sun_after_capture_sec << '\t' << rec.number_of_bound_exterior_arcs << '\t' << rec.first_aphelion_km << '\t'
+                << rec.last_aphelion_km << '\t' << rec.max_bound_exit_kepler_period_sec << '\n';
+        }
+        publish("trajectory_summary.tsv",summary.str());
+    }
+    const auto stamp=std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    std::ostringstream meta; meta << std::setprecision(17);
+    meta << "{\n\"schema_version\":6,\n\"production_accepted\":" << (Production_Ready()?"true":"false")
+         << ",\n\"workflow\":\"" << (fixed_injection_capture_run?"fixed_injection_capture":(thermal_shape_run?"thermal_shape_validation":"complete_captured_transport"))
+         << "\",\n\"git_commit\":\"" << GIT_COMMIT_HASH << "\",\n\"source_sha256\":\"" << DAMASCUS_SOURCE_SHA256
+         << "\",\n\"compiler\":\"" << DAMASCUS_COMPILER << "\",\n\"build_type\":\"" << DAMASCUS_BUILD_TYPE
+         << "\",\n\"build_flags\":{\"LTO\":\"" << DAMASCUS_LTO << "\",\"native_arch\":\"" << DAMASCUS_NATIVE_ARCH << "\"}"
+         << ",\n\"compiler_build_config\":\"" << DAMASCUS_BUILD_TYPE
+         << "\",\n\"timestamp_unix\":" << stamp << ",\n\"seed\":" << diagnostic_base_seed << ",\n\"mpi_ranks\":" << mpi_processes
+         << ",\n\"solar_model\":\"AGSS09\",\n\"halo_model\":\"" << "see input.cfg" << "\",\n\"halo_density_GeV_cm3\":" << In_Units(halo.DM_density,GeV/(cm*cm*cm))
+         << ",\n\"DM_fraction\":" << DM.fractional_density
+         << ",\n\"m_chi_GeV\":" << In_Units(DM.mass,GeV) << ",\n\"sigma_SD_cm2\":" << In_Units(DM.Sigma_Proton(),cm*cm)
+         << ",\n\"R_inj_rsun\":" << INJECTION_RADIUS_RSUN << ",\n\"R_match_rsun\":" << In_Units(initial_and_final_radius,rSun)
+         << ",\n\"R_remove_rsun\":" << outer_removal_radius_rsun << ",\n\"requested_samples\":" << requested_captured_particles
+         << ",\n\"N_inj\":" << number_of_trajectories << ",\n\"N_capt\":" << number_of_captured_particles << ",\n\"N_completed\":" << number_of_residence_samples
+         << ",\n\"N_outer_removed\":" << number_of_outer_domain_removed_particles << ",\n\"N_numerical_failures\":" << number_of_numerical_failures
+         << ",\n\"N_computational_failures\":" << number_of_computational_truncations << ",\n\"runtime_seconds\":" << computing_time
+         << ",\n\"captured_end\":\"validated escape at matching surface or outer removal\",\n\"post_evap\":\"separate outgoing occupation from validated escape to recording boundary; excluded from captured_dt\""
+         << ",\n\"transit_uncaptured\":\"unscattered solar-intersecting incident subset between injection crossings, not a full halo density\""
+         << ",\n\"restart_supported\":false,\n\"radial_edges_km\":[";
+    for(std::size_t i=0;i<edges.size();++i) { if(i) meta << ','; meta << edges[i]; }
+    meta << "]\n}\n"; publish("metadata.json",meta.str());
 }
 
 }	// namespace DaMaSCUS_SUN

@@ -136,7 +136,7 @@ int main(int argc, char* argv[])
 					  << std::endl;
 		SSM.Interpolate_Total_DM_Scattering_Rate(*cfg.DM, cfg.interpolation_points, cfg.interpolation_points);
 
-		data_set.outer_removal_radius_rsun = cfg.outer_removal_radius_rsun;
+		data_set.outer_boundary_radius_au = cfg.outer_boundary_radius_au;
 		data_set.thermal_shape_run = cfg.thermal_validation_mode;
 		data_set.abort_on_invalid_trajectory = cfg.production_mode;
 		data_set.Generate_Data(*cfg.DM, SSM, *cfg.DM_distr, cfg.snapshot_config, cfg.fixed_seed, cfg.capture_mode);

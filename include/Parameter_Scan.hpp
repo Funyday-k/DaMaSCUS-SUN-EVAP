@@ -32,7 +32,7 @@ class Configuration : public obscura::Configuration
 
   public:
 	std::string run_mode;
-	double outer_removal_radius_rsun = DEFAULT_OUTER_REMOVAL_RSUN;
+	double outer_boundary_radius_au = DEFAULT_OUTER_BOUNDARY_AU;
 	bool production_mode = false;
 	bool thermal_validation_mode = false;
 	unsigned int isoreflection_rings, interpolation_points;

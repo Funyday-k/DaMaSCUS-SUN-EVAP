@@ -173,7 +173,7 @@ TEST(TestSimulationUtilities, TestInitialConditions)
 	obscura::Standard_Halo_Model SHM;
 	// SHM.Set_Observer_Velocity(libphysica::Vector({0, 0, 0}));
 
-	double R_distance	= INJECTION_RADIUS_RSUN * rSun;
+	double R_distance	= DEFAULT_OUTER_BOUNDARY_AU * AU;
 	unsigned int trials = 1000;
 	// ACT & ASSERT
 	for(unsigned int i = 0; i < trials; i++)
@@ -182,7 +182,8 @@ TEST(TestSimulationUtilities, TestInitialConditions)
 		double r	= IC.Radius();
 		double v	= IC.Speed();
 		double vesc = SSM.Local_Escape_Speed(r);
-		double Jmax = rSun * sqrt(v * v + SSM.Local_Escape_Speed(rSun) * SSM.Local_Escape_Speed(rSun));
+		double Jmax = rSun * sqrt(v * v - vesc * vesc
+		    + SSM.Local_Escape_Speed(rSun) * SSM.Local_Escape_Speed(rSun));
 		ASSERT_NEAR(IC.Radius()/R_distance, 1.0, 1e-12);
 		ASSERT_GE(IC.Speed(), vesc);
 		ASSERT_LE(IC.Angular_Momentum(), Jmax);
@@ -207,7 +208,7 @@ TEST(TestSimulationUtilities, TestInitialSpeedSamplingAdaptsToHaloParameters)
 	std::mt19937 prng(20260910u);
 	const unsigned int trials = 5000;
 	const unsigned int grid_points = 8192;
-	const double distant_escape_squared = std::pow(solar_model.Local_Escape_Speed(INJECTION_RADIUS_RSUN * rSun), 2.0);
+	const double distant_escape_squared = std::pow(solar_model.Local_Escape_Speed(DEFAULT_OUTER_BOUNDARY_AU * AU), 2.0);
 	const double surface_escape_squared = std::pow(solar_model.Local_Escape_Speed(rSun), 2.0);
 	// Mutate one halo repeatedly: a cached envelope must not survive a change
 	// in dispersion or observer velocity. The final case also exercises s=0.

@@ -25,21 +25,21 @@ namespace DaMaSCUS_SUN
 
 class SnapshotRecorder;
 
-// Physical injection, numerical matching, and outer-orbit removal are distinct.
-constexpr double DEFAULT_OUTER_REMOVAL_RSUN = 1100.0;
-constexpr double TRAJECTORY_BOUNDARY_RSUN = 1.1;
+// The numerical matching surface is the solar surface. One outer boundary
+// controls both the incident sampling sphere and bound-orbit removal.
+constexpr double TRAJECTORY_BOUNDARY_RSUN = 1.0;
 constexpr double R_SUN_KM = 6.957e5;  // km
 constexpr double AU_KM = 1.495978707e8;  // IAU 2012 exact astronomical unit [km]
 constexpr double BIN_WIDTH_KM = R_SUN_KM / 1000.0;  // 0.001 R_sun
 constexpr int NUM_BINS = 1100;  // base grid through 1.1 R_sun
 constexpr double BIN_MAX_KM = NUM_BINS * BIN_WIDTH_KM;
 // Exterior shell widths grow by 2% from the inner-grid width and are capped
-// at 10 R_sun. Histograms grow to cover each orbit; there is no radial cutoff.
+// at 1 AU. This preserves the original solar/intermediate resolution while
+// keeping a 1100 AU domain tractable.
 constexpr double EXTERIOR_BIN_GROWTH_FACTOR = 1.02;
-constexpr double EXTERIOR_MAX_BIN_WIDTH_RSUN = 10.0;
-constexpr double EXTERIOR_MAX_BIN_WIDTH_KM =
-    EXTERIOR_MAX_BIN_WIDTH_RSUN * R_SUN_KM;
-constexpr std::size_t EXTERIOR_FIRST_CAPPED_BIN = 466;
+constexpr double EXTERIOR_MAX_BIN_WIDTH_KM = AU_KM;
+constexpr double EXTERIOR_MAX_BIN_WIDTH_RSUN = EXTERIOR_MAX_BIN_WIDTH_KM / R_SUN_KM;
+constexpr std::size_t EXTERIOR_FIRST_CAPPED_BIN = 621;
 using RadialHistogram = std::vector<double>;
 
 // Missing outer bins represent zero residence. Grow related histograms
@@ -72,8 +72,7 @@ void Compute_Bincount_Interval_Contributions(
 	std::vector<BincountContribution>& contributions);
 
 // The histogram is uniform through 1.1 R_sun. Exterior shell widths grow
-// geometrically from 0.001 R_sun and are capped at 10 R_sun, with no outer
-// boundary. These helpers are the single source of truth for
+// geometrically from 0.001 R_sun and are capped at 1 AU. These helpers are the single source of truth for
 // writers, snapshots, and exact exterior Kepler shell integration.
 double BincountBinLowerKm(std::size_t bin);
 double BincountBinUpperKm(std::size_t bin);
@@ -93,7 +92,7 @@ struct BoundKeplerExteriorArc
 };
 
 // Analytically propagate a negative-specific-energy outward crossing from the
-// 1.1 R_sun matching surface through apoapsis and back to the same radius.
+// 1 R_sun matching surface through apoapsis and back to the same radius.
 // The returned histograms contain the entire round-trip residence.
 bool Compute_Bound_Kepler_Exterior_Arc(const Event& outward_event, BoundKeplerExteriorArc& arc,
     double removal_radius_km = std::numeric_limits<double>::infinity());
@@ -365,7 +364,7 @@ class Trajectory_Simulator
 	unsigned long int maximum_time_steps;
 	unsigned long int maximum_scatterings;
 	double maximum_distance;  // numerical matching / validated escape surface
-	double outer_removal_radius_km = DEFAULT_OUTER_REMOVAL_RSUN * R_SUN_KM;
+	double outer_removal_radius_km = DEFAULT_OUTER_BOUNDARY_AU * AU_KM;
 
 	// 单条轨迹的 wall-clock 时间上限（秒）。超过后 Propagate_Freely 会返回 WallTimeLimit，
 	// 防止任一 rank 被单条病态轨迹卡死从而阻塞 snapshot / MPI_Barrier。

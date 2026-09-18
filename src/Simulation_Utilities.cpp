@@ -224,8 +224,11 @@ double PDF_Cos_Theta(double cos_theta, double v, obscura::DM_Distribution& halo_
 	return pdf;
 }
 
-Event Initial_Conditions(obscura::DM_Distribution& halo_model, Solar_Model& solar_model, std::mt19937& PRNG)
+Event Initial_Conditions(obscura::DM_Distribution& halo_model, Solar_Model& solar_model,
+                         std::mt19937& PRNG, double outer_boundary_radius)
 {
+	if(!std::isfinite(outer_boundary_radius) || outer_boundary_radius <= rSun)
+		throw std::invalid_argument("Initial_Conditions(): outer boundary must exceed the solar surface.");
 	if(typeid(halo_model) != typeid(obscura::Standard_Halo_Model))
 		throw std::invalid_argument("Initial_Conditions(): only the standard SHM distribution is supported; SHM++ and other derived distributions require their own sampling law.");
 	auto* standard_halo = static_cast<obscura::Standard_Halo_Model*>(&halo_model);
@@ -282,8 +285,7 @@ Event Initial_Conditions(obscura::DM_Distribution& halo_model, Solar_Model& sola
 		throw std::runtime_error("Initial_Conditions(): sampled velocity is zero or non-finite.");
 
 	// 1.4. Blue-shift the speed
-	double asymptotic_distance = 1000.0 * AU;
-	double vesc_asymptotic	   = solar_model.Local_Escape_Speed(asymptotic_distance);
+	double vesc_asymptotic	   = solar_model.Local_Escape_Speed(outer_boundary_radius);
 	double v				   = sqrt(u * u + vesc_asymptotic * vesc_asymptotic);
 	if(!std::isfinite(vesc_asymptotic) || vesc_asymptotic < 0.0 || !Finite_Positive(v))
 		throw std::runtime_error("Initial_Conditions(): asymptotic escape speed is invalid.");
@@ -305,15 +307,13 @@ Event Initial_Conditions(obscura::DM_Distribution& halo_model, Solar_Model& sola
 	double phi_disk						= libphysica::Sample_Uniform(PRNG, 0.0, 2.0 * M_PI);
 	double xi							= libphysica::Sample_Uniform(PRNG, 0.0, 1.0);
 	double impact_parameter				= sqrt(xi) * impact_parameter_max;
-	libphysica::Vector initial_position = asymptotic_distance * e_z + impact_parameter * (cos(phi_disk) * e_x + sin(phi_disk) * e_y);
+	libphysica::Vector initial_position = sqrt(outer_boundary_radius * outer_boundary_radius
+	    - impact_parameter * impact_parameter) * e_z
+	    + impact_parameter * (cos(phi_disk) * e_x + sin(phi_disk) * e_y);
 	if(!Finite_Positive(initial_position.Norm()))
 		throw std::runtime_error("Initial_Conditions(): sampled position is zero or non-finite.");
 
-	Event incident(0.0, initial_position, initial_velocity);
-	if(!Hyperbolic_Kepler_Shift(incident, INJECTION_RADIUS_RSUN * rSun))
-		throw std::runtime_error("Initial_Conditions(): injection shift failed.");
-	incident.time = 0.0;
-	return incident;
+	return Event(0.0, initial_position, initial_velocity);
 }
 
 // 3. Analytically propagate a particle at event on a hyperbolic Kepler orbit to a radius R (without passing the periapsis)
@@ -323,7 +323,8 @@ bool Hyperbolic_Kepler_Shift(Event& event, double R_final)
 	const double R_initial = event.Radius();
 	const double speed = event.Speed();
 
-	if(R_final < rSun || R_initial < rSun)
+	if(R_final < rSun * (1.0 - KEPLER_DOMAIN_TOLERANCE)
+	   || R_initial < rSun * (1.0 - KEPLER_DOMAIN_TOLERANCE))
 		return Report_Hyperbolic_Kepler_Shift_Failure("orbits inside the Sun cannot be described analytically.");
 	if(!Finite_Positive(R_final) || !Finite_Positive(R_initial) || !Finite_Positive(speed))
 		return Report_Hyperbolic_Kepler_Shift_Failure("initial or final radius/speed is non-finite or non-positive.");

@@ -1,8 +1,10 @@
 #include "gtest/gtest.h"
 #include "Simulation_Trajectory.hpp"
 #include "obscura/DM_Particle_Standard.hpp"
+#include "obscura/DM_Halo_Models.hpp"
 #include <cmath>
 #include <numeric>
+#include <random>
 using namespace DaMaSCUS_SUN;
 using namespace libphysica::natural_units;
 
@@ -17,7 +19,7 @@ Event ellipse(double e, double r, double peri) {
 double sum(const RadialHistogram& x){return std::accumulate(x.begin(),x.end(),0.0);}
 }
 TEST(TransportContract, GridRetainsNativeGeometryAndClipsFinalShell) {
-    for(double outer:{1100.0,3000.0,10000.0}) {
+    for(double outer:{1100.0,3000.0,10000.0,DEFAULT_OUTER_BOUNDARY_AU*AU_KM/R_SUN_KM}) {
         auto edges=BuildRadialGrid(outer*R_SUN_KM);
         EXPECT_DOUBLE_EQ(edges.front(),0.0); EXPECT_DOUBLE_EQ(edges.back(),outer*R_SUN_KM);
         for(std::size_t b=0;b+1<edges.size();++b) {
@@ -56,6 +58,19 @@ TEST(TransportContract, RemovalIsOneWayAndPreservesEnergyAngularMomentum) {
     EXPECT_LT(arc.elapsed_time_sec,complete.elapsed_time_sec/2);
     EXPECT_FALSE(TrajectoryTerminationInvalidatesResidenceBincount(TrajectoryTerminationReason::OuterDomainRemoval));
 }
+TEST(TransportContract, WideBoundOrbitStopsAtTheShared1100AUSurface) {
+    const double peri=0.5*rSun, apo=2000*AU;
+    const double e=(apo-peri)/(apo+peri);
+    const Event out=ellipse(e,1.2*rSun,peri);
+    BoundKeplerExteriorArc arc;
+    ASSERT_TRUE(Compute_Bound_Kepler_Exterior_Arc(out,arc,DEFAULT_OUTER_BOUNDARY_AU*AU_KM));
+    EXPECT_TRUE(arc.outer_removed);
+    EXPECT_NEAR(In_Units(arc.terminal_event.Radius(),AU),DEFAULT_OUTER_BOUNDARY_AU,1e-7);
+    EXPECT_GT(arc.terminal_event.position.Dot(arc.terminal_event.velocity),0.0);
+    EXPECT_NEAR(sum(arc.dt_hist)/arc.elapsed_time_sec,1.0,1e-10);
+    EXPECT_GT(arc.dt_hist.back(),0.0);
+    EXPECT_GT(sum(arc.v2dt_hist),0.0);
+}
 TEST(TransportContract, HyperbolicMomentsAgreeWithRadialQuadrature) {
     const auto out=Event(0.0,libphysica::Vector({1.2*rSun,0.0,0.0}),libphysica::Vector({600*km/sec,150*km/sec,0.0}));
     BoundKeplerExteriorArc arc; ASSERT_TRUE(Compute_Unbound_Kepler_Exterior_Arc(out,1100*R_SUN_KM,arc));
@@ -68,6 +83,28 @@ TEST(TransportContract, HyperbolicMomentsAgreeWithRadialQuadrature) {
     }
     EXPECT_NEAR(sum(arc.dt_hist)/dt,1.0,1e-8); EXPECT_NEAR(sum(arc.v2dt_hist)/dv2,1.0,1e-8);
     EXPECT_NEAR(In_Units(arc.terminal_event.time,sec)/dt,1.0,1e-8);
+}
+TEST(TransportContract, Incoming1100AUPathClosesAtTheSolarSurface) {
+    Solar_Model sun;
+    obscura::Standard_Halo_Model halo;
+    std::mt19937 prng(20260918u);
+    for(int i=0;i<32;++i) {
+        const Event sampled=Initial_Conditions(halo,sun,prng);
+        EXPECT_NEAR(In_Units(sampled.Radius(),AU),DEFAULT_OUTER_BOUNDARY_AU,1e-9);
+        Event surface=sampled;
+        ASSERT_TRUE(Hyperbolic_Kepler_Shift(surface,rSun));
+        EXPECT_NEAR(In_Units(surface.Radius(),rSun),1.0,1e-10);
+        EXPECT_LT(surface.position.Dot(surface.velocity),0.0);
+        BoundKeplerExteriorArc inbound;
+        ASSERT_TRUE(Compute_Unbound_Kepler_Exterior_Arc(
+            Event(0.0,surface.position,(-1.0)*surface.velocity),
+            DEFAULT_OUTER_BOUNDARY_AU*AU_KM,inbound));
+        EXPECT_NEAR(sum(inbound.dt_hist)/inbound.elapsed_time_sec,1.0,1e-10);
+        EXPECT_GT(inbound.dt_hist[BincountBinIndexKm(R_SUN_KM)],0.0);
+        EXPECT_GT(inbound.dt_hist.back(),0.0);
+        EXPECT_NEAR(In_Units(inbound.terminal_event.Radius(),AU),DEFAULT_OUTER_BOUNDARY_AU,1e-9);
+        EXPECT_NEAR(inbound.terminal_event.Angular_Momentum()/sampled.Angular_Momentum(),1.0,1e-9);
+    }
 }
 TEST(TransportContract, SolarPotentialMatchesExteriorAtTheSurface) {
     Solar_Model sun;

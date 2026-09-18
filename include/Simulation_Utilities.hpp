@@ -12,7 +12,7 @@
 
 namespace DaMaSCUS_SUN
 {
-constexpr double INJECTION_RADIUS_RSUN = 2.0;
+constexpr double DEFAULT_OUTER_BOUNDARY_AU = 1100.0;
 
 // 1. Event class
 struct Event
@@ -41,7 +41,8 @@ struct Event
 // 2. Generator of initial conditions
 extern double PDF_Initial_Speed(double v, obscura::DM_Distribution& halo_model, Solar_Model& model);
 extern double PDF_Cos_Theta(double cos_theta, double v, obscura::DM_Distribution& halo_model);
-extern Event Initial_Conditions(obscura::DM_Distribution& halo_model, Solar_Model& model, std::mt19937& PRNG);
+extern Event Initial_Conditions(obscura::DM_Distribution& halo_model, Solar_Model& model, std::mt19937& PRNG,
+                                double outer_boundary_radius = DEFAULT_OUTER_BOUNDARY_AU * libphysica::natural_units::AU);
 
 // 3. Analytically propagate a particle at event on a hyperbolic Kepler orbit to a radius R (without passing the periapsis)
 extern bool Hyperbolic_Kepler_Shift(Event& event, double R_final);

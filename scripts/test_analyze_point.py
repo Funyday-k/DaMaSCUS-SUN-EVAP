@@ -42,9 +42,9 @@ class GeometryTests(unittest.TestCase):
     def test_unfinished_histories_and_wrong_workflows_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             p=Path(tmp)
-            (p/'metadata.json').write_text(json.dumps({'schema_version':6,'workflow':'complete_captured_transport','production_accepted':False}))
+            (p/'metadata.json').write_text(json.dumps({'schema_version':7,'workflow':'complete_captured_transport','production_accepted':False}))
             with self.assertRaises(ValueError): require_accepted(p,'complete_captured_transport')
-            (p/'metadata.json').write_text(json.dumps({'schema_version':6,'workflow':'thermal_shape_validation','production_accepted':True}))
+            (p/'metadata.json').write_text(json.dumps({'schema_version':7,'workflow':'thermal_shape_validation','production_accepted':True}))
             with self.assertRaises(ValueError): require_accepted(p,'complete_captured_transport')
 
 class AnalysisContractTests(unittest.TestCase):
@@ -53,10 +53,10 @@ class AnalysisContractTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root=Path(self.tmp.name); self.output=self.root/'transport'; self.capture=self.root/'capture'
         self.output.mkdir(); self.capture.mkdir()
-        self.meta={'schema_version':6,'production_accepted':True,'workflow':'complete_captured_transport',
+        self.meta={'schema_version':7,'production_accepted':True,'workflow':'complete_captured_transport',
             'source_sha256':'fixture-source','seed':101,'mpi_ranks':1,'solar_model':'fixture',
             'halo_model':'SHM','halo_density_GeV_cm3':.4,'m_chi_GeV':.01,'sigma_SD_cm2':1e-32,
-            'R_inj_rsun':2,'R_match_rsun':1.1,'R_remove_rsun':3,'requested_samples':64,
+            'R_match_rsun':1.0,'R_outer_au':1100,'requested_samples':64,
             'N_completed':64,'N_capt':64,'N_inj':128,'N_outer_removed':32,
             'N_numerical_failures':0,'N_computational_failures':0,
             'radial_edges_km':[0,R_SUN_CM/1e5,2*R_SUN_CM/1e5,3*R_SUN_CM/1e5]}
@@ -74,11 +74,15 @@ class AnalysisContractTests(unittest.TestCase):
         self.speed2=100000+1000*np.arange(BLOCKS)
         for k in range(BLOCKS):
             for b,dt in enumerate([self.tin[k],self.tout[k]/2,self.tout[k]/2]):
-                blocks.append([k,b,self.meta['radial_edges_km'][b],self.meta['radial_edges_km'][b+1],dt,dt*self.speed2[k],0,0,0,0])
+                blocks.append([k,b,self.meta['radial_edges_km'][b],self.meta['radial_edges_km'][b+1],dt,dt*self.speed2[k],0,0,0,0,1 if b else 0,100 if b else 0])
                 classes.append([0,k,b,dt])
             reason='outer_orbit_removed' if k%2 else 'physical_escape'
             records.append(f'{k+1} 0 101 {k} {reason} {self.tin[k]+self.tout[k]} {self.tin[k]} {self.tout[k]} 2000000 {k+1}')
-        np.savetxt(self.output/'radial_blocks.tsv',blocks,header='block bin lo hi dt v2dt transit_dt transit_v2dt post_dt post_v2dt')
+        np.savetxt(self.output/'radial_blocks.tsv',blocks,header='block bin lo hi dt v2dt transit_dt transit_v2dt post_dt post_v2dt inbound_dt inbound_v2dt')
+        for directory,scale in [(self.output,BLOCKS),(self.capture,1280)]:
+            inbound=[[b,self.meta['radial_edges_km'][b],self.meta['radial_edges_km'][b+1],
+                      scale if b else 0,100*scale if b else 0] for b in range(3)]
+            np.savetxt(directory/'incident_inbound.tsv',inbound,header='bin lo hi dt v2dt')
         np.savetxt(self.output/'block_counts.tsv',np.column_stack([np.arange(BLOCKS),np.ones(BLOCKS)]),header='block count')
         np.savetxt(self.output/'orbit_class_blocks.tsv',classes,header='class block bin dt')
         (self.output/'trajectory_summary.tsv').write_text('trajectory_id rank seed block_id termination_reason t_end_s tau_in_s tau_out_s max_aphelion_km n_scatter\n'+'\n'.join(records)+'\n')
@@ -128,6 +132,12 @@ class AnalysisContractTests(unittest.TestCase):
         data[[0,3],4]=data[[3,0],4]
         np.savetxt(path,data,header='header')
         with self.assertRaisesRegex(ValueError,'per-block'): self.run_analysis()
+
+    def test_incoming_path_must_close_against_its_block_histograms(self) -> None:
+        path=self.output/'incident_inbound.tsv'; data=np.loadtxt(path,skiprows=1)
+        data[2,3]+=1
+        np.savetxt(path,data,header='header')
+        with self.assertRaisesRegex(ValueError,'incident inbound block moments'): self.run_analysis()
 
     def test_scan_rejects_different_annihilation_coefficients_and_reused_capture(self) -> None:
         record=self.run_analysis(); other=copy.deepcopy(record)

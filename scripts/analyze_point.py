@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Analyze schema-6 complete histories with an independent fixed-injection capture run.
+"""Analyze schema-7 complete histories with an independent fixed-injection capture run.
 
 All densities use cm; trajectory moments are supplied in seconds and km^2/s.
 No published detector sensitivity is inferred from a continuum flux threshold.
@@ -27,7 +27,7 @@ def read_json(path: Path) -> dict:
 def require_accepted(path: Path, workflow: str) -> dict:
     """Require an accepted, explicitly identified production product."""
     meta = read_json(path / 'metadata.json')
-    if meta.get('schema_version') != 6 or meta.get('workflow') != workflow:
+    if meta.get('schema_version') != 7 or meta.get('workflow') != workflow:
         raise ValueError(f'{path}: wrong schema or workflow')
     if not meta.get('source_sha256') or not meta.get('seed'):
         raise ValueError(f'{path}: missing source hash or reproducible seed')
@@ -83,7 +83,7 @@ def read_transport_blocks(directory: Path, meta: dict) -> tuple[np.ndarray,np.nd
         raise ValueError('invalid radial edges or missing solar surface')
     bins=len(edges)-1
     data=np.loadtxt(directory/'radial_blocks.tsv',skiprows=1,ndmin=2)
-    if data.shape!=(BLOCKS*bins,10) or not np.all(np.isfinite(data)) or np.any(data[:,4:]<0):
+    if data.shape!=(BLOCKS*bins,12) or not np.all(np.isfinite(data)) or np.any(data[:,4:]<0):
         raise ValueError('incomplete/nonfinite/negative radial block data')
     if not (np.array_equal(data[:,0],np.repeat(np.arange(BLOCKS),bins))
             and np.array_equal(data[:,1],np.tile(np.arange(bins),BLOCKS))):
@@ -91,6 +91,10 @@ def read_transport_blocks(directory: Path, meta: dict) -> tuple[np.ndarray,np.nd
     geometry=np.tile(np.column_stack([edges[:-1],edges[1:]]),(BLOCKS,1))
     if not np.allclose(data[:,2:4]*1e5,geometry,rtol=1e-14,atol=0):
         raise ValueError('metadata and radial edges differ')
+    inbound=read_incident_inbound(directory,meta,edges)
+    if (not np.allclose(data[:,10].reshape(BLOCKS,bins).sum(axis=0),inbound[:,3],rtol=1e-12,atol=1e-6)
+        or not np.allclose(data[:,11].reshape(BLOCKS,bins).sum(axis=0),inbound[:,4],rtol=1e-12,atol=1e-2)):
+        raise ValueError('incident inbound block moments do not close')
     samples=np.loadtxt(directory/'block_counts.tsv',skiprows=1,ndmin=2)
     if (samples.shape!=(BLOCKS,2) or not np.all(np.isfinite(samples))
         or not np.array_equal(samples[:,0],np.arange(BLOCKS))
@@ -103,6 +107,19 @@ def read_transport_blocks(directory: Path, meta: dict) -> tuple[np.ndarray,np.nd
     if np.any((counts==0)&(data[:,4].reshape(BLOCKS,bins).sum(axis=1)>0)):
         raise ValueError('empty block contains captured residence')
     return data,edges,counts
+
+
+def read_incident_inbound(directory: Path, meta: dict, edges_cm: np.ndarray) -> np.ndarray:
+    """Validate the complete incoming shell moments against their radial geometry."""
+    bins=len(edges_cm)-1
+    data=np.loadtxt(directory/'incident_inbound.tsv',skiprows=1,ndmin=2)
+    if (data.shape!=(bins,5) or not np.all(np.isfinite(data))
+        or np.any(data[:,3:]<0) or not np.array_equal(data[:,0],np.arange(bins))
+        or not np.allclose(data[:,1:3]*1e5,
+                           np.column_stack([edges_cm[:-1],edges_cm[1:]]),rtol=1e-14,atol=0)
+        or (meta['N_inj']>0 and data[-1,3]<=0)):
+        raise ValueError('invalid incident inbound shell moments')
+    return data
 
 
 def containment(edges_cm: np.ndarray, weight: np.ndarray, fraction: float) -> float:
@@ -207,7 +224,7 @@ def analyze(output: Path, capture: Path, sigma_v: float = 3e-26,
         raise ValueError('sigma_v must be finite and positive')
     m = require_accepted(output,'complete_captured_transport')
     c = require_accepted(capture,'fixed_injection_capture')
-    for key in ['m_chi_GeV','sigma_SD_cm2','solar_model','halo_model','halo_density_GeV_cm3','source_sha256']:
+    for key in ['m_chi_GeV','sigma_SD_cm2','solar_model','halo_model','halo_density_GeV_cm3','source_sha256','R_match_rsun','R_outer_au']:
         if m[key] != c[key]:
             raise ValueError(f'capture/transport mismatch: {key}')
     if physical_config(output)!=physical_config(capture):
@@ -219,6 +236,10 @@ def analyze(output: Path, capture: Path, sigma_v: float = 3e-26,
     cap = read_json(capture/'capture_summary.json')
     cb = validate_capture_summary(cap,c)
     data,edges,counts = read_transport_blocks(output,m)
+    capture_edges=np.asarray(c['radial_edges_km'],dtype=float)*1e5
+    if not np.array_equal(capture_edges,edges):
+        raise ValueError('capture/transport radial edges differ')
+    read_incident_inbound(capture,c,edges)
     bins=len(edges)-1
     dt=data[:,4].reshape(BLOCKS,bins); v2=data[:,5].reshape(BLOCKS,bins)
     summary=np.genfromtxt(output/'trajectory_summary.tsv',names=True,dtype=None,encoding='utf8',ndmin=1)

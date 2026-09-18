@@ -483,12 +483,12 @@ TEST(TestSimulationTrajectory, BoundKeplerExteriorArcUsesGeometricWidthGrid)
 	    arc.kepler_period_sec,
 	    expected_period_sec,
 	    1.0e-12 * expected_period_sec);
-	EXPECT_GT(arc.kepler_period_sec, arc.elapsed_time_sec);
+	EXPECT_LE(arc.elapsed_time_sec, arc.kepler_period_sec * (1.0 + 1.0e-10));
 	EXPECT_EQ(
-	    std::accumulate(arc.dt_hist.begin(), arc.dt_hist.begin() + NUM_BINS, 0.0),
+	    std::accumulate(arc.dt_hist.begin(), arc.dt_hist.begin() + BincountBinIndexKm(R_SUN_KM), 0.0),
 	    0.0);
 	EXPECT_GT(
-	    std::accumulate(arc.dt_hist.begin() + NUM_BINS, arc.dt_hist.end(), 0.0),
+	    std::accumulate(arc.dt_hist.begin() + BincountBinIndexKm(R_SUN_KM), arc.dt_hist.end(), 0.0),
 	    0.0);
 	EXPECT_GT(
 	    std::accumulate(arc.v2dt_hist.begin(), arc.v2dt_hist.end(), 0.0),
@@ -697,7 +697,7 @@ TEST(TestSimulationTrajectory, TestSimulate)
 	{
 		SCOPED_TRACE(i);
 		Event IC = Initial_Conditions(SHM, SSM, simulator.PRNG);
-		ASSERT_TRUE(Hyperbolic_Kepler_Shift(IC, 1.5 * rSun));
+		ASSERT_TRUE(Hyperbolic_Kepler_Shift(IC, TRAJECTORY_BOUNDARY_RSUN * rSun));
 		Trajectory_Result result = simulator.Simulate(IC, DM, 0);
 		const TrajectoryTerminationReason reason = result.bincount.termination_reason;
 		ASSERT_NE(reason, TrajectoryTerminationReason::Unknown);
@@ -727,7 +727,17 @@ TEST(TestSimulationTrajectory, TestSimulate)
 				EXPECT_TRUE(result.bincount.is_captured);
 		}
 		if(result.bincount.is_captured)
+		{
 			EXPECT_GT(result.number_of_scatterings, 0UL);
+			if(reason == TrajectoryTerminationReason::OutwardEscape
+			   || reason == TrajectoryTerminationReason::OuterDomainRemoval)
+			{
+				const double duration = result.bincount.t_termination - result.bincount.t_capture;
+				const double binned = std::accumulate(result.bincount.dt_hist.begin(),
+				    result.bincount.dt_hist.end(), 0.0);
+				EXPECT_NEAR(binned, duration, 1.0e-8 * std::max(1.0, duration));
+			}
+		}
 	}
 }
 

@@ -89,6 +89,50 @@ TEST(TestParameterScan, TestRectangularRateGridConfiguration)
 	std::remove(path.c_str());
 }
 
+TEST(TestParameterScan, TestRejectsInvalidExplicitRateGridConfiguration)
+{
+	auto expect_invalid = [](const std::string& suffix, const std::string& settings) {
+		const std::string path = "/tmp/damascus_invalid_rate_grid_"
+		                       + std::to_string(getpid()) + "_" + suffix + ".cfg";
+		{
+			std::ifstream source(PROJECT_DIR "tests/config_capture_minimal.cfg");
+			EXPECT_TRUE(source.good());
+			std::ofstream destination(path);
+			destination << source.rdbuf() << '\n' << settings;
+			EXPECT_TRUE(destination.good());
+		}
+		EXPECT_THROW(Configuration cfg(path, 1), std::invalid_argument);
+		std::remove(path.c_str());
+	};
+
+	expect_invalid("one_one",
+	               "rate_radius_points = 1;\nrate_speed_points = 1;\n");
+	expect_invalid("one_zero",
+	               "rate_radius_points = 1;\nrate_speed_points = 0;\n");
+	expect_invalid("zero_one",
+	               "rate_radius_points = 0;\nrate_speed_points = 1;\n");
+	expect_invalid("excessive_speed",
+	               "rate_radius_points = 2;\nrate_speed_points = 2;\nrate_max_speed = 0.750001;\n");
+}
+
+TEST(TestParameterScan, TestLegacySinglePointRateGridStillDisablesInterpolation)
+{
+	const std::string path = "/tmp/damascus_legacy_rate_grid_"
+	                       + std::to_string(getpid()) + ".cfg";
+	{
+		std::ifstream source(PROJECT_DIR "tests/config_capture_minimal.cfg");
+		ASSERT_TRUE(source.good());
+		std::ofstream destination(path);
+		destination << source.rdbuf() << "\ninterpolation_points = 1;\n";
+		ASSERT_TRUE(destination.good());
+	}
+	Configuration cfg(path, 1);
+	EXPECT_EQ(cfg.interpolation_points, 1u);
+	EXPECT_EQ(cfg.rate_radius_points, 1u);
+	EXPECT_EQ(cfg.rate_speed_points, 1u);
+	std::remove(path.c_str());
+}
+
 TEST(TestParameterScan, TestConfigurationSummary)
 {
 	// ARRANGE

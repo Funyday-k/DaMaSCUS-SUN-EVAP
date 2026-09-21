@@ -241,14 +241,16 @@ void Configuration::Import_Parameter_Scan_Parameter()
 	rate_radius_points = interpolation_points;
 	rate_speed_points = interpolation_points;
 	rate_max_speed = 0.75;
-	if(config.exists("rate_radius_points"))
+	const bool explicit_rate_radius_points = config.exists("rate_radius_points");
+	const bool explicit_rate_speed_points = config.exists("rate_speed_points");
+	if(explicit_rate_radius_points)
 	{
 		const int configured_points = config.lookup("rate_radius_points");
 		if(configured_points < 0)
 			throw std::invalid_argument("rate_radius_points must be non-negative");
 		rate_radius_points = static_cast<unsigned int>(configured_points);
 	}
-	if(config.exists("rate_speed_points"))
+	if(explicit_rate_speed_points)
 	{
 		const int configured_points = config.lookup("rate_speed_points");
 		if(configured_points < 0)
@@ -257,10 +259,18 @@ void Configuration::Import_Parameter_Scan_Parameter()
 	}
 	if(config.exists("rate_max_speed"))
 		rate_max_speed = config.lookup("rate_max_speed");
-	if(!std::isfinite(rate_max_speed) || rate_max_speed <= 0.0)
-		throw std::invalid_argument("rate_max_speed must be finite and positive");
-	if((rate_radius_points >= 2) != (rate_speed_points >= 2))
-		throw std::invalid_argument("rate_radius_points and rate_speed_points must both enable or disable interpolation");
+	if(!std::isfinite(rate_max_speed) || rate_max_speed <= 0.0 || rate_max_speed > 0.75)
+		throw std::invalid_argument("rate_max_speed must be finite and lie in (0, 0.75]");
+	if(explicit_rate_radius_points || explicit_rate_speed_points)
+	{
+		const bool interpolation_disabled =
+		    rate_radius_points == 0 && rate_speed_points == 0;
+		const bool interpolation_enabled =
+		    rate_radius_points >= 2 && rate_speed_points >= 2;
+		if(!interpolation_disabled && !interpolation_enabled)
+			throw std::invalid_argument(
+			    "explicit rate grid must be (0, 0) or have at least two points in both dimensions");
+	}
 	try
 	{
 		cross_section_min = config.lookup("cross_section_min");

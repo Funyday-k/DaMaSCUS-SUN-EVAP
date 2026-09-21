@@ -489,7 +489,7 @@ Snapshot 会合并各 rank 的当前进度，包括已完成轨迹的 captured /
 
 程序通过 `MPI_THREAD_FUNNELED` 启动 MPI。每个 rank 只有一个独立 heartbeat 线程执行本地状态复制和文件 I/O，所有 MPI 调用仍由主线程完成。
 
-散射率表支持独立设置 `rate_radius_points`、`rate_speed_points` 和自然单位速度上限 `rate_max_speed`；未设置时分别回退到旧的 `interpolation_points`、`interpolation_points` 和 `0.75c`，因此旧配置保持原有行为。超过速度上限的查询直接计算，不改变物理结果；metadata 记录实际网格、查询数、fallback 数/比例和访问到的最大速度。正式运行前应比较 direct、旧方形表和候选矩形表，检查蒸发时间中位数、长尾比例、完整蒸发事件比例和平均散射次数是否在统计误差内一致。
+散射率表支持独立设置 `rate_radius_points`、`rate_speed_points` 和自然单位速度上限 `rate_max_speed`；未设置时分别回退到旧的 `interpolation_points`、`interpolation_points` 和 `0.75c`，因此旧配置保持原有行为。显式新网格只允许 `(0,0)`（关闭）或两维均至少为 2，且 `0 < rate_max_speed <= 0.75`。关闭插值时输入的 `rate_max_speed` 被忽略，metadata 记录实际表上限 `0`。超过已启用表的速度上限时直接计算，不改变物理结果；metadata 还记录实际网格、查询数、fallback 数/比例和访问到的最大速度。正式运行前应比较 direct、旧方形表和候选矩形表，检查蒸发时间中位数、长尾比例、完整蒸发事件比例和平均散射次数是否在统计误差内一致。
 
 每个 snapshot 时间点在 `snapshot/` 目录下生成主报告文件：
 

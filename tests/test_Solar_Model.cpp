@@ -252,6 +252,19 @@ TEST(TestSolarModel, TestScatteringRateFallbackIsCountedWithoutWarning)
 	EXPECT_DOUBLE_EQ(SSM.Maximum_Scattering_Rate_Query_Speed(), query_speed);
 }
 
+TEST(TestSolarModel, TestScatteringRateGridRejectsExcessiveMaximumSpeed)
+{
+	Solar_Model SSM;
+	obscura::DM_Particle_SD DM(0.1 * GeV);
+	DM.Set_Low_Mass_Mode(true);
+	DM.Fix_Coupling_Ratio(1.0, 0.0);
+	DM.Set_Sigma_Proton(1.0e-32 * cm * cm);
+
+	EXPECT_THROW(
+	    SSM.Interpolate_Total_DM_Scattering_Rate(DM, 2, 2, 0.750001),
+	    std::invalid_argument);
+}
+
 TEST(TestSolarModel, TestRectangularGridAccuracyAcrossRepresentativeMasses)
 {
 	const double masses[] = {0.01, 0.1, 1.0};

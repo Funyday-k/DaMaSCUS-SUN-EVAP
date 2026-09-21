@@ -532,8 +532,9 @@ void Solar_Model::Interpolate_Total_DM_Scattering_Rate(obscura::DM_Particle& DM,
 	}
 	else
 	{
-		if(!std::isfinite(v_max) || v_max <= 0.0)
-			throw std::invalid_argument("scattering-rate interpolation maximum speed must be finite and positive");
+		if(!std::isfinite(v_max) || v_max <= 0.0 || v_max > 0.75)
+			throw std::invalid_argument(
+			    "scattering-rate interpolation maximum speed must lie in (0, 0.75]");
 		int mpi_processes, mpi_rank;
 		MPI_Comm_size(MPI_COMM_WORLD, &mpi_processes);
 		MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);

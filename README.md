@@ -173,9 +173,9 @@ Configuration files use libconfig syntax. The most important controls are:
 | `fixed_seed` | Optional non-negative PRNG seed. `0` or an omitted setting uses nondeterministic seeding; a nonzero value is expanded independently by MPI rank. |
 | `max_trajectories` | Optional hard cap on generated trajectories. `0` or unset means no trajectory-count cap. |
 | `interpolation_points` | Legacy square scattering-rate grid size. It remains supported; the three `rate_*` settings below override its corresponding defaults. `0` disables interpolation when no rectangular-grid settings are supplied. |
-| `rate_radius_points` | Optional number of radial rate-grid points. Defaults to `interpolation_points`. |
-| `rate_speed_points` | Optional number of speed rate-grid points. Defaults to `interpolation_points`. |
-| `rate_max_speed` | Optional maximum tabulated DM speed in natural units (`0.02` means `0.02c`). Defaults to the legacy value `0.75`. Faster queries fall back to the direct rate and are counted in metadata. |
+| `rate_radius_points` | Optional number of radial rate-grid points. Defaults to `interpolation_points`. Explicit rate grids must use `(0, 0)` to disable interpolation or at least two points in both dimensions. |
+| `rate_speed_points` | Optional number of speed rate-grid points. Defaults to `interpolation_points`; it follows the same explicit-grid validation as `rate_radius_points`. |
+| `rate_max_speed` | Optional maximum tabulated DM speed in natural units (`0.02` means `0.02c`), constrained to `(0, 0.75]` and defaulting to `0.75`. Faster queries fall back to the direct rate and are counted. When the grid is disabled, this input is ignored and metadata records the actual table limit `0`. |
 | `output_dir` | Root directory for generated result folders; a trailing `/` is optional. A relative path is resolved from the process working directory, so production batch jobs should normally use an absolute path. |
 | `DM_mass` | Dark matter mass in GeV. |
 | `DM_cross_section_nucleon` | DM-nucleon cross section in cm^2. |

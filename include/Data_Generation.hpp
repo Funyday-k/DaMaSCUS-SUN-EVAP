@@ -256,6 +256,7 @@ class Simulation_Data
 	uint64_t rate_fallback_count = 0;
 	double rate_fallback_fraction = 0.0;
 	double rate_max_speed_seen = 0.0;
+	std::string physical_config_json = "{}";
 	bool fixed_injection_capture_run = false;
 	bool thermal_shape_run = false;
 	bool abort_on_invalid_trajectory = false;

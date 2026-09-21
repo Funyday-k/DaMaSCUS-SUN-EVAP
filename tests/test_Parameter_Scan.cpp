@@ -47,6 +47,12 @@ TEST(TestParameterScan, TestConfiguration)
 	EXPECT_EQ(g_top_level_dir, "./unit_test_output/");
 	EXPECT_TRUE(cfg.snapshot_config.enabled);
 	EXPECT_DOUBLE_EQ(cfg.snapshot_config.interval_seconds, 10.0);
+	const std::string physical_config = cfg.Physical_Configuration_JSON();
+	EXPECT_NE(physical_config.find("\"DM_mass\":"), std::string::npos);
+	EXPECT_NE(physical_config.find("\"DM_relative_couplings\":["), std::string::npos);
+	EXPECT_NE(physical_config.find("\"DM_distribution\":\"SHM\""), std::string::npos);
+	EXPECT_NE(physical_config.find("\"SHM_vObserver\":["), std::string::npos);
+	EXPECT_EQ(physical_config.find("\"sample_size\":"), std::string::npos);
 }
 
 TEST(TestParameterScan, TestMinimalCaptureConfigurationDefaults)

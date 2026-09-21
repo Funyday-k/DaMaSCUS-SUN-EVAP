@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <functional>
 #include <iomanip>
@@ -1820,29 +1821,38 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 	{
 		static_assert(std::is_trivially_copyable<TrajectoryDiagnosticEvent>::value,
 		              "trajectory diagnostic events must remain MPI byte-copyable");
-		const int local_event_count = static_cast<int>(trajectory_diagnostic_events.size());
-		std::vector<int> event_counts(mpi_processes, 0);
-		MPI_Gather(&local_event_count, 1, MPI_INT,
-		           mpi_rank == 0 ? event_counts.data() : nullptr, 1, MPI_INT, 0, MPI_COMM_WORLD);
-		std::vector<int> event_recv_counts;
-		std::vector<int> event_displacements;
-		int total_event_count = 0;
-		std::vector<TrajectoryDiagnosticEvent> global_events;
-		if(mpi_rank == 0)
-		{
-			Build_MPI_Gatherv_Layout(event_counts, static_cast<int>(sizeof(TrajectoryDiagnosticEvent)),
-			                         event_recv_counts, event_displacements, total_event_count);
-			global_events.resize(static_cast<size_t>(total_event_count));
-		}
-		MPI_Gatherv(trajectory_diagnostic_events.empty() ? nullptr : trajectory_diagnostic_events.data(),
-		            local_event_count * static_cast<int>(sizeof(TrajectoryDiagnosticEvent)), MPI_BYTE,
-		            mpi_rank == 0 && !global_events.empty() ? global_events.data() : nullptr,
-		            mpi_rank == 0 ? event_recv_counts.data() : nullptr,
-		            mpi_rank == 0 ? event_displacements.data() : nullptr,
-		            MPI_BYTE, 0, MPI_COMM_WORLD);
+		if(trajectory_diagnostic_events.size()
+		   > std::numeric_limits<uint64_t>::max()
+		         / sizeof(TrajectoryDiagnosticEvent))
+			throw std::overflow_error(
+			    "Perform_MPI_Reductions(): trajectory diagnostic event buffer is too large.");
+		const uint64_t local_event_bytes =
+		    static_cast<uint64_t>(trajectory_diagnostic_events.size())
+		    * sizeof(TrajectoryDiagnosticEvent);
+		MPI_Trace_Point(mpi_rank, "before gather diagnostic event bytes");
+		const std::vector<char> gathered_event_bytes =
+		    Gather_MPI_Bytes_To_Root(
+		        trajectory_diagnostic_events.empty()
+		            ? nullptr
+		            : static_cast<const void*>(trajectory_diagnostic_events.data()),
+		        local_event_bytes);
+		MPI_Trace_Point(mpi_rank, "after gather diagnostic event bytes");
 		trajectory_diagnostic_events.clear();
 		if(mpi_rank == 0)
-			trajectory_diagnostic_events.swap(global_events);
+		{
+			if(gathered_event_bytes.size()
+			   % sizeof(TrajectoryDiagnosticEvent) != 0)
+				throw std::runtime_error(
+				    "Perform_MPI_Reductions(): gathered trajectory event bytes are misaligned.");
+			trajectory_diagnostic_events.resize(
+			    gathered_event_bytes.size()
+			    / sizeof(TrajectoryDiagnosticEvent));
+			if(!gathered_event_bytes.empty())
+				std::memcpy(
+				    trajectory_diagnostic_events.data(),
+				    gathered_event_bytes.data(),
+				    gathered_event_bytes.size());
+		}
 
 		std::ostringstream local_replay_stream;
 		local_replay_stream << std::scientific << std::setprecision(17);
@@ -2651,7 +2661,7 @@ void Simulation_Data::Print_Capture_Mode_Summary(unsigned int mpi_rank)
 		          << "CAPTURE MODE summary" << std::endl
 		          << std::endl
 		          << "Termination condition:\t\tpost-scatter E < 0" << std::endl
-		          << "File output:\t\t\tschema-8 capture products" << std::endl
+		          << "File output:\t\t\tschema-9 capture products" << std::endl
 		          << "Simulated trajectories:\t\t" << number_of_trajectories << std::endl
 		          << "Capture-classified trajectories:\t" << Valid_Trajectories() << std::endl
 		          << "Unresolved non-captures:\t\t" << (number_of_trajectories - Valid_Trajectories()) << std::endl
@@ -3140,14 +3150,15 @@ void Simulation_Data::Write_Transport_Products(const std::string& dir, obscura::
     }
     const auto stamp=std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
     std::ostringstream meta; meta << std::setprecision(17);
-    meta << "{\n\"schema_version\":8,\n\"production_accepted\":" << (Production_Ready()?"true":"false")
+    meta << "{\n\"schema_version\":9,\n\"production_accepted\":" << (Production_Ready()?"true":"false")
          << ",\n\"workflow\":\"" << (fixed_injection_capture_run?"fixed_injection_capture":(thermal_shape_run?"thermal_shape_validation":"complete_captured_transport"))
          << "\",\n\"git_commit\":\"" << GIT_COMMIT_HASH << "\",\n\"source_sha256\":\"" << DAMASCUS_SOURCE_SHA256
          << "\",\n\"compiler\":\"" << DAMASCUS_COMPILER << "\",\n\"build_type\":\"" << DAMASCUS_BUILD_TYPE
          << "\",\n\"build_flags\":{\"LTO\":\"" << DAMASCUS_LTO << "\",\"native_arch\":\"" << DAMASCUS_NATIVE_ARCH << "\"}"
          << ",\n\"compiler_build_config\":\"" << DAMASCUS_BUILD_TYPE
          << "\",\n\"timestamp_unix\":" << stamp << ",\n\"seed\":" << diagnostic_base_seed << ",\n\"mpi_ranks\":" << mpi_processes
-         << ",\n\"solar_model\":\"AGSS09\",\n\"halo_model\":\"" << "see input.cfg" << "\",\n\"halo_density_GeV_cm3\":" << In_Units(halo.DM_density,GeV/(cm*cm*cm))
+         << ",\n\"physical_config\":" << physical_config_json
+         << ",\n\"solar_model\":\"AGSS09\",\n\"halo_model\":\"configured\",\n\"halo_density_GeV_cm3\":" << In_Units(halo.DM_density,GeV/(cm*cm*cm))
          << ",\n\"DM_fraction\":" << DM.fractional_density
          << ",\n\"m_chi_GeV\":" << In_Units(DM.mass,GeV) << ",\n\"sigma_SD_cm2\":" << In_Units(DM.Sigma_Proton(),cm*cm)
          << ",\n\"R_inj_rsun\":" << INCIDENT_INJECTION_RSUN

@@ -37,7 +37,7 @@ def summarize(files: list[Path], destination: Path) -> None:
     for file in files:
         record=json.loads(file.read_text()); m=record['metadata']; c=record['capture_metadata']
         for meta,workflow in [(m,'complete_captured_transport'),(c,'fixed_injection_capture')]:
-            if (meta.get('production_accepted') is not True or meta.get('schema_version')!=8
+            if (meta.get('production_accepted') is not True or meta.get('schema_version')!=9
                 or meta.get('workflow')!=workflow or meta.get('N_numerical_failures')!=0
                 or meta.get('N_computational_failures')!=0):
                 raise ValueError(f'{file}: rejected production')

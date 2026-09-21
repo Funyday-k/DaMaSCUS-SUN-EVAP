@@ -1,11 +1,10 @@
+#include <cerrno>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>	 // for strlen
 #include <exception>
 #include <iostream>
-#include <fstream>
-#include <sstream>
-#include <cstdio>
 #include <mpi.h>
 
 #include "libphysica/Natural_Units.hpp"
@@ -84,6 +83,7 @@ int main(int argc, char* argv[])
 	{
 		double u_min = 0.0;
 		Simulation_Data data_set(cfg.sample_size, cfg.max_trajectories, u_min, cfg.isoreflection_rings);
+		data_set.physical_config_json = cfg.Physical_Configuration_JSON();
 		data_set.Configure(TRAJECTORY_BOUNDARY_RSUN * rSun, 1, cfg.maximum_number_of_scatterings);
 		data_set.Configure_Trajectory_Diagnostics(cfg.trajectory_diagnostic_config);
 		const std::string output_prefix = cfg.capture_mode ? "results_capture_" : "results_";
@@ -109,19 +109,10 @@ int main(int argc, char* argv[])
 		};
 		if(!root_output_succeeded([&]() {
 			data_set.Prepare_Output_Directory(output_path);
-            // Read first: argv[1] may itself be the saved input.cfg on a rerun.
-            std::ifstream input_config(argv[1], std::ios::binary);
-            if(!input_config) throw std::runtime_error("Cannot read input configuration");
-            std::ostringstream config_contents;
-            config_contents << input_config.rdbuf();
-            if(input_config.bad() || config_contents.str().empty())
-                throw std::runtime_error("Cannot read complete input configuration");
-            const std::string saved_path = output_path + "input.cfg";
-            const std::string temporary_path = saved_path + ".tmp";
-            std::ofstream saved_config(temporary_path, std::ios::binary);
-            saved_config << config_contents.str(); saved_config.close();
-            if(!saved_config || std::rename(temporary_path.c_str(), saved_path.c_str()) != 0)
-                throw std::runtime_error("Cannot save input configuration");
+			const std::string legacy_config = output_path + "input.cfg";
+			errno = 0;
+			if(std::remove(legacy_config.c_str()) != 0 && errno != ENOENT)
+				throw std::runtime_error("Cannot remove legacy output configuration");
 		}))
 		{
 			MPI_Finalize();

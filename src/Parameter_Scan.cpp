@@ -11,6 +11,7 @@
 #include <limits>
 #include <mpi.h>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unistd.h>
@@ -84,6 +85,101 @@ bool Write_P_Value_Grid_Atomically(
 namespace
 {
 
+void Append_JSON_String(std::ostringstream& output, const std::string& value)
+{
+	output << '"';
+	for(unsigned char character : value)
+	{
+		switch(character)
+		{
+			case '"': output << "\\\""; break;
+			case '\\': output << "\\\\"; break;
+			case '\b': output << "\\b"; break;
+			case '\f': output << "\\f"; break;
+			case '\n': output << "\\n"; break;
+			case '\r': output << "\\r"; break;
+			case '\t': output << "\\t"; break;
+			default:
+				if(character < 0x20)
+				{
+					const auto flags = output.flags();
+					const char fill = output.fill();
+					output << "\\u" << std::hex << std::setw(4)
+					       << std::setfill('0') << static_cast<int>(character);
+					output.flags(flags);
+					output.fill(fill);
+				}
+				else
+					output << static_cast<char>(character);
+		}
+	}
+	output << '"';
+}
+
+void Append_JSON_Setting(std::ostringstream& output, const Setting& setting)
+{
+	switch(setting.getType())
+	{
+		case Setting::TypeInt:
+			output << static_cast<int>(setting);
+			break;
+		case Setting::TypeInt64:
+			output << static_cast<long long>(setting);
+			break;
+		case Setting::TypeFloat:
+			output << static_cast<double>(setting);
+			break;
+		case Setting::TypeString:
+			Append_JSON_String(output, static_cast<const char*>(setting));
+			break;
+		case Setting::TypeBoolean:
+			output << (static_cast<bool>(setting) ? "true" : "false");
+			break;
+		case Setting::TypeGroup:
+		{
+			std::vector<std::string> names;
+			for(int index = 0; index < setting.getLength(); ++index)
+				names.emplace_back(setting[index].getName());
+			std::sort(names.begin(), names.end());
+			output << '{';
+			for(std::size_t index = 0; index < names.size(); ++index)
+			{
+				if(index > 0)
+					output << ',';
+				Append_JSON_String(output, names[index]);
+				output << ':';
+				Append_JSON_Setting(output, setting.lookup(names[index]));
+			}
+			output << '}';
+			break;
+		}
+		case Setting::TypeArray:
+		case Setting::TypeList:
+			output << '[';
+			for(int index = 0; index < setting.getLength(); ++index)
+			{
+				if(index > 0)
+					output << ',';
+				Append_JSON_Setting(output, setting[index]);
+			}
+			output << ']';
+			break;
+		case Setting::TypeNone:
+			output << "null";
+			break;
+	}
+}
+
+bool Is_Physical_Setting(const std::string& name)
+{
+	const std::vector<std::string> prefixes{"DM_", "SHM_", "SHMpp_", "solar_"};
+	return std::any_of(
+	    prefixes.begin(), prefixes.end(),
+	    [&](const std::string& prefix) {
+		    return name.compare(0, prefix.size(), prefix) == 0;
+	    });
+}
+
 double Checked_Probability(double p, const std::string& context)
 {
 	if(!std::isfinite(p) || p < 0.0 || p > 1.0)
@@ -122,8 +218,17 @@ Configuration::Configuration(std::string cfg_filename, int MPI_rank)
 	// 1. Read the cfg file.
 	Read_Config_File();
 
-	// 2. Find the run ID, create a folder and copy the cfg file.
-	Initialize_Result_Folder(MPI_rank);
+	// 2. Retain the run ID, but do not copy the cfg file into result folders.
+	try
+	{
+		ID = config.lookup("ID").c_str();
+	}
+	catch(const SettingNotFoundException&)
+	{
+		std::cerr << "No 'ID' setting in configuration file." << std::endl;
+		std::exit(EXIT_FAILURE);
+	}
+	results_path = PROJECT_DIR "results/" + ID + "/";
 
 	// 3. DM particle
 	Construct_DM_Particle();
@@ -139,6 +244,36 @@ Configuration::Configuration(std::string cfg_filename, int MPI_rank)
 
 	// 7. DaMaSCUS specific parameters
 	Import_Parameter_Scan_Parameter();
+
+	// The legacy results/<ID> directory is used only by parameter scans.
+	if(run_mode == "Parameter scan")
+		Create_Result_Folder(MPI_rank);
+}
+
+std::string Configuration::Physical_Configuration_JSON() const
+{
+	const Setting& root = config.getRoot();
+	std::vector<std::string> names;
+	for(int index = 0; index < root.getLength(); ++index)
+	{
+		const char* setting_name = root[index].getName();
+		if(setting_name != nullptr && Is_Physical_Setting(setting_name))
+			names.emplace_back(setting_name);
+	}
+	std::sort(names.begin(), names.end());
+
+	std::ostringstream output;
+	output << std::setprecision(std::numeric_limits<double>::max_digits10) << '{';
+	for(std::size_t index = 0; index < names.size(); ++index)
+	{
+		if(index > 0)
+			output << ',';
+		Append_JSON_String(output, names[index]);
+		output << ':';
+		Append_JSON_Setting(output, root.lookup(names[index]));
+	}
+	output << '}';
+	return output.str();
 }
 
 void Configuration::Import_Parameter_Scan_Parameter()

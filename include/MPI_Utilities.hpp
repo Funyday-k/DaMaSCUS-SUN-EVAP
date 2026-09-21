@@ -17,6 +17,15 @@ void Allreduce_MPI_Histogram(
 	std::vector<double>& histogram,
 	MPI_Comm communicator = MPI_COMM_WORLD);
 
+// Collectively concatenate rank-local byte buffers in rank order. The
+// concatenated bytes are returned only on root; every other rank returns an
+// empty vector. Empty buffers never enter a zero-count data operation.
+std::vector<char> Gather_MPI_Bytes_To_Root(
+	const void* local_data,
+	uint64_t local_bytes,
+	int root = 0,
+	MPI_Comm communicator = MPI_COMM_WORLD);
+
 // Collectively concatenate rank-local text in rank order. The concatenated
 // text is returned only on root; every other rank returns an empty string.
 //

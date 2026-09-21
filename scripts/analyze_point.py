@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Analyze schema-8 complete histories with an independent fixed-injection capture run.
+"""Analyze schema-9 complete histories with an independent fixed-injection capture run.
 
 All densities use cm; trajectory moments are supplied in seconds and km^2/s.
 No published detector sensitivity is inferred from a continuum flux threshold.
@@ -8,7 +8,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import re
 from pathlib import Path
 import numpy as np
 
@@ -25,7 +24,7 @@ def read_json(path: Path) -> dict:
 
 
 def normalize_rate_grid_metadata(meta: dict) -> None:
-    """Add the exact legacy square-grid defaults to older schema-8 products."""
+    """Add the exact legacy square-grid defaults to older schema-9 products."""
     legacy = meta.get('interpolation_points')
     if not isinstance(legacy, int) or legacy < 0:
         raise ValueError('invalid interpolation_points metadata')
@@ -44,7 +43,7 @@ def normalize_rate_grid_metadata(meta: dict) -> None:
 def require_accepted(path: Path, workflow: str) -> dict:
     """Require an accepted, explicitly identified production product."""
     meta = read_json(path / 'metadata.json')
-    if meta.get('schema_version') != 8 or meta.get('workflow') != workflow:
+    if meta.get('schema_version') != 9 or meta.get('workflow') != workflow:
         raise ValueError(f'{path}: wrong schema or workflow')
     if not meta.get('source_sha256') or not meta.get('seed'):
         raise ValueError(f'{path}: missing source hash or reproducible seed')
@@ -55,15 +54,6 @@ def require_accepted(path: Path, workflow: str) -> dict:
     normalize_rate_grid_metadata(meta)
     rank_seeds(meta)
     return meta
-
-
-def physical_config(path: Path) -> dict:
-    """Extract physical assignments, retaining quoted strings while dropping comments."""
-    text=(path/'input.cfg').read_text()
-    text=re.sub(r'"(?:\\.|[^"\\])*"|/\*.*?\*/|//[^\n]*|#[^\n]*',
-                lambda match: match[0] if match[0].startswith('"') else '',text,flags=re.S)
-    return {key:re.sub(r'\s+', '', value) for key,value in
-            re.findall(r'\b((?:DM_|SHM_|SHMpp_|solar_)[A-Za-z0-9_]*)\s*=\s*([^;]+);',text)}
 
 
 def rank_seeds(meta: dict) -> set[int]:
@@ -252,7 +242,9 @@ def analyze(output: Path, capture: Path, sigma_v: float = 3e-26,
                 'max_optical_depth_step','optical_depth_relative_tolerance']:
         if m[key] != c[key]:
             raise ValueError(f'capture/transport mismatch: {key}')
-    if physical_config(output)!=physical_config(capture):
+    if not isinstance(m.get('physical_config'),dict) or not m['physical_config']:
+        raise ValueError('transport metadata is missing physical configuration')
+    if m['physical_config']!=c.get('physical_config'):
         raise ValueError('capture/transport physical configuration mismatch')
     if rank_seeds(m) & rank_seeds(c):
         raise ValueError('independent capture and transport require disjoint MPI RNG seeds')
@@ -342,7 +334,7 @@ def analyze(output: Path, capture: Path, sigma_v: float = 3e-26,
     bias=(BLOCKS-1)*(transport_array.mean(axis=0)-central_array)
     bias+=(BLOCKS-1)*(capture_array.mean(axis=0)-central_array)
     corrected=central_array-bias
-    result={'analysis_version':2,'physical_config':physical_config(output),
+    result={'analysis_version':2,'physical_config':m['physical_config'],
             'solar_reference_sha256':hashlib.sha256((output/'solar_reference.tsv').read_bytes()).hexdigest(),
             'metadata':m,'capture_metadata':c,'sigma_v_cm3_s':sigma_v,'central':point,
             'jackknife_se':dict(zip(keys,errors)),

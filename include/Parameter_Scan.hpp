@@ -47,6 +47,9 @@ class Configuration : public obscura::Configuration
 	bool compute_halo_constraints, perform_full_scan, capture_mode;
 	explicit Configuration(std::string cfg_filename, int MPI_rank = 0);
 
+	// Serialize only physics/model settings into metadata so result directories
+	// remain self-describing without retaining a copy of the input cfg file.
+	std::string Physical_Configuration_JSON() const;
 	void Print_Summary(int mpi_rank = 0) override;
 };
 

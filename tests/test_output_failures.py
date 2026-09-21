@@ -68,8 +68,8 @@ def main():
         assert metadata['N_inj']<=int(args.ranks)
         print('failed production: stopped without replacement loop; exit=2')
 
-        # A saved configuration is a supported input on a rerun. Reading it must
-        # finish before the output writer replaces that same pathname.
+        # Result directories must not contain a copied configuration. Reusing
+        # the original external configuration still supports reruns.
         output=root/'rerun'
         text=re.sub(r'output_dir = ".*?";', f'output_dir = "{output}/";',template)
         text=text.replace('run_mode = "Parameter point";','run_mode = "Capture";')
@@ -77,6 +77,9 @@ def main():
         text+='\nfixed_seed = 20260910;\n'
         config=root/'rerun.cfg'; config.write_text(text)
         product=output/'results_capture_-2.000000_-80.000000'
+        product.mkdir(parents=True)
+        saved=product/'input.cfg'
+        saved.write_text('legacy copied configuration')
         def run(path: Path) -> None:
             command=[args.program,str(path)]
             if args.mpiexec:
@@ -85,16 +88,14 @@ def main():
             assert result.returncode==0,result.stdout
         run(config)
         rate=json.loads((product/'capture_summary.json').read_text())['C_geom_s_inv']
-        saved=product/'input.cfg'
-        assert saved.read_text()==text
-        run(saved)
-        assert saved.read_text()==text, 'rerun corrupted input.cfg'
-        saved.write_text(text.replace('DM_fraction = 1.0;','DM_fraction = 0.25;'))
-        run(saved)
+        assert not saved.exists(), 'result directory contains input.cfg'
+        config.write_text(text.replace('DM_fraction = 1.0;','DM_fraction = 0.25;'))
+        run(config)
         scaled=json.loads((product/'capture_summary.json').read_text())['C_geom_s_inv']
         assert math.isclose(scaled/rate,.25,rel_tol=1e-13)
         assert json.loads((product/'metadata.json').read_text())['DM_fraction']==.25
-        print('rerun: preserved configuration; geometric rate scales with DM_fraction')
+        assert not saved.exists(), 'rerun created input.cfg'
+        print('rerun: no copied configuration; geometric rate scales with DM_fraction')
 
 
 if __name__ == "__main__":

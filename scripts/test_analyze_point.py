@@ -42,9 +42,9 @@ class GeometryTests(unittest.TestCase):
     def test_unfinished_histories_and_wrong_workflows_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             p=Path(tmp)
-            (p/'metadata.json').write_text(json.dumps({'schema_version':8,'workflow':'complete_captured_transport','production_accepted':False}))
+            (p/'metadata.json').write_text(json.dumps({'schema_version':9,'workflow':'complete_captured_transport','production_accepted':False}))
             with self.assertRaises(ValueError): require_accepted(p,'complete_captured_transport')
-            (p/'metadata.json').write_text(json.dumps({'schema_version':8,'workflow':'thermal_shape_validation','production_accepted':True}))
+            (p/'metadata.json').write_text(json.dumps({'schema_version':9,'workflow':'thermal_shape_validation','production_accepted':True}))
             with self.assertRaises(ValueError): require_accepted(p,'complete_captured_transport')
 
 class AnalysisContractTests(unittest.TestCase):
@@ -53,9 +53,11 @@ class AnalysisContractTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root=Path(self.tmp.name); self.output=self.root/'transport'; self.capture=self.root/'capture'
         self.output.mkdir(); self.capture.mkdir()
-        self.meta={'schema_version':8,'production_accepted':True,'workflow':'complete_captured_transport',
+        self.meta={'schema_version':9,'production_accepted':True,'workflow':'complete_captured_transport',
             'source_sha256':'fixture-source','seed':101,'mpi_ranks':1,'solar_model':'fixture',
             'halo_model':'SHM','halo_density_GeV_cm3':.4,'m_chi_GeV':.01,'sigma_SD_cm2':1e-32,
+            'physical_config':{'DM_mass':.01,'DM_cross_section_nucleon':1e-32,
+                               'DM_fraction':1.0,'DM_distribution':'SHM'},
             'R_inj_rsun':2.0,'R_match_rsun':1.0,'R_incident_au':1100,
             'R_transit_reference_rsun':3,'R_remove_rsun':3,
             'interpolation_points':0,'rate_radius_points':0,'rate_speed_points':0,
@@ -74,7 +76,6 @@ class AnalysisContractTests(unittest.TestCase):
                   'f_cap':672/1280,'blocks':[[20,10+k%2] for k in range(BLOCKS)]}
         for directory,meta in [(self.output,self.meta),(self.capture,self.cmeta)]:
             self.write_json(directory/'metadata.json',meta)
-            (directory/'input.cfg').write_text('DM_mass=.01; DM_cross_section_nucleon=1e-32; DM_fraction=1; DM_distribution="SHM";')
             (directory/'solar_reference.tsv').write_text('same numerical solar reference')
         self.write_json(self.capture/'capture_summary.json',self.cap)
         blocks=[]; classes=[]; records=[]
@@ -141,6 +142,11 @@ class AnalysisContractTests(unittest.TestCase):
         self.cmeta['R_remove_rsun']=550
         self.write_json(self.capture/'metadata.json',self.cmeta)
         with self.assertRaisesRegex(ValueError,'R_remove_rsun'): self.run_analysis()
+
+    def test_physical_configuration_mismatch_is_rejected(self) -> None:
+        self.cmeta['physical_config']={**self.cmeta['physical_config'],'DM_spin':1.0}
+        self.write_json(self.capture/'metadata.json',self.cmeta)
+        with self.assertRaisesRegex(ValueError,'physical configuration'): self.run_analysis()
 
     def test_capture_block_mismatch_is_rejected(self) -> None:
         self.cap['blocks'][0][1]+=1

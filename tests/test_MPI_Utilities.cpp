@@ -81,6 +81,40 @@ int main(int argc, char* argv[])
 	// gather on root while leaving non-root ranks inside the collective.
 	MPI_Barrier(MPI_COMM_WORLD);
 
+	const std::vector<char> all_empty_bytes =
+	    Gather_MPI_Bytes_To_Root(nullptr, 0);
+	Check(
+	    all_empty_bytes.empty(),
+	    "all-empty byte gather did not return an empty vector",
+	    rank,
+	    failures);
+
+	std::vector<char> mixed_local_bytes;
+	if(rank == 0)
+		mixed_local_bytes = {'A', '\0'};
+	else if(rank == 2)
+		mixed_local_bytes = {'B', '\1', 'C'};
+	const std::vector<char> mixed_bytes = Gather_MPI_Bytes_To_Root(
+	    mixed_local_bytes.empty() ? nullptr : mixed_local_bytes.data(),
+	    static_cast<uint64_t>(mixed_local_bytes.size()));
+	if(rank == 0)
+	{
+		const std::vector<char> expected = {'A', '\0', 'B', '\1', 'C'};
+		Check(
+		    mixed_bytes == expected,
+		    "mixed empty/non-empty byte gather lost rank order or embedded nulls",
+		    rank,
+		    failures);
+	}
+	else
+	{
+		Check(
+		    mixed_bytes.empty(),
+		    "non-root rank received gathered bytes",
+		    rank,
+		    failures);
+	}
+
 	// Different orbital extents must pad with zeros before summing. Include
 	// an empty rank and a second reduction after only one rank grows again.
 	std::vector<double> histogram(rank * 600, static_cast<double>(rank + 1));

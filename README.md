@@ -3,7 +3,7 @@
 Dark Matter Simulation Code for the Sun, with capture- and evaporation-focused
 extensions.
 
-Current schema-8 transport definitions and research status: [separate boundary revision](BOUNDARY_1100RSUN_REVISION.md). The [1100 AU boundary revision](BOUNDARY_1100AU_REVISION.md) and earlier [transport revision](TRANSPORT_REVISION_20260918.md) are historical.
+The current schema-8 transport definitions, configuration, output contract, and validation scope are documented below.
 
 ## Overview
 

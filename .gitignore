@@ -55,9 +55,6 @@
 /examples/*
 !/examples/*.cfg
 
-# Historical transport analysis and current boundary contract.
-!/TRANSPORT_REVISION_20260918.md
-!/BOUNDARY_1100RSUN_REVISION.md
 !/scripts/
 /scripts/*
 !/scripts/analyze_point.py

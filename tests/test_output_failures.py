@@ -68,34 +68,30 @@ def main():
         assert metadata['N_inj']<=int(args.ranks)
         print('failed production: stopped without replacement loop; exit=2')
 
-        # Result directories must not contain a copied configuration. Reusing
-        # the original external configuration still supports reruns.
-        output=root/'rerun'
+        # Capture never touches output_dir, including on a rerun.
+        output=root/'capture_output_is_a_file'
+        output.write_text('do not touch')
         text=re.sub(r'output_dir = ".*?";', f'output_dir = "{output}/";',template)
         text=text.replace('run_mode = "Parameter point";','run_mode = "Capture";')
         text=text.replace('DM_cross_section_nucleon = 1.0e-28;','DM_cross_section_nucleon = 1.0e-80;')
         text+='\nfixed_seed = 20260910;\n'
         config=root/'rerun.cfg'; config.write_text(text)
-        product=output/'results_capture_-2.000000_-80.000000'
-        product.mkdir(parents=True)
-        saved=product/'input.cfg'
-        saved.write_text('legacy copied configuration')
-        def run(path: Path) -> None:
+        def run(path: Path) -> dict:
             command=[args.program,str(path)]
             if args.mpiexec:
                 command=[args.mpiexec,args.numproc_flag,args.ranks]+command
             result=subprocess.run(command,cwd=root,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=20)
             assert result.returncode==0,result.stdout
-        run(config)
-        rate=json.loads((product/'capture_summary.json').read_text())['C_geom_s_inv']
-        assert not saved.exists(), 'result directory contains input.cfg'
+            records=[line.split('=',1)[1] for line in result.stdout.splitlines() if line.startswith('CAPTURE_RESULT_JSON=')]
+            assert len(records)==1,result.stdout
+            return json.loads(records[0])
+        rate=run(config)['C_geom_s_inv']
         config.write_text(text.replace('DM_fraction = 1.0;','DM_fraction = 0.25;'))
-        run(config)
-        scaled=json.loads((product/'capture_summary.json').read_text())['C_geom_s_inv']
-        assert math.isclose(scaled/rate,.25,rel_tol=1e-13)
-        assert json.loads((product/'metadata.json').read_text())['DM_fraction']==.25
-        assert not saved.exists(), 'rerun created input.cfg'
-        print('rerun: no copied configuration; geometric rate scales with DM_fraction')
+        scaled=run(config)
+        assert math.isclose(scaled['C_geom_s_inv']/rate,.25,rel_tol=1e-13)
+        assert scaled['physical_config']['DM_fraction']==.25
+        assert output.read_text()=='do not touch'
+        print('capture rerun: stdout only; geometric rate scales with DM_fraction')
 
 
 if __name__ == "__main__":

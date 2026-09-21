@@ -709,6 +709,14 @@ void Simulation_Data::Configure_Trajectory_Diagnostics(const TrajectoryDiagnosti
 void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, SnapshotConfig snapshot_cfg, unsigned int fixed_seed, bool capture_mode)
 {
 	fixed_injection_capture_run = capture_mode;
+	max_trajectory_wall_time_sec = snapshot_cfg.max_trajectory_wall_time_sec;
+	const bool local_diagnostics = !abort_on_invalid_trajectory && !capture_mode;
+	if(!local_diagnostics)
+	{
+		trajectory_diagnostic_config.summary_enabled = false;
+		trajectory_diagnostic_config.events_enabled = false;
+		trajectory_diagnostic_config.trace_rate = 0.0;
+	}
 	// Scalar captured histories are required output, independent of event tracing.
 	evaporation_diagnostics_enabled = !capture_mode;
 	if(capture_mode)
@@ -728,12 +736,12 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
     }
 	diagnostic_base_seed = fixed_seed;
 	diagnostic_run_id = 0;
-	if(evaporation_diagnostics_enabled && mpi_rank == 0)
+	if(local_diagnostics && mpi_rank == 0)
 	{
 		diagnostic_run_id = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
 			std::chrono::system_clock::now().time_since_epoch()).count());
 	}
-	if(evaporation_diagnostics_enabled)
+	if(local_diagnostics)
 		MPI_Bcast(&diagnostic_run_id, 1, MPI_UINT64_T, 0, MPI_COMM_WORLD);
 
 	auto time_start = std::chrono::steady_clock::now();
@@ -942,7 +950,8 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 			// Copying the engine is cheap compared with serializing it. Keep
 			// exact pre-trajectory states in memory, and serialize only the rare
 			// invalid trajectories (or explicitly selected diagnostic traces).
-			const std::mt19937 replay_rng_before_initial_conditions = simulator.PRNG;
+			const std::unique_ptr<std::mt19937> replay_rng_before_initial_conditions(
+			    local_diagnostics ? new std::mt19937(simulator.PRNG) : nullptr);
 			const std::string rng_state_before_initial_conditions = trace_selected
 			                                                       ? simulator.Serialize_PRNG_State()
 			                                                       : std::string();
@@ -958,7 +967,8 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 			        simulator.outgoing_recording_radius_km, incident_inbound);
 			if(initial_shift_ok)
 				IC.time = 0.0;
-			const std::mt19937 replay_rng_before_simulation = simulator.PRNG;
+			const std::unique_ptr<std::mt19937> replay_rng_before_simulation(
+			    local_diagnostics ? new std::mt19937(simulator.PRNG) : nullptr);
 			const std::string rng_state_before_simulation = trace_selected
 			                                                ? simulator.Serialize_PRNG_State()
 			                                                : std::string();
@@ -987,7 +997,7 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 			bool invalid_recorded = false;
 			auto record_invalid_trajectory = [&](InvalidTrajectoryStage stage)
 			{
-				if(invalid_recorded)
+				if(!local_diagnostics || invalid_recorded)
 					return;
 				InvalidTrajectoryRecord record;
 				record.rank = mpi_rank;
@@ -1051,10 +1061,10 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 				}
 				record.rng_state_before_initial_conditions =
 				    trace_selected ? rng_state_before_initial_conditions
-				                   : Serialize_PRNG_State(replay_rng_before_initial_conditions);
+				                   : Serialize_PRNG_State(*replay_rng_before_initial_conditions);
 				record.rng_state_before_simulation =
 				    trace_selected ? rng_state_before_simulation
-				                   : Serialize_PRNG_State(replay_rng_before_simulation);
+				                   : Serialize_PRNG_State(*replay_rng_before_simulation);
 				invalid_trajectory_records.push_back(std::move(record));
 				invalid_recorded = true;
 			};
@@ -1197,7 +1207,7 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 						CompactEvaporationEvent event;
 						if(Make_Compact_Evaporation_Event(rec, event))
 						{
-							compact_evaporation_events.push_back(event);
+							if(local_diagnostics) compact_evaporation_events.push_back(event);
 							trajectory_snapshot_evaporation_events.push_back(MakeSnapshotEvaporationProgressEntry(event));
 						}
 					}
@@ -1236,7 +1246,7 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 				}
 			}
 
-            if(initial_shift_ok) {
+            if(initial_shift_ok && !capture_mode) {
                 auto add_block = [&](const RadialHistogram& dt, const RadialHistogram& v2dt,
                                      RadialHistogram& bdt, RadialHistogram& bv2dt) {
                     GrowRadialHistograms(dt.size()*RESIDENCE_JACKKNIFE_BLOCKS,bdt,bv2dt);
@@ -1520,12 +1530,11 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 	early_stop_reason = static_cast<SimulationStopReason>(global_stop_reason);
 	early_stopped = early_stop_reason != SimulationStopReason::None;
 
-	Gather_Invalid_Trajectories();
+	if(!abort_on_invalid_trajectory && !capture_mode)
+		Gather_Invalid_Trajectories();
 
 	if(capture_mode)
 	{
-		Allreduce_MPI_Histogram(incident_inbound_block_dt);
-		Allreduce_MPI_Histogram(incident_inbound_block_v2dt);
 		MPI_Allreduce(MPI_IN_PLACE,jackknife_attempted_counts.data(),RESIDENCE_JACKKNIFE_BLOCKS,MPI_UNSIGNED_LONG,MPI_SUM,MPI_COMM_WORLD);
 		MPI_Allreduce(MPI_IN_PLACE,jackknife_captured_counts.data(),RESIDENCE_JACKKNIFE_BLOCKS,MPI_UNSIGNED_LONG,MPI_SUM,MPI_COMM_WORLD);
 		MPI_Trace_Point(mpi_rank, "before allreduce computing_time capture");
@@ -1769,7 +1778,7 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 			for(const auto& record : evaporation_records)
 			{
 				CompactEvaporationEvent event;
-				if(Make_Compact_Evaporation_Event(record, event))
+				if(!abort_on_invalid_trajectory && Make_Compact_Evaporation_Event(record, event))
 					compact_evaporation_events.push_back(event);
 			}
 		}
@@ -1817,7 +1826,7 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 	}
 
 
-	if(evaporation_diagnostics_enabled)
+	if(trajectory_diagnostic_config.events_enabled)
 	{
 		static_assert(std::is_trivially_copyable<TrajectoryDiagnosticEvent>::value,
 		              "trajectory diagnostic events must remain MPI byte-copyable");
@@ -2817,7 +2826,7 @@ bool Simulation_Data::Production_Ready() const
 
 void Simulation_Data::Write_Invalid_Trajectories(const std::string& output_dir)
 {
-	// 4. Always-on replay ledger for trajectories excluded by numerical or
+	// Local replay ledger for trajectories excluded by numerical or
 	// computational validity rules. A header-only file is written when no
 	// invalid trajectory occurred so downstream checks never need to guess.
 	{
@@ -2906,7 +2915,7 @@ void Simulation_Data::Gather_Invalid_Trajectories()
 {
 	// Invalid trajectories are rare but scientifically high leverage because
 	// excluding a long-lived capture can bias the residence measure. Gather a
-	// compact, replayable ledger even when full trajectory diagnostics are off.
+	// compact, replayable ledger for local runs even when full diagnostics are off.
 	std::ostringstream local_invalid_stream;
 	local_invalid_stream << std::scientific << std::setprecision(17);
 	for(const auto& record : invalid_trajectory_records)
@@ -3058,9 +3067,81 @@ void Simulation_Data::Gather_Invalid_Trajectories()
 
 }
 
+std::string Simulation_Data::Run_Metadata_JSON(obscura::DM_Particle& DM, obscura::DM_Distribution& halo) const
+{
+    const auto stamp=std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    std::ostringstream meta; meta << std::setprecision(17);
+    meta << "\"production_accepted\":" << (Production_Ready()?"true":"false")
+         << ",\n\"workflow\":\"" << (fixed_injection_capture_run?"fixed_injection_capture":(thermal_shape_run?"thermal_shape_validation":"complete_captured_transport"))
+         << "\",\n\"git_commit\":\"" << GIT_COMMIT_HASH << "\",\n\"source_sha256\":\"" << DAMASCUS_SOURCE_SHA256
+         << "\",\n\"compiler\":\"" << DAMASCUS_COMPILER << "\",\n\"build_type\":\"" << DAMASCUS_BUILD_TYPE
+         << "\",\n\"build_flags\":{\"LTO\":\"" << DAMASCUS_LTO << "\",\"native_arch\":\"" << DAMASCUS_NATIVE_ARCH << "\"}"
+         << ",\n\"compiler_build_config\":\"" << DAMASCUS_BUILD_TYPE
+         << "\",\n\"timestamp_unix\":" << stamp << ",\n\"seed\":" << diagnostic_base_seed << ",\n\"mpi_ranks\":" << mpi_processes
+         << ",\n\"physical_config\":" << physical_config_json
+         << ",\n\"solar_model\":\"AGSS09\",\n\"halo_model\":\"configured\",\n\"halo_density_GeV_cm3\":" << In_Units(halo.DM_density,GeV/(cm*cm*cm))
+         << ",\n\"DM_fraction\":" << DM.fractional_density
+         << ",\n\"m_chi_GeV\":" << In_Units(DM.mass,GeV) << ",\n\"sigma_SD_cm2\":" << In_Units(DM.Sigma_Proton(),cm*cm)
+         << ",\n\"R_inj_rsun\":" << INCIDENT_INJECTION_RSUN
+         << ",\n\"R_match_rsun\":" << In_Units(initial_and_final_radius,rSun)
+         << ",\n\"R_incident_au\":" << INCIDENT_SAMPLING_RADIUS_AU
+         << ",\n\"R_transit_reference_rsun\":" << std::min(outer_removal_radius_rsun, TRANSIT_REFERENCE_RSUN)
+		 << ",\n\"R_remove_rsun\":" << outer_removal_radius_rsun
+		 << ",\n\"interpolation_points\":" << interpolation_points
+		 << ",\n\"rate_radius_points\":" << rate_radius_points
+		 << ",\n\"rate_speed_points\":" << rate_speed_points
+		 << ",\n\"rate_max_speed\":" << rate_max_speed
+		 << ",\n\"rate_query_count\":" << rate_query_count
+		 << ",\n\"rate_fallback_count\":" << rate_fallback_count
+		 << ",\n\"rate_fallback_fraction\":" << rate_fallback_fraction
+		 << ",\n\"rate_max_speed_seen\":" << rate_max_speed_seen
+		 << ",\n\"rk_position_tolerance_km\":" << RK45PositionToleranceKm()
+         << ",\n\"rk_velocity_tolerance_km_s\":" << RK45VelocityToleranceKmPerSec()
+         << ",\n\"rk_phase_tolerance\":" << RK45PhaseTolerance()
+         << ",\n\"max_optical_depth_step\":" << NormalModeMaxOpticalDepthStep()
+         << ",\n\"optical_depth_relative_tolerance\":" << OpticalDepthRelativeTolerance()
+         << ",\n\"requested_samples\":" << requested_captured_particles
+         << ",\n\"N_inj\":" << number_of_trajectories << ",\n\"N_capt\":" << number_of_captured_particles << ",\n\"N_completed\":" << number_of_residence_samples
+         << ",\n\"N_outer_removed\":" << number_of_outer_domain_removed_particles << ",\n\"N_numerical_failures\":" << number_of_numerical_failures
+         << ",\n\"N_computational_failures\":" << number_of_computational_truncations << ",\n\"runtime_seconds\":" << computing_time
+
+         << ",\n\"max_trajectories\":" << (maximum_trajectories == std::numeric_limits<uint64_t>::max() ? 0 : maximum_trajectories)
+         << ",\n\"maximum_number_of_scatterings\":" << maximum_number_of_scatterings
+         << ",\n\"max_trajectory_wall_time_sec\":" << max_trajectory_wall_time_sec
+         << ",\n\"production_mode\":" << (abort_on_invalid_trajectory ? "true" : "false")
+         << ",\n\"thermal_validation_mode\":" << (thermal_shape_run ? "true" : "false")
+         << ",\n\"early_stop_reason\":\"" << Stop_Reason_Key(early_stop_reason) << "\"";
+    return meta.str();
+}
+
+void Simulation_Data::Print_Capture_Result_JSON(obscura::DM_Particle& DM, obscura::DM_Distribution& halo)
+{
+    if(mpi_rank != 0) return;
+    const double geom=In_Units(M_PI*rSun*rSun*halo.DM_density*DM.fractional_density/DM.mass
+        *(halo.Average_Speed()+2*G_Newton*mSun/rSun*halo.Eta_Function(0.0)),1/sec);
+    std::ostringstream capture; capture << std::setprecision(17);
+    capture << "{\"capture_result_schema\":1," << Run_Metadata_JSON(DM, halo)
+        << ",\"fixed_injection\":" << (fixed_injection_capture_run?"true":"false")
+        << ",\n\"C_geom_s_inv\":" << geom << ",\n\"f_cap\":"
+        << (number_of_trajectories?static_cast<double>(number_of_captured_particles)/number_of_trajectories:0)
+        << ",\n\"blocks\":[";
+    for(std::size_t k=0;k<RESIDENCE_JACKKNIFE_BLOCKS;++k) {
+        if(k) capture << ',';
+        capture << '[' << jackknife_attempted_counts[k] << ',' << jackknife_captured_counts[k] << ']';
+    }
+    capture << "],\"C_capture_s_inv\":"
+        << geom * (number_of_trajectories ? static_cast<double>(number_of_captured_particles)/number_of_trajectories : 0.0)
+        << "}";
+    std::string record = capture.str();
+    record.erase(std::remove(record.begin(), record.end(), '\n'), record.end());
+    std::cout << "CAPTURE_RESULT_JSON=" << record << std::endl;
+    if(!std::cout) throw std::runtime_error("Cannot write capture result to stdout");
+}
+
 void Simulation_Data::Write_Transport_Products(const std::string& dir, obscura::DM_Particle& DM, obscura::DM_Distribution& halo, Solar_Model& solar)
 {
     if(mpi_rank != 0) return;
+    if(fixed_injection_capture_run) throw std::logic_error("Capture results belong on stdout");
     if(!Ensure_Directory_Exists(dir)) throw std::runtime_error("Cannot create transport output directory");
     // metadata.json is the commit marker; never leave an old accepted marker on failure.
     std::remove((dir+"/metadata.json").c_str());
@@ -3082,20 +3163,7 @@ void Simulation_Data::Write_Transport_Products(const std::string& dir, obscura::
     }
     publish("solar_reference.tsv",reference.str());
 
-    const double geom=In_Units(M_PI*rSun*rSun*halo.DM_density*DM.fractional_density/DM.mass
-        *(halo.Average_Speed()+2*G_Newton*mSun/rSun*halo.Eta_Function(0.0)),1/sec);
     auto value=[](const RadialHistogram& h,std::size_t j){return j<h.size()?h[j]:0.0;};
-    std::ostringstream capture; capture << std::setprecision(17);
-    capture << "{\n\"fixed_injection\":" << (fixed_injection_capture_run?"true":"false")
-        << ",\n\"N_inj\":" << number_of_trajectories << ",\n\"N_capt\":" << number_of_captured_particles
-        << ",\n\"C_geom_s_inv\":" << geom << ",\n\"f_cap\":"
-        << (number_of_trajectories?static_cast<double>(number_of_captured_particles)/number_of_trajectories:0)
-        << ",\n\"blocks\":[";
-    for(std::size_t k=0;k<RESIDENCE_JACKKNIFE_BLOCKS;++k) {
-        if(k) capture << ',';
-        capture << '[' << jackknife_attempted_counts[k] << ',' << jackknife_captured_counts[k] << ']';
-    }
-    capture << "]\n}\n"; publish("capture_summary.json",capture.str());
     std::ostringstream counts; counts << "termination_reason\tcaptured\tuncaptured\n";
     for(int i=0;i<TRAJECTORY_TERMINATION_REASON_COUNT;++i)
         counts << Termination_Reason_Key(static_cast<TrajectoryTerminationReason>(i)) << '\t'
@@ -3114,7 +3182,6 @@ void Simulation_Data::Write_Transport_Products(const std::string& dir, obscura::
                 << '\t' << dt << '\t' << v2dt << '\n';
     }
     publish("incident_inbound.tsv",inbound.str());
-    if(fixed_injection_capture_run) Write_Invalid_Trajectories(dir);
     if(!fixed_injection_capture_run) {
         std::ostringstream blocks, classes, samples; blocks << std::setprecision(17); classes << std::setprecision(17);
         blocks << "block\tbin\tr_low_km\tr_high_km\tcaptured_dt_s\tcaptured_v2dt_km2_s\ttransit_uncaptured_dt_s\ttransit_uncaptured_v2dt_km2_s\tpost_evap_dt_s\tpost_evap_v2dt_km2_s\tincident_inbound_dt_s\tincident_inbound_v2dt_km2_s\n";
@@ -3148,41 +3215,8 @@ void Simulation_Data::Write_Transport_Products(const std::string& dir, obscura::
         }
         publish("trajectory_summary.tsv",summary.str());
     }
-    const auto stamp=std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
     std::ostringstream meta; meta << std::setprecision(17);
-    meta << "{\n\"schema_version\":9,\n\"production_accepted\":" << (Production_Ready()?"true":"false")
-         << ",\n\"workflow\":\"" << (fixed_injection_capture_run?"fixed_injection_capture":(thermal_shape_run?"thermal_shape_validation":"complete_captured_transport"))
-         << "\",\n\"git_commit\":\"" << GIT_COMMIT_HASH << "\",\n\"source_sha256\":\"" << DAMASCUS_SOURCE_SHA256
-         << "\",\n\"compiler\":\"" << DAMASCUS_COMPILER << "\",\n\"build_type\":\"" << DAMASCUS_BUILD_TYPE
-         << "\",\n\"build_flags\":{\"LTO\":\"" << DAMASCUS_LTO << "\",\"native_arch\":\"" << DAMASCUS_NATIVE_ARCH << "\"}"
-         << ",\n\"compiler_build_config\":\"" << DAMASCUS_BUILD_TYPE
-         << "\",\n\"timestamp_unix\":" << stamp << ",\n\"seed\":" << diagnostic_base_seed << ",\n\"mpi_ranks\":" << mpi_processes
-         << ",\n\"physical_config\":" << physical_config_json
-         << ",\n\"solar_model\":\"AGSS09\",\n\"halo_model\":\"configured\",\n\"halo_density_GeV_cm3\":" << In_Units(halo.DM_density,GeV/(cm*cm*cm))
-         << ",\n\"DM_fraction\":" << DM.fractional_density
-         << ",\n\"m_chi_GeV\":" << In_Units(DM.mass,GeV) << ",\n\"sigma_SD_cm2\":" << In_Units(DM.Sigma_Proton(),cm*cm)
-         << ",\n\"R_inj_rsun\":" << INCIDENT_INJECTION_RSUN
-         << ",\n\"R_match_rsun\":" << In_Units(initial_and_final_radius,rSun)
-         << ",\n\"R_incident_au\":" << INCIDENT_SAMPLING_RADIUS_AU
-         << ",\n\"R_transit_reference_rsun\":" << std::min(outer_removal_radius_rsun, TRANSIT_REFERENCE_RSUN)
-		 << ",\n\"R_remove_rsun\":" << outer_removal_radius_rsun
-		 << ",\n\"interpolation_points\":" << interpolation_points
-		 << ",\n\"rate_radius_points\":" << rate_radius_points
-		 << ",\n\"rate_speed_points\":" << rate_speed_points
-		 << ",\n\"rate_max_speed\":" << rate_max_speed
-		 << ",\n\"rate_query_count\":" << rate_query_count
-		 << ",\n\"rate_fallback_count\":" << rate_fallback_count
-		 << ",\n\"rate_fallback_fraction\":" << rate_fallback_fraction
-		 << ",\n\"rate_max_speed_seen\":" << rate_max_speed_seen
-		 << ",\n\"rk_position_tolerance_km\":" << RK45PositionToleranceKm()
-         << ",\n\"rk_velocity_tolerance_km_s\":" << RK45VelocityToleranceKmPerSec()
-         << ",\n\"rk_phase_tolerance\":" << RK45PhaseTolerance()
-         << ",\n\"max_optical_depth_step\":" << NormalModeMaxOpticalDepthStep()
-         << ",\n\"optical_depth_relative_tolerance\":" << OpticalDepthRelativeTolerance()
-         << ",\n\"requested_samples\":" << requested_captured_particles
-         << ",\n\"N_inj\":" << number_of_trajectories << ",\n\"N_capt\":" << number_of_captured_particles << ",\n\"N_completed\":" << number_of_residence_samples
-         << ",\n\"N_outer_removed\":" << number_of_outer_domain_removed_particles << ",\n\"N_numerical_failures\":" << number_of_numerical_failures
-         << ",\n\"N_computational_failures\":" << number_of_computational_truncations << ",\n\"runtime_seconds\":" << computing_time
+    meta << "{\n\"schema_version\":10,\n" << Run_Metadata_JSON(DM, halo)
          << ",\n\"captured_end\":\"validated escape at matching surface or outer removal\",\n\"post_evap\":\"separate outgoing occupation from validated escape to recording boundary; excluded from captured_dt\""
          << ",\n\"incident_inbound\":\"all successfully propagated incident particles, diagnostic reference sphere to solar surface; separate from captured residence\""
          << ",\n\"transit_uncaptured\":\"unscattered solar-intersecting incident subset from diagnostic reference inward through Sun and outward to the same reference; not a full halo density\""

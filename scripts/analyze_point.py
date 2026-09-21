@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Analyze schema-9 complete histories with an independent fixed-injection capture run.
+"""Analyze schema-10 complete histories with an independent fixed-injection capture run.
 
 All densities use cm; trajectory moments are supplied in seconds and km^2/s.
 No published detector sensitivity is inferred from a continuum flux threshold.
 """
 from __future__ import annotations
 import argparse
-import hashlib
 import json
 from pathlib import Path
 import numpy as np
@@ -24,14 +23,9 @@ def read_json(path: Path) -> dict:
 
 
 def normalize_rate_grid_metadata(meta: dict) -> None:
-    """Add the exact legacy square-grid defaults to older schema-9 products."""
-    legacy = meta.get('interpolation_points')
-    if not isinstance(legacy, int) or legacy < 0:
-        raise ValueError('invalid interpolation_points metadata')
-    enabled_points = legacy if legacy >= 2 else 0
-    meta.setdefault('rate_radius_points', enabled_points)
-    meta.setdefault('rate_speed_points', enabled_points)
-    meta.setdefault('rate_max_speed', 0.75 if enabled_points else 0.0)
+    """Require the explicit effective grid used by schema-10 runs."""
+    if any(key not in meta for key in ('rate_radius_points','rate_speed_points','rate_max_speed')):
+        raise ValueError('missing scattering-rate grid metadata')
     nr, nv, vmax = (meta[key] for key in
                     ('rate_radius_points', 'rate_speed_points', 'rate_max_speed'))
     if (not isinstance(nr, int) or nr < 0 or not isinstance(nv, int) or nv < 0
@@ -43,10 +37,10 @@ def normalize_rate_grid_metadata(meta: dict) -> None:
 def require_accepted(path: Path, workflow: str) -> dict:
     """Require an accepted, explicitly identified production product."""
     meta = read_json(path / 'metadata.json')
-    if meta.get('schema_version') != 9 or meta.get('workflow') != workflow:
+    if meta.get('schema_version') != 10 or meta.get('workflow') != workflow:
         raise ValueError(f'{path}: wrong schema or workflow')
-    if not meta.get('source_sha256') or not meta.get('seed'):
-        raise ValueError(f'{path}: missing source hash or reproducible seed')
+    if not meta.get('seed'):
+        raise ValueError(f'{path}: missing reproducible seed')
     if meta.get('production_accepted') is not True:
         raise ValueError(f'{path}: production gate failed; prefixes cannot normalize a source')
     if meta.get('N_numerical_failures')!=0 or meta.get('N_computational_failures')!=0:
@@ -54,6 +48,35 @@ def require_accepted(path: Path, workflow: str) -> dict:
     normalize_rate_grid_metadata(meta)
     rank_seeds(meta)
     return meta
+
+
+def read_capture_result(path: Path, *, log: bool = False) -> dict:
+    """Read one stdout record from a Slurm log, or its locally archived JSON."""
+    if log:
+        prefix = 'CAPTURE_RESULT_JSON='
+        with path.open() as stream:
+            records = [line[len(prefix):] for line in stream if line.startswith(prefix)]
+        if len(records) != 1:
+            raise ValueError(f'{path}: expected exactly one {prefix} record, found {len(records)}')
+        cap = json.loads(records[0])
+    else:
+        cap = read_json(path)
+    validate_capture_result(cap)
+    return cap
+
+
+def validate_capture_result(cap: dict) -> None:
+    """Require accepted capture schema 1, explicit numerics and reproducible RNG streams."""
+    if (not isinstance(cap,dict) or cap.get('capture_result_schema') != 1
+        or cap.get('workflow') != 'fixed_injection_capture'):
+        raise ValueError('wrong capture schema or workflow')
+    if cap.get('production_accepted') is not True:
+        raise ValueError('capture production gate failed')
+    if cap.get('N_numerical_failures') != 0 or cap.get('N_computational_failures') != 0:
+        raise ValueError('capture failure counters contradict accepted production')
+    normalize_rate_grid_metadata(cap)
+    rank_seeds(cap)
+    validate_capture_summary(cap)
 
 
 def rank_seeds(meta: dict) -> set[int]:
@@ -65,20 +88,25 @@ def rank_seeds(meta: dict) -> set[int]:
     return {(seed+1000003*rank) % 2**32 for rank in range(ranks)}
 
 
-def validate_capture_summary(cap: dict, meta: dict) -> np.ndarray:
+def validate_capture_summary(cap: dict) -> np.ndarray:
     """Check a complete fixed-incident experiment and its jackknife sufficient statistics."""
+    for key in ('N_inj','N_capt','requested_samples'):
+        if type(cap.get(key)) is not int or cap[key] < 0:
+            raise ValueError('invalid capture counts')
     cb=np.asarray(cap['blocks'],dtype=float)
     if (cb.shape!=(BLOCKS,2) or not np.all(np.isfinite(cb)) or np.any(cb<0)
         or np.any(cb!=np.floor(cb)) or np.any(cb[:,1]>cb[:,0])
         or not np.array_equal(cb.sum(axis=0),[cap['N_inj'],cap['N_capt']])):
         raise ValueError('invalid capture block counts')
-    if (cap['fixed_injection'] is not True or cap['N_inj']!=meta['requested_samples']
-        or cap['N_inj']!=meta['N_inj'] or cap['N_capt']!=meta['N_capt']):
+    if (cap['fixed_injection'] is not True or cap['N_inj']!=cap['requested_samples']):
         raise ValueError('capture normalization must use a complete fixed incident ensemble')
     if cap['N_capt']<2 or not np.isfinite(cap['C_geom_s_inv']) or cap['C_geom_s_inv']<=0:
         raise ValueError('insufficient capture detections or invalid geometric rate')
     if not np.isclose(cap['f_cap'],cap['N_capt']/cap['N_inj'],rtol=1e-12,atol=0):
         raise ValueError('capture fraction does not match counts')
+    if (not np.isfinite(cap['C_capture_s_inv']) or not np.isclose(
+            cap['C_capture_s_inv'],cap['C_geom_s_inv']*cap['f_cap'],rtol=1e-12,atol=0)):
+        raise ValueError('capture rate does not match geometric rate and fraction')
     return cb
 
 
@@ -227,16 +255,16 @@ def serializable(obj: object) -> object:
     return obj
 
 
-def analyze(output: Path, capture: Path, sigma_v: float = 3e-26,
+def analyze(output: Path, capture: dict, sigma_v: float = 3e-26,
             neutrino_flux_requirement: float | None = None, make_plots: bool = True) -> dict:
     """Write rates, profiles, independent-run jackknife errors, and diagnostic histograms."""
     if not np.isfinite(sigma_v) or sigma_v<=0:
         raise ValueError('sigma_v must be finite and positive')
     m = require_accepted(output,'complete_captured_transport')
-    c = require_accepted(capture,'fixed_injection_capture')
+    c = capture
+    validate_capture_result(c)
     for key in ['m_chi_GeV','sigma_SD_cm2','solar_model','halo_model','halo_density_GeV_cm3',
-                'source_sha256','R_inj_rsun','R_match_rsun','R_incident_au',
-                'R_transit_reference_rsun','R_remove_rsun','interpolation_points',
+                'R_inj_rsun','R_match_rsun','R_incident_au',
                 'rate_radius_points','rate_speed_points','rate_max_speed',
                 'rk_position_tolerance_km','rk_velocity_tolerance_km_s','rk_phase_tolerance',
                 'max_optical_depth_step','optical_depth_relative_tolerance']:
@@ -248,15 +276,9 @@ def analyze(output: Path, capture: Path, sigma_v: float = 3e-26,
         raise ValueError('capture/transport physical configuration mismatch')
     if rank_seeds(m) & rank_seeds(c):
         raise ValueError('independent capture and transport require disjoint MPI RNG seeds')
-    if (output/'solar_reference.tsv').read_bytes() != (capture/'solar_reference.tsv').read_bytes():
-        raise ValueError('capture/transport solar model mismatch')
-    cap = read_json(capture/'capture_summary.json')
-    cb = validate_capture_summary(cap,c)
+    cap = c
+    cb = validate_capture_summary(cap)
     data,edges,counts = read_transport_blocks(output,m)
-    capture_edges=np.asarray(c['radial_edges_km'],dtype=float)*1e5
-    if not np.array_equal(capture_edges,edges):
-        raise ValueError('capture/transport radial edges differ')
-    read_incident_inbound(capture,c,edges)
     bins=len(edges)-1
     dt=data[:,4].reshape(BLOCKS,bins); v2=data[:,5].reshape(BLOCKS,bins)
     summary=np.genfromtxt(output/'trajectory_summary.tsv',names=True,dtype=None,encoding='utf8',ndmin=1)
@@ -335,7 +357,6 @@ def analyze(output: Path, capture: Path, sigma_v: float = 3e-26,
     bias+=(BLOCKS-1)*(capture_array.mean(axis=0)-central_array)
     corrected=central_array-bias
     result={'analysis_version':2,'physical_config':m['physical_config'],
-            'solar_reference_sha256':hashlib.sha256((output/'solar_reference.tsv').read_bytes()).hexdigest(),
             'metadata':m,'capture_metadata':c,'sigma_v_cm3_s':sigma_v,'central':point,
             'jackknife_se':dict(zip(keys,errors)),
             'jackknife_bias':dict(zip(keys,bias)),
@@ -387,7 +408,10 @@ def analyze(output: Path, capture: Path, sigma_v: float = 3e-26,
 def main() -> None:
     """CLI; rates are conditional on the supplied annihilation coefficient."""
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('output',type=Path); parser.add_argument('--capture-dir',type=Path,required=True)
+    parser.add_argument('output',type=Path)
+    capture_group=parser.add_mutually_exclusive_group(required=True)
+    capture_group.add_argument('--capture-log',type=Path)
+    capture_group.add_argument('--capture-json',type=Path)
     parser.add_argument('--sigma-v',type=float,default=3e-26)
     parser.add_argument('--neutrino-flux-requirement',type=float)
     parser.add_argument('--no-plots',action='store_true')
@@ -396,7 +420,8 @@ def main() -> None:
         parser.error('--sigma-v must be finite and positive')
     if args.neutrino_flux_requirement is not None and (not np.isfinite(args.neutrino_flux_requirement) or args.neutrino_flux_requirement<=0):
         parser.error('--neutrino-flux-requirement must be finite and positive')
-    result=analyze(args.output,args.capture_dir,args.sigma_v,args.neutrino_flux_requirement,not args.no_plots)
+    capture=read_capture_result(args.capture_log or args.capture_json,log=args.capture_log is not None)
+    result=analyze(args.output,capture,args.sigma_v,args.neutrino_flux_requirement,not args.no_plots)
     print(json.dumps(serializable(result['central']),indent=2))
 
 if __name__=='__main__':

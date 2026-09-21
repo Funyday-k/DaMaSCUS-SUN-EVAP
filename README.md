@@ -3,7 +3,7 @@
 Dark Matter Simulation Code for the Sun, with capture- and evaporation-focused
 extensions.
 
-The current schema-9 transport definitions, configuration, output contract, and validation scope are documented below.
+The current schema-10 transport definitions, configuration, output contract, and validation scope are documented below.
 
 ## Overview
 
@@ -167,7 +167,7 @@ Configuration files use libconfig syntax. The most important controls are:
 | --- | --- |
 | `run_mode` | `"Parameter point"` for the main evaporation workflow, `"Capture"` for capture-rate runs, or `"Parameter scan"` for detector-limit scans. |
 | `sample_size` | In Parameter point mode, the exact number of complete captured histories (escape or outer removal). In Capture mode, the exact number of incident trials. Invalid histories invalidate production even if replacements reach the target. |
-| `production_mode` | Stop issuing new trajectories after any failed/truncated history, drain in-flight work, and exit nonzero; an unmet target also fails. Final metadata always records acceptance. |
+| `production_mode` | Stop issuing new trajectories after any failed/truncated history, drain in-flight work, and exit nonzero; an unmet target also fails. Capture stdout JSON or transport metadata records acceptance; diagnostics/replay are disabled. |
 | `outer_removal_radius_rsun` | Bound-orbit removal radius in R_sun, default 1100; must exceed the native 1.1 R_sun grid. The obsolete `outer_boundary_radius_au` key is rejected. |
 | `thermal_validation_mode` | Separate Parameter point shape workflow allowing computationally limited histories; never absolute production. |
 | `fixed_seed` | Optional non-negative PRNG seed. `0` or an omitted setting uses nondeterministic seeding; a nonzero value is expanded independently by MPI rank. |
@@ -221,22 +221,51 @@ repeated bound Kepler returns to stall its MPI batch.
 
 ## Outputs
 
-For non-capture parameter-point runs, the final files are written after MPI
-reduction:
+Capture (`run_mode = "Capture"`) is a fixed **incident-count** normalization run.
+It never creates a result directory, snapshot, copied cfg or diagnostic file.
+Rank zero prints exactly one `CAPTURE_RESULT_JSON={...}` line (capture schema 1),
+including accepted/rejected status, effective physics/numerics, seed and MPI ranks,
+failure counts, `N_inj`, `N_capt`, `f_cap`, `C_geom_s_inv`, `C_capture_s_inv`, and
+64 `[N_inj, N_capt]` blocks. Failed/incomplete runs still print the record and exit 2.
+Keep the external cfg and Slurm stdout.
 
-- Schema-9 `metadata.json`, `radial_blocks.tsv`, `incident_inbound.tsv`, `block_counts.tsv`,
-  `trajectory_summary.tsv`, `orbit_class_blocks.tsv`, `capture_summary.json`,
-  `termination_counts.tsv`, and `solar_reference.tsv` are the inputs for
-  `scripts/analyze_point.py`. `metadata.json` contains the canonical physical
-  configuration used for compatibility checks; result directories do not copy
-  the input cfg file. Pair transport with an independent fixed-incident capture
-  run. See the transport revision for units and acceptance rules.
+Production transport (`run_mode = "Parameter point"`, `production_mode = true`)
+writes only `metadata.json` (schema 10), `radial_blocks.tsv`, `block_counts.tsv`,
+`trajectory_summary.tsv`, `orbit_class_blocks.tsv`, `incident_inbound.tsv`,
+`termination_counts.tsv`, `solar_reference.tsv`, and the enabled `snapshot/`.
+`trajectory_summary.tsv` is the reduced scientific summary, independent of the
+optional diagnostic summary. Metadata is the canonical effective configuration,
+including maximum scatterings, trajectory wall-time budget, production and thermal
+flags. No `input.cfg` is copied. Snapshots report progress; `restart_supported=false`.
+Runs shorter than `snapshot_interval` may leave an empty snapshot directory.
+
+Analyze locally with an independent capture log or an extracted JSON record:
+
+```bash
+python scripts/analyze_point.py TRANSPORT_DIR --capture-log logs/capture.out
+# Alternatively: --capture-json capture_result.json
+python scripts/prepare_transport_runs.py campaign --phase pilot
+```
+
+The generator writes `configs/POINT/seedN/{capture,transport}.cfg` and a manifest
+with log paths under `logs/` and transport destinations under `results/`.
+Capture disables snapshots; transport enables them. Both production configurations
+disable trajectory diagnostics. No jobs are launched by the generator.
+The analyzer requires schema 10 plus capture schema 1, checks physics, solar-model
+identifier, numerical settings and disjoint rank seeds, and combines independent
+capture/transport delete-block jackknife uncertainties. Hashes are not validated.
+Analyze older schema 8/9 data using the code revision that produced it.
+
+Local transport (`production_mode = false`) also supports the legacy products below.
+Enable `trajectory_summary_enabled`, `trajectory_events_enabled`, and
+`trajectory_trace_rate` as needed for diagnosis and replay:
+
 - `bincount.txt`: legacy capture-conditioned residence and velocity-moment output.
   The grid is uniform at 0.001 R_sun through 1.1 R_sun, then grows by 2% per shell
   with a 10 R_sun width cap, clipped at the removal surface. Analytic exterior
   arcs use a round trip or a one-way removal arc as appropriate. Computational
   and numerical failures do not enter production residence. Prefixes may appear
-  only in the explicitly labelled thermal shape workflow. Use schema-9 products
+  only in the explicitly labelled thermal shape workflow. Use schema-10 products
   for the new independent capture normalization.
 - `evaporation_times.txt`: compact complete-event table with
   `rank trajectory_id lifetime_unbinding_sec r_capture_Rsun E_capture_eV
@@ -251,8 +280,8 @@ reduction:
   invalid, and outer-orbit-removal counts
   plus its full radial `dt` and `v^2 dt` histograms. The writer refuses to publish the file unless every
   scalar count and every radial bin closes against `bincount.txt`. This legacy joint-run product does not replace the independent capture and
-  transport blocks used by the schema-9 analysis.
-- `invalid_trajectories.tsv`: always-on, replayable ledger for trajectories
+  transport blocks used by the schema-10 analysis.
+- `invalid_trajectories.tsv`: local-only replayable ledger for trajectories
   excluded by numerical or computational validity rules. It is header-only
   when no invalid trajectory occurred. Each row records the failure stage,
   exact termination reason and numerical-failure detail, boundary/reference
@@ -277,8 +306,8 @@ counts for every `TrajectoryTerminationReason` and every concrete numerical
 failure detail. This breakdown is always available; it is not gated by
 `trajectory_summary_enabled`.
 
-Optional trajectory diagnostics are enabled with `trajectory_summary_enabled = true`.
-This adds `run_metadata.json`, `trajectory_summary.tsv`, and
+Local trajectory diagnostics are enabled with `trajectory_summary_enabled = true`.
+This adds `run_metadata.json`, `diagnostic_trajectory_summary.tsv`, and
 `trajectory_events.tsv` without changing the capture or evaporation state
 definitions. Set `trajectory_events_enabled = true` and
 `trajectory_trace_rate` in `[0, 1]` to select lifecycle traces by a stable hash;

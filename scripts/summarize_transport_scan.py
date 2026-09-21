@@ -12,18 +12,18 @@ from analyze_point import normalize_rate_grid_metadata, rank_seeds
 
 def comparison_signature(record: dict) -> str:
     """Keep every source/model setting except the three explicitly scanned axes."""
-    if record.get('analysis_version')!=2 or not record.get('physical_config') or not record.get('solar_reference_sha256'):
+    if record.get('analysis_version')!=2 or not record.get('physical_config'):
         raise ValueError('missing analysis provenance; rerun analyze_point.py')
     meta=record['metadata']
     normalize_rate_grid_metadata(meta)
     physical={k:v for k,v in record['physical_config'].items()
               if k not in {'DM_mass','DM_cross_section_nucleon'}}
-    settings={key:meta[key] for key in ['source_sha256','solar_model','halo_model','halo_density_GeV_cm3',
+    settings={key:meta[key] for key in ['solar_model','halo_model','halo_density_GeV_cm3',
               'R_inj_rsun','R_match_rsun','R_incident_au','interpolation_points',
               'rate_radius_points','rate_speed_points','rate_max_speed',
               'rk_position_tolerance_km','rk_velocity_tolerance_km_s','rk_phase_tolerance',
               'max_optical_depth_step','optical_depth_relative_tolerance']}
-    settings.update(physical=physical,solar_reference=record['solar_reference_sha256'],
+    settings.update(physical=physical,
                     sigma_v=record['sigma_v_cm3_s'],analysis=record['analysis_version'])
     return json.dumps(settings,sort_keys=True,allow_nan=False)
 
@@ -37,7 +37,7 @@ def summarize(files: list[Path], destination: Path) -> None:
     for file in files:
         record=json.loads(file.read_text()); m=record['metadata']; c=record['capture_metadata']
         for meta,workflow in [(m,'complete_captured_transport'),(c,'fixed_injection_capture')]:
-            if (meta.get('production_accepted') is not True or meta.get('schema_version')!=9
+            if (meta.get('production_accepted') is not True or (meta.get('schema_version')!=10 if workflow=='complete_captured_transport' else meta.get('capture_result_schema')!=1)
                 or meta.get('workflow')!=workflow or meta.get('N_numerical_failures')!=0
                 or meta.get('N_computational_failures')!=0):
                 raise ValueError(f'{file}: rejected production')

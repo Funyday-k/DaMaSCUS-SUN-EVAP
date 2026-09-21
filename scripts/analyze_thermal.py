@@ -17,7 +17,7 @@ from analyze_point import R_SUN_CM, K_B_EV_K, C_KM_S, BLOCKS, read_json, read_tr
 def analyze(directory: Path) -> dict:
     """Return D_TV and T2/Tchi for one explicitly labelled thermal sample."""
     meta=read_json(directory/'metadata.json')
-    if (meta.get('schema_version')!=9 or meta.get('workflow')!='thermal_shape_validation'
+    if (meta.get('schema_version')!=10 or meta.get('workflow')!='thermal_shape_validation'
         or meta.get('N_numerical_failures')!=0 or meta.get('production_accepted') is not False):
         raise ValueError('require a numerical-failure-free thermal shape workflow')
     table=np.loadtxt(directory/'solar_reference.tsv',skiprows=1)

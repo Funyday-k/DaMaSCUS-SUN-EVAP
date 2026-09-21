@@ -652,6 +652,16 @@ void Configuration::Import_Parameter_Scan_Parameter()
 	if(trajectory_diagnostic_config.events_enabled)
 		trajectory_diagnostic_config.summary_enabled = true;
 
+	// Capture is stdout-only; production never collects local replay diagnostics.
+	if(capture_mode)
+		snapshot_config.enabled = false;
+	if(production_mode || capture_mode)
+	{
+		trajectory_diagnostic_config.summary_enabled = false;
+		trajectory_diagnostic_config.events_enabled = false;
+		trajectory_diagnostic_config.trace_rate = 0.0;
+	}
+
 	if(run_mode != "Parameter point" && run_mode != "Parameter scan" && run_mode != "Capture")
 	{
 		std::cerr << "Error in Configuration::Import_Parameter_Scan_Parameter(): Run mode " << run_mode << " not recognized." << std::endl;

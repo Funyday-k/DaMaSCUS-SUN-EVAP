@@ -86,7 +86,7 @@ int main(int argc, char* argv[])
 		data_set.physical_config_json = cfg.Physical_Configuration_JSON();
 		data_set.Configure(TRAJECTORY_BOUNDARY_RSUN * rSun, 1, cfg.maximum_number_of_scatterings);
 		data_set.Configure_Trajectory_Diagnostics(cfg.trajectory_diagnostic_config);
-		const std::string output_prefix = cfg.capture_mode ? "results_capture_" : "results_";
+		const std::string output_prefix = "results_";
 		const std::string output_path = g_top_level_dir + output_prefix + std::to_string(log10(In_Units(cfg.DM->mass, GeV))) + "_" + std::to_string(log10(In_Units(cfg.DM->Sigma_Proton(), cm * cm))) + "/";
 		// All ranks take the same failure path, including errors that occur only
 		// on rank zero while opening, flushing, or publishing the final files.
@@ -107,12 +107,26 @@ int main(int argc, char* argv[])
 			MPI_Bcast(&success, 1, MPI_INT, 0, MPI_COMM_WORLD);
 			return success != 0;
 		};
-		if(!root_output_succeeded([&]() {
+		if(!cfg.capture_mode && !root_output_succeeded([&]() {
 			data_set.Prepare_Output_Directory(output_path);
 			const std::string legacy_config = output_path + "input.cfg";
 			errno = 0;
 			if(std::remove(legacy_config.c_str()) != 0 && errno != ENOENT)
 				throw std::runtime_error("Cannot remove legacy output configuration");
+			if(cfg.production_mode)
+			{
+				for(const char* name : {"run_metadata.json", "diagnostic_trajectory_summary.tsv",
+				    "trajectory_events.tsv", "invalid_trajectories.tsv", "capture_summary.json",
+				    "bincount.txt", "captured_bincount.txt", "not_captured_bincount.txt",
+				    "residence_jackknife_blocks.tsv", "evaporation_times.txt",
+				    "evaporation_diagnostics.txt", "evaporation_summary.txt",
+				    "evaporation_mode_summary.txt", "evaporation_mode_bincount.txt", "computation_time_summary.txt"})
+				{
+					const std::string path = output_path + name;
+					if(std::remove(path.c_str()) != 0 && errno != ENOENT)
+						throw std::runtime_error("Cannot remove stale diagnostic output " + path);
+				}
+			}
 		}))
 		{
 			MPI_Finalize();
@@ -134,12 +148,19 @@ int main(int argc, char* argv[])
 		data_set.abort_on_invalid_trajectory = cfg.production_mode;
 		data_set.Generate_Data(*cfg.DM, SSM, *cfg.DM_distr, cfg.snapshot_config, cfg.fixed_seed, cfg.capture_mode);
 		if(cfg.capture_mode)
+		{
 			data_set.Print_Capture_Mode_Summary(mpi_rank);
-		else
-			data_set.Print_Summary(mpi_rank);
+			if(!root_output_succeeded([&]() {
+				data_set.Print_Capture_Result_JSON(*cfg.DM, *cfg.DM_distr);
+			})) { MPI_Finalize(); return 1; }
+			const bool accepted = data_set.Production_Ready();
+			MPI_Finalize();
+			return accepted ? 0 : 2;
+		}
+		data_set.Print_Summary(mpi_rank);
 
-		// Write output files (bincount + evaporation summary)
-		if(!cfg.capture_mode && !root_output_succeeded([&]() {
+		// Legacy products and replay ledgers are local diagnostic outputs.
+		if(!cfg.production_mode && !root_output_succeeded([&]() {
 			data_set.Write_Output_Files(output_path, *cfg.DM);
 		}))
 		{

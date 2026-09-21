@@ -1,6 +1,6 @@
 # DaMaSCUS-SUN 项目完整技术文档
 
-> 当前代码采用独立入射与移除尺度、1 R_sun 匹配面、10 R_sun 外层分箱上限和 schema-8 输出。下文中的历史架构说明若与 README 的当前定义冲突，以 README 和实现为准。
+> 当前运行契约为 schema 10：Capture 固定入射数，只输出一条 `CAPTURE_RESULT_JSON`（capture schema 1），不创建结果目录；生产 Transport 保留 snapshot 和 reduced science products；诊断与 replay 仅用于本地 `production_mode=false`。分析使用 `--capture-log` 或 `--capture-json`，检查参数与随机流，不校验哈希。下文的历史架构说明若与此冲突，以 README 和实现为准。
 
 ## 目录
 
@@ -99,7 +99,7 @@ $$\text{单粒子轨迹} = \sum_{i=0}^{N_\text{scat}} \left[ \text{自由传播}
 ```
 
 - **"Parameter Point" 模式**：对单一 $(m_\chi, \sigma)$ 参数点进行详细模拟，生成大量轨迹，输出反射速度谱和探测器信号率。
-- **Capture Mode 快速捕获率模式**：通过 `capture_mode = true` 或 `run_mode = "Capture"` 启用。散射后若总能量 $E < 0$，轨迹立即终止并记为捕获；自由传播中的负能量检查只更新已捕获轨迹的最后束缚时间，不创建首次捕获。不写 `bincount`、蒸发、snapshot 或反射谱输出，只在终端打印捕获率和 95% Wilson 上下误差。
+- **Capture Mode 快速捕获率模式**：通过 `run_mode = "Capture"` 启用。散射后若总能量 $E < 0$，轨迹立即终止并记为捕获；自由传播中的负能量检查只更新已捕获轨迹的最后束缚时间，不创建首次捕获。不写 `bincount`、蒸发、snapshot 或反射谱输出，在终端打印捕获率、95% Wilson 区间和最终 `CAPTURE_RESULT_JSON`；失败时仍输出 JSON 并返回非零。
 - **"Parameter Scan" 模式**：在二维 $(m_\chi, \sigma)$ 参数空间中扫描，对每个点计算统计检验的p值，最终提取一定置信水平（如90% CL）下的排斥极限曲线。
 
 ---
@@ -315,13 +315,13 @@ mpirun -n 32 ./install/bin/DaMaSCUS-SUN /absolute/path/to/config_Lingyu.cfg
 - 运行参数：样本大小，最大轨迹数，输出目录，等反射环数
 - 暗光子专属参数：$\epsilon$（动能混合），$\alpha_D$（暗规范耦合），$m_{A'}$（介质子质量），形因子类型
 - 可选数值模拟参数：`max_trajectories`（未设置时不限制总轨迹数；显式设置时才作为提前停止安全阀）、`snapshot_enabled`、`snapshot_interval`、`max_trajectory_wall_time_sec`
-- 快速捕获率参数：`capture_mode = true`（也可使用 `run_mode = "Capture"`）。该模式只用于估计捕获率，散射后若 $E < 0$ 则立即停止当前轨迹，不写模拟输出文件。
+- 快速捕获率参数：`run_mode = "Capture"`。该模式只用于估计捕获率，散射后若 $E < 0$ 则立即停止当前轨迹，不写模拟输出文件。
 
 示例：
 
 ```cfg
 run_mode = "Parameter point";
-capture_mode = true;
+run_mode = "Capture";
 sample_size = 1000;
 ```
 
@@ -397,7 +397,7 @@ $$\sum \Delta t,\qquad \sum v^2 \Delta t$$
 | **反射（Reflected）** | $N_\text{scat} \geq 1$，$v > v_\text{esc}$，$r > R_\odot$ | 散射后仍保持正能量并逃逸 |
 | **捕获（Captured）** | $E = \frac{1}{2}m_\chi(v^2 - v_\text{esc}^2) < 0$ | 散射后总能量为负，被引力束缚 |
 
-**样本计数逻辑**：普通模式下，`sample_size` 表示精确的“完整、有效的蒸发事件（束缚外轨道无径向限制）”目标数；数值失败及计算截断轨迹计入诊断计数，不占用蒸发事件目标样本；新运行不再产生 `outer_domain_removal`。Capture Mode 下，`sample_size` 仍表示精确 captured 数量。每轮全局尝试数不超过尚缺的目标样本数，因此最终批次不会 overshoot；未设置 `max_trajectories` 时会继续补样直到达到目标。
+**样本计数逻辑**：普通模式下，`sample_size` 表示精确的“完整、有效的蒸发事件（束缚外轨道无径向限制）”目标数；数值失败及计算截断轨迹计入诊断计数，不占用蒸发事件目标样本；新运行不再产生 `outer_domain_removal`。Capture Mode 下，`sample_size` 表示固定的入射轨迹数量。每轮全局尝试数不超过尚缺的目标样本数，因此最终批次不会 overshoot；未设置 `max_trajectories` 时会继续补样直到达到目标。
 
 ### 5.4 Phase 4: MPI数据汇总
 
@@ -538,7 +538,7 @@ Snapshot 会合并各 rank 的当前进度，包括已完成轨迹的 captured /
 
 **优化内容**：当前主模拟不再依赖逐轨迹 `.dat` 文件保存/删除流程，而是在 C++ 内部在线累积 captured 与 not_captured 的径向 `bincount`、误差平方和、蒸发时间记录和计算时间统计。
 
-当配置 `capture_mode = true` 或 `run_mode = "Capture"` 时，模拟只关心捕获率：散射后若轨迹第一次满足 $E < 0$ 就立即停止并计为 captured，同时跳过 `bincount`、蒸发记录、snapshot 和反射谱输出。
+当配置 `run_mode = "Capture"` 时，模拟只关心捕获率：散射后若轨迹第一次满足 $E < 0$ 就立即停止并计为 captured，同时跳过 `bincount`、蒸发记录、snapshot 和反射谱输出。
 
 **效率影响**：普通模式保留完整统计用于后处理；Capture Mode 避免了被捕获粒子后续长时间束缚轨道模拟，适合快速扫描多个参数点的捕获率。
 
@@ -558,7 +558,7 @@ Snapshot 会合并各 rank 的当前进度，包括已完成轨迹的 captured /
 
 ### 7.8 MPI 合并与负载分配
 
-每个 MPI rank 独立生成轨迹。普通模式会根据 DM-nucleon 截面自动选择 MPI 同步批量，但每轮全局尝试数还受剩余有效蒸发样本数限制，因此达到 `sample_size` 时 accepted evaporation 数量严格无 overshoot；Capture Mode 则以剩余捕获数为限制。当前源码规则为：
+每个 MPI rank 独立生成轨迹。普通模式会根据 DM-nucleon 截面自动选择 MPI 同步批量，但每轮全局尝试数还受剩余有效蒸发样本数限制，因此达到 `sample_size` 时 accepted evaporation 数量严格无 overshoot；Capture Mode 则以剩余入射数为限制。当前源码规则为：
 
 | 截面范围 [cm²] | 每 rank MPI 同步批量 |
 |---|---:|

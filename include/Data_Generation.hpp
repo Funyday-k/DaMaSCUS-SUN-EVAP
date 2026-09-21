@@ -238,6 +238,8 @@ class Simulation_Data
 	void Perform_MPI_Reductions(bool capture_mode);
 	void Gather_Invalid_Trajectories();
 	void Write_Invalid_Trajectories(const std::string& output_dir);
+	std::string Run_Metadata_JSON(obscura::DM_Particle& DM, obscura::DM_Distribution& halo) const;
+	double max_trajectory_wall_time_sec = 0.0;
 
 	// Reflection samples remain active inputs to parameter-scan detector limits.
 	unsigned int isoreflection_rings;
@@ -295,6 +297,7 @@ class Simulation_Data
 
 	void Print_Summary(unsigned int mpi_rank = 0);
 	void Print_Capture_Mode_Summary(unsigned int mpi_rank = 0);
+	void Print_Capture_Result_JSON(obscura::DM_Particle& DM, obscura::DM_Distribution& halo);
 };
 }	// namespace DaMaSCUS_SUN
 #endif

@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 from scipy.special import erf
 from scipy.integrate import trapezoid
-from analyze_point import R_SUN_CM, require_accepted, physical_config
+from analyze_point import R_SUN_CM, require_accepted
 GM_SUN_CM3_S2=1.32712440018e26
 
 
@@ -40,7 +40,7 @@ def analyze(directory: Path, v0: float, vobs: float, vgal: float) -> dict:
     derived=json.loads((directory/'derived.json').read_text())
     if derived.get('metadata')!=meta:
         raise ValueError('derived profile belongs to different simulation metadata')
-    fraction=float(physical_config(directory)['DM_fraction'])
+    fraction=float(meta['physical_config']['DM_fraction'])
     profile=np.loadtxt(directory/'tables/radial_profile.tsv')
     low,high=profile[:,0]*R_SUN_CM,profile[:,1]*R_SUN_CM
     sel=low>=R_SUN_CM*(1-1e-12); lo,hi=low[sel],high[sel]

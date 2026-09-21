@@ -3,11 +3,13 @@
 import json
 import copy
 import csv
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 import numpy as np
-from analyze_point import analyze, BLOCKS, K_B_EV_K, C_KM_S
+from analyze_point import analyze, read_capture_result, BLOCKS, K_B_EV_K, C_KM_S
 from summarize_transport_scan import summarize
 from analyze_point import AU_CM, R_SUN_CM, chord_matrix, containment, require_accepted, angular_grid, cumulative_angle
 
@@ -42,18 +44,18 @@ class GeometryTests(unittest.TestCase):
     def test_unfinished_histories_and_wrong_workflows_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             p=Path(tmp)
-            (p/'metadata.json').write_text(json.dumps({'schema_version':9,'workflow':'complete_captured_transport','production_accepted':False}))
+            (p/'metadata.json').write_text(json.dumps({'schema_version':10,'workflow':'complete_captured_transport','production_accepted':False}))
             with self.assertRaises(ValueError): require_accepted(p,'complete_captured_transport')
-            (p/'metadata.json').write_text(json.dumps({'schema_version':9,'workflow':'thermal_shape_validation','production_accepted':True}))
+            (p/'metadata.json').write_text(json.dumps({'schema_version':10,'workflow':'thermal_shape_validation','production_accepted':True}))
             with self.assertRaises(ValueError): require_accepted(p,'complete_captured_transport')
 
 class AnalysisContractTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp=tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.root=Path(self.tmp.name); self.output=self.root/'transport'; self.capture=self.root/'capture'
-        self.output.mkdir(); self.capture.mkdir()
-        self.meta={'schema_version':9,'production_accepted':True,'workflow':'complete_captured_transport',
+        self.root=Path(self.tmp.name); self.output=self.root/'transport'; self.capture=self.root/'capture.json'
+        self.output.mkdir()
+        self.meta={'schema_version':10,'production_accepted':True,'workflow':'complete_captured_transport',
             'source_sha256':'fixture-source','seed':101,'mpi_ranks':1,'solar_model':'fixture',
             'halo_model':'SHM','halo_density_GeV_cm3':.4,'m_chi_GeV':.01,'sigma_SD_cm2':1e-32,
             'physical_config':{'DM_mass':.01,'DM_cross_section_nucleon':1e-32,
@@ -74,10 +76,12 @@ class AnalysisContractTests(unittest.TestCase):
                     'N_inj':1280,'N_capt':672,'N_completed':0}
         self.cap={'fixed_injection':True,'N_inj':1280,'N_capt':672,'C_geom_s_inv':1e20,
                   'f_cap':672/1280,'blocks':[[20,10+k%2] for k in range(BLOCKS)]}
-        for directory,meta in [(self.output,self.meta),(self.capture,self.cmeta)]:
-            self.write_json(directory/'metadata.json',meta)
-            (directory/'solar_reference.tsv').write_text('same numerical solar reference')
-        self.write_json(self.capture/'capture_summary.json',self.cap)
+        self.cap={**self.cmeta,**self.cap,'capture_result_schema':1,'C_capture_s_inv':1e20*672/1280}
+        del self.cap['schema_version']
+        self.cmeta=self.cap
+        self.write_json(self.output/'metadata.json',self.meta)
+        (self.output/'solar_reference.tsv').write_text('transport solar reference')
+        self.write_json(self.capture,self.cap)
         blocks=[]; classes=[]; records=[]
         self.tin=1+np.arange(BLOCKS)%3; self.tout=2+np.arange(BLOCKS)%5
         self.speed2=100000+1000*np.arange(BLOCKS)
@@ -88,7 +92,7 @@ class AnalysisContractTests(unittest.TestCase):
             reason='outer_orbit_removed' if k%2 else 'physical_escape'
             records.append(f'{k+1} 0 101 {k} {reason} {self.tin[k]+self.tout[k]} {self.tin[k]} {self.tout[k]} 2000000 {k+1}')
         np.savetxt(self.output/'radial_blocks.tsv',blocks,header='block bin lo hi dt v2dt transit_dt transit_v2dt post_dt post_v2dt inbound_dt inbound_v2dt')
-        for directory,scale in [(self.output,BLOCKS),(self.capture,1280)]:
+        for directory,scale in [(self.output,BLOCKS)]:
             inbound=[[b,self.meta['radial_edges_km'][b],self.meta['radial_edges_km'][b+1],
                       scale if b else 0,100*scale if b else 0] for b in range(3)]
             np.savetxt(directory/'incident_inbound.tsv',inbound,header='bin lo hi dt v2dt')
@@ -101,7 +105,7 @@ class AnalysisContractTests(unittest.TestCase):
         path.write_text(json.dumps(value))
 
     def run_analysis(self) -> dict:
-        return analyze(self.output,self.capture,make_plots=False)
+        return analyze(self.output,read_capture_result(self.capture),make_plots=False)
 
     def test_all_reported_diagnostics_have_correct_delete_block_errors(self) -> None:
         result=self.run_analysis()
@@ -126,38 +130,93 @@ class AnalysisContractTests(unittest.TestCase):
         self.assertTrue(np.isfinite(float(row['I_tot_s2_cm3_jackknife_bias'])))
 
     def test_numerical_signature_mismatch_is_rejected(self) -> None:
-        self.cmeta['interpolation_points']=1000
-        self.write_json(self.capture/'metadata.json',self.cmeta)
-        with self.assertRaisesRegex(ValueError,'interpolation_points'): self.run_analysis()
+        self.cmeta['rk_phase_tolerance']=1e-9
+        self.write_json(self.capture,self.cmeta)
+        with self.assertRaisesRegex(ValueError,'rk_phase_tolerance'): self.run_analysis()
 
     def test_rate_grid_signature_mismatch_is_rejected(self) -> None:
         # Keep the capture grid internally valid while making it incompatible.
         self.cmeta['rate_radius_points']=1000
         self.cmeta['rate_speed_points']=256
         self.cmeta['rate_max_speed']=0.02
-        self.write_json(self.capture/'metadata.json',self.cmeta)
+        self.write_json(self.capture,self.cmeta)
         with self.assertRaisesRegex(ValueError,'rate_radius_points'): self.run_analysis()
 
-    def test_removal_cutoff_mismatch_is_rejected(self) -> None:
+    def test_capture_does_not_require_transport_radial_geometry(self) -> None:
         self.cmeta['R_remove_rsun']=550
-        self.write_json(self.capture/'metadata.json',self.cmeta)
-        with self.assertRaisesRegex(ValueError,'R_remove_rsun'): self.run_analysis()
+        self.write_json(self.capture,self.cmeta)
+        self.assertGreater(self.run_analysis()['central']['C_s_inv'],0)
 
     def test_physical_configuration_mismatch_is_rejected(self) -> None:
         self.cmeta['physical_config']={**self.cmeta['physical_config'],'DM_spin':1.0}
-        self.write_json(self.capture/'metadata.json',self.cmeta)
+        self.write_json(self.capture,self.cmeta)
         with self.assertRaisesRegex(ValueError,'physical configuration'): self.run_analysis()
 
     def test_capture_block_mismatch_is_rejected(self) -> None:
         self.cap['blocks'][0][1]+=1
-        self.write_json(self.capture/'capture_summary.json',self.cap)
+        self.write_json(self.capture,self.cap)
         with self.assertRaisesRegex(ValueError,'capture block'): self.run_analysis()
 
     def test_different_master_seeds_can_still_share_an_mpi_rng_stream(self) -> None:
         self.meta['mpi_ranks']=2; self.cmeta['seed']=101+1000003
         self.write_json(self.output/'metadata.json',self.meta)
-        self.write_json(self.capture/'metadata.json',self.cmeta)
+        self.write_json(self.capture,self.cmeta)
         with self.assertRaisesRegex(ValueError,'disjoint'): self.run_analysis()
+
+    def test_capture_log_and_json_have_identical_rates_and_uncertainties(self) -> None:
+        log=self.root/'slurm_capture.out'
+        log.write_text('scheduler header\nCAPTURE_RESULT_JSON='+json.dumps(self.cap)+'\njob finished\n')
+        result=analyze(self.output,read_capture_result(log,log=True),make_plots=False)
+        expected=self.run_analysis()
+        for key in ['C_s_inv','Gamma_tot_s_inv','I_out_s2_cm3']:
+            self.assertEqual(result['central'][key],expected['central'][key])
+            self.assertEqual(result['jackknife_se'][key],expected['jackknife_se'][key])
+        self.assertAlmostEqual(result['central']['C_s_inv'],1e20*672/1280)
+        for option,path in [('--capture-log',log),('--capture-json',self.capture)]:
+            command=[sys.executable,str(Path(__file__).with_name('analyze_point.py')),
+                     str(self.output),option,str(path),'--no-plots']
+            completed=subprocess.run(command,capture_output=True,text=True,timeout=15)
+            self.assertEqual(completed.returncode,0,completed.stderr)
+
+    def test_capture_log_requires_exactly_one_record(self) -> None:
+        log=self.root/'capture.out'
+        for text in ['no result\n',('CAPTURE_RESULT_JSON='+json.dumps(self.cap)+'\n')*2]:
+            log.write_text(text)
+            with self.assertRaisesRegex(ValueError,'exactly one'):
+                read_capture_result(log,log=True)
+        log.write_text('CAPTURE_RESULT_JSON={broken\n')
+        with self.assertRaises(ValueError): read_capture_result(log,log=True)
+
+    def test_capture_physics_and_solar_identifier_mismatches_are_rejected(self) -> None:
+        for key,value in [('m_chi_GeV',.03),('sigma_SD_cm2',1e-30),('solar_model','different')]:
+            with self.subTest(key=key):
+                cap={**self.cap,key:value}
+                with self.assertRaisesRegex(ValueError,key):
+                    analyze(self.output,cap,make_plots=False)
+
+    def test_failed_or_incomplete_capture_is_rejected(self) -> None:
+        for change in [{'production_accepted':False},{'N_numerical_failures':1},
+                       {'N_computational_failures':1},{'requested_samples':2000},
+                       {'C_capture_s_inv':1.0},{'capture_result_schema':0}]:
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                analyze(self.output,{**self.cap,**change},make_plots=False)
+
+    def test_hashes_are_not_required_or_compared(self) -> None:
+        self.meta.pop('source_sha256')
+        self.write_json(self.output/'metadata.json',self.meta)
+        self.assertGreater(self.run_analysis()['central']['C_s_inv'],0)
+
+    def test_old_transport_schema_is_rejected(self) -> None:
+        for schema in [8,9]:
+            self.write_json(self.output/'metadata.json',{**self.meta,'schema_version':schema})
+            with self.assertRaisesRegex(ValueError,'schema'): self.run_analysis()
+
+    def test_halo_reference_reads_fraction_from_effective_metadata(self) -> None:
+        from halo_focused_density import analyze as analyze_halo
+        self.run_analysis()
+        result=analyze_halo(self.output,220.,232.,544.)
+        self.assertEqual(result['DM_fraction'],1.0)
+        self.assertGreater(result['integral_cross_cm3'],0)
 
     def test_geometry_checked_in_every_block(self) -> None:
         path=self.output/'radial_blocks.tsv'; data=np.loadtxt(path,skiprows=1); data[20,2]*=1.01
@@ -198,5 +257,27 @@ class AnalysisContractTests(unittest.TestCase):
         self.meta['N_numerical_failures']=1
         self.write_json(self.output/'metadata.json',self.meta)
         with self.assertRaisesRegex(ValueError,'failure counters'): self.run_analysis()
+
+class GeneratorContractTests(unittest.TestCase):
+    def test_generated_pairs_separate_configs_logs_and_transport_results(self) -> None:
+        from prepare_transport_runs import prepare
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            manifest=prepare(root,'pilot')
+            self.assertTrue((root/'manifest.json').is_file())
+            self.assertTrue((root/'logs').is_dir())
+            self.assertFalse((root/'results').exists())
+            for run in manifest:
+                text=Path(run['config']).read_text()
+                self.assertIn('configs',Path(run['config']).parts)
+                self.assertEqual(Path(run['config']).name,run['kind']+'.cfg')
+                self.assertIn('production_mode = true;',text)
+                self.assertIn('trajectory_summary_enabled = false;',text)
+                self.assertIn('trajectory_events_enabled = false;',text)
+                self.assertIn('trajectory_trace_rate = 0.0;',text)
+                capture=run['kind']=='capture'
+                self.assertIn('snapshot_enabled = '+('false' if capture else 'true')+';',text)
+                self.assertEqual(run['output_dir'] is None,capture)
+                if run['mass_GeV']==1.0: self.assertIn('DM_mass = 1.0;',text)
 
 if __name__=='__main__': unittest.main()

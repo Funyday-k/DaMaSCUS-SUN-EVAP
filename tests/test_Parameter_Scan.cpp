@@ -40,6 +40,9 @@ TEST(TestParameterScan, TestConfiguration)
 	EXPECT_DOUBLE_EQ(cfg.cross_section_max, 1.0e-32 * cm * cm);
 	EXPECT_EQ(cfg.cross_sections, 5);
 	EXPECT_EQ(cfg.interpolation_points, 150);
+	EXPECT_EQ(cfg.rate_radius_points, 150u);
+	EXPECT_EQ(cfg.rate_speed_points, 150u);
+	EXPECT_DOUBLE_EQ(cfg.rate_max_speed, 0.75);
 	EXPECT_EQ(cfg.isoreflection_rings, 3);
 	EXPECT_EQ(g_top_level_dir, "./unit_test_output/");
 	EXPECT_TRUE(cfg.snapshot_config.enabled);
@@ -54,12 +57,36 @@ TEST(TestParameterScan, TestMinimalCaptureConfigurationDefaults)
 	EXPECT_TRUE(cfg.capture_mode);
 	EXPECT_EQ(cfg.isoreflection_rings, 1);
 	EXPECT_EQ(cfg.interpolation_points, 0);
+	EXPECT_EQ(cfg.rate_radius_points, 0u);
+	EXPECT_EQ(cfg.rate_speed_points, 0u);
+	EXPECT_DOUBLE_EQ(cfg.rate_max_speed, 0.75);
 	EXPECT_DOUBLE_EQ(cfg.cross_section_min, 0.0);
 	EXPECT_DOUBLE_EQ(cfg.cross_section_max, 0.0);
 	EXPECT_EQ(cfg.cross_sections, 0);
 	EXPECT_FALSE(cfg.compute_halo_constraints);
 	EXPECT_FALSE(cfg.perform_full_scan);
 	EXPECT_EQ(cfg.fixed_seed, 0u);
+}
+
+TEST(TestParameterScan, TestRectangularRateGridConfiguration)
+{
+	const std::string path = "/tmp/damascus_rate_grid_" + std::to_string(getpid()) + ".cfg";
+	{
+		std::ifstream source(PROJECT_DIR "tests/config_unittest.cfg");
+		ASSERT_TRUE(source.good());
+		std::ofstream destination(path);
+		destination << source.rdbuf()
+		            << "\nrate_radius_points = 1000;\n"
+		            << "rate_speed_points = 256;\n"
+		            << "rate_max_speed = 0.02;\n";
+		ASSERT_TRUE(destination.good());
+	}
+	Configuration cfg(path, 1);
+	EXPECT_EQ(cfg.interpolation_points, 150u);
+	EXPECT_EQ(cfg.rate_radius_points, 1000u);
+	EXPECT_EQ(cfg.rate_speed_points, 256u);
+	EXPECT_DOUBLE_EQ(cfg.rate_max_speed, 0.02);
+	std::remove(path.c_str());
 }
 
 TEST(TestParameterScan, TestConfigurationSummary)

@@ -529,6 +529,11 @@ TEST(TestDataGeneration, TestTrajectoryDiagnosticOutputContract)
 		    output_dir + "run_metadata.json",
 		    "\"bincount_integration\": \"conservative-hermite-kepler-separate-boundaries-v8\""));
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"interpolation_points\": 20"));
+		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"rate_radius_points\": 20"));
+		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"rate_speed_points\": 20"));
+		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"rate_max_speed\": 7.50000000000000000e-01"));
+		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"rate_query_count\":"));
+		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"rate_fallback_count\":"));
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"evaporation_event_reconciliation\": true"));
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"escape_radius_invariant\": true"));
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"residence_time_invariant\": true"));

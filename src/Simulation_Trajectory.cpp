@@ -1561,6 +1561,36 @@ Trajectory_Simulator::Trajectory_Simulator(const Solar_Model& model, unsigned lo
 	bincount_contribution_cache.reserve(256);
 }
 
+unsigned int Trajectory_Simulator::Scattering_Rate_Interpolation_Radius_Points() const
+{
+	return solar_model.Scattering_Rate_Interpolation_Radius_Points();
+}
+
+unsigned int Trajectory_Simulator::Scattering_Rate_Interpolation_Speed_Points() const
+{
+	return solar_model.Scattering_Rate_Interpolation_Speed_Points();
+}
+
+double Trajectory_Simulator::Scattering_Rate_Interpolation_Max_Speed() const
+{
+	return solar_model.Scattering_Rate_Interpolation_Max_Speed();
+}
+
+uint64_t Trajectory_Simulator::Scattering_Rate_Query_Count() const
+{
+	return solar_model.Scattering_Rate_Query_Count();
+}
+
+uint64_t Trajectory_Simulator::Scattering_Rate_Fallback_Count() const
+{
+	return solar_model.Scattering_Rate_Fallback_Count();
+}
+
+double Trajectory_Simulator::Maximum_Scattering_Rate_Query_Speed() const
+{
+	return solar_model.Maximum_Scattering_Rate_Query_Speed();
+}
+
 void Trajectory_Simulator::Set_Progress_Callback(std::function<void()> callback)
 {
 	progress_callback = std::move(callback);

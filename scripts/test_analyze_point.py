@@ -58,7 +58,10 @@ class AnalysisContractTests(unittest.TestCase):
             'halo_model':'SHM','halo_density_GeV_cm3':.4,'m_chi_GeV':.01,'sigma_SD_cm2':1e-32,
             'R_inj_rsun':2.0,'R_match_rsun':1.0,'R_incident_au':1100,
             'R_transit_reference_rsun':3,'R_remove_rsun':3,
-            'interpolation_points':0,'rk_position_tolerance_km':1.0,
+            'interpolation_points':0,'rate_radius_points':0,'rate_speed_points':0,
+            'rate_max_speed':0.0,'rate_query_count':100,'rate_fallback_count':0,
+            'rate_fallback_fraction':0.0,'rate_max_speed_seen':0.01,
+            'rk_position_tolerance_km':1.0,
             'rk_velocity_tolerance_km_s':.001,'rk_phase_tolerance':1e-7,
             'max_optical_depth_step':.05,'optical_depth_relative_tolerance':.01,
             'requested_samples':64,
@@ -125,6 +128,14 @@ class AnalysisContractTests(unittest.TestCase):
         self.cmeta['interpolation_points']=1000
         self.write_json(self.capture/'metadata.json',self.cmeta)
         with self.assertRaisesRegex(ValueError,'interpolation_points'): self.run_analysis()
+
+    def test_rate_grid_signature_mismatch_is_rejected(self) -> None:
+        # Keep the capture grid internally valid while making it incompatible.
+        self.cmeta['rate_radius_points']=1000
+        self.cmeta['rate_speed_points']=256
+        self.cmeta['rate_max_speed']=0.02
+        self.write_json(self.capture/'metadata.json',self.cmeta)
+        with self.assertRaisesRegex(ValueError,'rate_radius_points'): self.run_analysis()
 
     def test_removal_cutoff_mismatch_is_rejected(self) -> None:
         self.cmeta['R_remove_rsun']=550

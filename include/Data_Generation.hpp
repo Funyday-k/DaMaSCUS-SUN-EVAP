@@ -249,6 +249,13 @@ class Simulation_Data
 	std::vector<std::vector<libphysica::DataPoint>> data;
 	double outer_removal_radius_rsun = DEFAULT_OUTER_REMOVAL_RSUN;
 	unsigned int interpolation_points = 0;
+	unsigned int rate_radius_points = 0;
+	unsigned int rate_speed_points = 0;
+	double rate_max_speed = 0.0;
+	uint64_t rate_query_count = 0;
+	uint64_t rate_fallback_count = 0;
+	double rate_fallback_fraction = 0.0;
+	double rate_max_speed_seen = 0.0;
 	bool fixed_injection_capture_run = false;
 	bool thermal_shape_run = false;
 	bool abort_on_invalid_trajectory = false;

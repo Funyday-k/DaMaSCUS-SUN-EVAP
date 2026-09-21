@@ -1,6 +1,7 @@
 #ifndef __Solar_Model_hpp_
 #define __Solar_Model_hpp_
 
+#include <cstdint>
 #include <string>
 
 #include "libphysica/Linear_Algebra.hpp"
@@ -54,6 +55,9 @@ class Solar_Model
 	double rate_grid_inverse_radius_step;
 	double rate_grid_inverse_speed_step;
 	double rate_grid_max_speed;
+	uint64_t rate_query_count;
+	uint64_t rate_fallback_count;
+	double max_rate_query_speed;
 
   public:
 	std::string name;
@@ -77,9 +81,14 @@ class Solar_Model
 	double Total_DM_Scattering_Rate_Computed(obscura::DM_Particle& DM, double r, double DM_speed);
 
 	double Total_DM_Scattering_Rate_Interpolated(obscura::DM_Particle& DM, double r, double DM_speed);
-	void Interpolate_Total_DM_Scattering_Rate(obscura::DM_Particle& DM, unsigned int N_radius, unsigned int N_speed);
+	void Interpolate_Total_DM_Scattering_Rate(obscura::DM_Particle& DM, unsigned int N_radius, unsigned int N_speed, double v_max = 0.75);
 	unsigned int Scattering_Rate_Interpolation_Radius_Points() const;
 	unsigned int Scattering_Rate_Interpolation_Speed_Points() const;
+	double Scattering_Rate_Interpolation_Max_Speed() const;
+	uint64_t Scattering_Rate_Query_Count() const;
+	uint64_t Scattering_Rate_Fallback_Count() const;
+	double Scattering_Rate_Fallback_Fraction() const;
+	double Maximum_Scattering_Rate_Query_Speed() const;
 
 	void Print_Summary(int mpi_rank = 0) const;
 };

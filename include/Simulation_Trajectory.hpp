@@ -397,6 +397,12 @@ class Trajectory_Simulator
 	unsigned long int Current_Trajectory_ID() const;
 	double Current_Trajectory_Wall_Time_Seconds() const;
 	const TrajectoryBincount& Current_Trajectory_Bincount() const;
+	unsigned int Scattering_Rate_Interpolation_Radius_Points() const;
+	unsigned int Scattering_Rate_Interpolation_Speed_Points() const;
+	double Scattering_Rate_Interpolation_Max_Speed() const;
+	uint64_t Scattering_Rate_Query_Count() const;
+	uint64_t Scattering_Rate_Fallback_Count() const;
+	double Maximum_Scattering_Rate_Query_Speed() const;
 };
 
 // 3. Equation of motion solution with Runge-Kutta-Fehlberg

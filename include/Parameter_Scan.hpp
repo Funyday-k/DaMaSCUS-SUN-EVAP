@@ -36,6 +36,8 @@ class Configuration : public obscura::Configuration
 	bool production_mode = false;
 	bool thermal_validation_mode = false;
 	unsigned int isoreflection_rings, interpolation_points;
+	unsigned int rate_radius_points, rate_speed_points;
+	double rate_max_speed;
 	unsigned int sample_size, cross_sections, fixed_seed;
 	unsigned int max_trajectories;
 	unsigned long int maximum_number_of_scatterings;
@@ -53,13 +55,16 @@ class Configuration : public obscura::Configuration
 
 double Compute_p_Value(unsigned int sample_size, obscura::DM_Particle& DM, obscura::DM_Detector& detector, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, unsigned int rate_interpolation_points = 1000, int mpi_rank = 0, unsigned long int max_scatterings = DEFAULT_MAXIMUM_SCATTERINGS, SnapshotConfig snapshot_config = SnapshotConfig(), unsigned int fixed_seed = 0);
 
+double Compute_p_Value_With_Rate_Grid(unsigned int sample_size, obscura::DM_Particle& DM, obscura::DM_Detector& detector, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, unsigned int rate_radius_points, unsigned int rate_speed_points, double rate_max_speed, int mpi_rank = 0, unsigned long int max_scatterings = DEFAULT_MAXIMUM_SCATTERINGS, SnapshotConfig snapshot_config = SnapshotConfig(), unsigned int fixed_seed = 0);
+
 class Parameter_Scan
 {
   private:
 	std::string results_path;
 	std::vector<double> DM_masses;
 	std::vector<double> couplings;
-	unsigned int sample_size, scattering_rate_interpolation_points;
+	unsigned int sample_size, scattering_rate_radius_points, scattering_rate_speed_points;
+	double scattering_rate_max_speed;
 	unsigned long int maximum_number_of_scatterings;
 	SnapshotConfig snapshot_config;
 	unsigned int fixed_seed;

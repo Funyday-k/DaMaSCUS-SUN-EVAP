@@ -7,7 +7,7 @@ import json
 from collections import defaultdict
 from pathlib import Path
 import numpy as np
-from analyze_point import rank_seeds
+from analyze_point import normalize_rate_grid_metadata, rank_seeds
 
 
 def comparison_signature(record: dict) -> str:
@@ -15,10 +15,12 @@ def comparison_signature(record: dict) -> str:
     if record.get('analysis_version')!=2 or not record.get('physical_config') or not record.get('solar_reference_sha256'):
         raise ValueError('missing analysis provenance; rerun analyze_point.py')
     meta=record['metadata']
+    normalize_rate_grid_metadata(meta)
     physical={k:v for k,v in record['physical_config'].items()
               if k not in {'DM_mass','DM_cross_section_nucleon'}}
     settings={key:meta[key] for key in ['source_sha256','solar_model','halo_model','halo_density_GeV_cm3',
               'R_inj_rsun','R_match_rsun','R_incident_au','interpolation_points',
+              'rate_radius_points','rate_speed_points','rate_max_speed',
               'rk_position_tolerance_km','rk_velocity_tolerance_km_s','rk_phase_tolerance',
               'max_optical_depth_step','optical_depth_relative_tolerance']}
     settings.update(physical=physical,solar_reference=record['solar_reference_sha256'],

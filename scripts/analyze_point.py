@@ -24,6 +24,23 @@ def read_json(path: Path) -> dict:
     return json.loads(path.read_text())
 
 
+def normalize_rate_grid_metadata(meta: dict) -> None:
+    """Add the exact legacy square-grid defaults to older schema-8 products."""
+    legacy = meta.get('interpolation_points')
+    if not isinstance(legacy, int) or legacy < 0:
+        raise ValueError('invalid interpolation_points metadata')
+    enabled_points = legacy if legacy >= 2 else 0
+    meta.setdefault('rate_radius_points', enabled_points)
+    meta.setdefault('rate_speed_points', enabled_points)
+    meta.setdefault('rate_max_speed', 0.75 if enabled_points else 0.0)
+    nr, nv, vmax = (meta[key] for key in
+                    ('rate_radius_points', 'rate_speed_points', 'rate_max_speed'))
+    if (not isinstance(nr, int) or nr < 0 or not isinstance(nv, int) or nv < 0
+        or not np.isfinite(vmax) or vmax < 0
+        or ((nr >= 2 and nv >= 2) != (vmax > 0))):
+        raise ValueError('invalid scattering-rate grid metadata')
+
+
 def require_accepted(path: Path, workflow: str) -> dict:
     """Require an accepted, explicitly identified production product."""
     meta = read_json(path / 'metadata.json')
@@ -35,6 +52,7 @@ def require_accepted(path: Path, workflow: str) -> dict:
         raise ValueError(f'{path}: production gate failed; prefixes cannot normalize a source')
     if meta.get('N_numerical_failures')!=0 or meta.get('N_computational_failures')!=0:
         raise ValueError(f'{path}: failure counters contradict accepted production')
+    normalize_rate_grid_metadata(meta)
     rank_seeds(meta)
     return meta
 
@@ -229,6 +247,7 @@ def analyze(output: Path, capture: Path, sigma_v: float = 3e-26,
     for key in ['m_chi_GeV','sigma_SD_cm2','solar_model','halo_model','halo_density_GeV_cm3',
                 'source_sha256','R_inj_rsun','R_match_rsun','R_incident_au',
                 'R_transit_reference_rsun','R_remove_rsun','interpolation_points',
+                'rate_radius_points','rate_speed_points','rate_max_speed',
                 'rk_position_tolerance_km','rk_velocity_tolerance_km_s','rk_phase_tolerance',
                 'max_optical_depth_step','optical_depth_relative_tolerance']:
         if m[key] != c[key]:

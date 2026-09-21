@@ -252,7 +252,8 @@ Solar_Model::Solar_Model(const std::string& data_file)
 : using_interpolated_rate(false),
   rate_grid_radius_points(0), rate_grid_speed_points(0),
   rate_grid_inverse_radius_step(0.0), rate_grid_inverse_speed_step(0.0),
-  rate_grid_max_speed(0.0), name("Standard Solar Model AGSS09")
+  rate_grid_max_speed(0.0), rate_query_count(0), rate_fallback_count(0),
+  max_rate_query_speed(0.0), name("Standard Solar Model AGSS09")
 {
 	Import_Raw_Data(data_file.empty() ? Locate_Solar_Model_Data_File() : data_file);
 
@@ -434,12 +435,14 @@ double Solar_Model::Total_DM_Scattering_Rate(obscura::DM_Particle& DM, double r,
 		r = 0.0;
 	if(DM_speed < 0.0)
 		DM_speed = 0.0;
+	++rate_query_count;
+	max_rate_query_speed = std::max(max_rate_query_speed, DM_speed);
 	if(using_interpolated_rate && DM_speed <= rate_grid_max_speed)
 		return Total_DM_Scattering_Rate_Interpolated(DM, r, DM_speed);
 	else
 	{
 		if(using_interpolated_rate)
-			std::cerr << "Warning Solar_Model::Total_DM_Scattering_Rate(): DM speed is out of bound (vDM = " << DM_speed << ")\n\tScattering rate must be computed on the fly." << std::endl;
+			++rate_fallback_count;
 		return Total_DM_Scattering_Rate_Computed(DM, r, DM_speed);
 	}
 }
@@ -485,10 +488,7 @@ double Solar_Model::Total_DM_Scattering_Rate_Interpolated(obscura::DM_Particle& 
 	}
 	// 确保速度不超过插值上限
 	if(DM_speed > rate_grid_max_speed)
-	{
-		std::cerr << "Warning Solar_Model::Total_DM_Scattering_Rate_Interpolated(): DM speed (" << DM_speed << ") exceeds interpolation domain, using computed rate." << std::endl;
 		return Total_DM_Scattering_Rate_Computed(DM, r, DM_speed);
-	}
 
 	const double radius_coordinate = r * rate_grid_inverse_radius_step;
 	const double speed_coordinate = DM_speed * rate_grid_inverse_speed_step;
@@ -515,8 +515,11 @@ double Solar_Model::Total_DM_Scattering_Rate_Interpolated(obscura::DM_Particle& 
 	           : std::numeric_limits<double>::quiet_NaN();
 }
 
-void Solar_Model::Interpolate_Total_DM_Scattering_Rate(obscura::DM_Particle& DM, unsigned int N_radius, unsigned int N_speed)
+void Solar_Model::Interpolate_Total_DM_Scattering_Rate(obscura::DM_Particle& DM, unsigned int N_radius, unsigned int N_speed, double v_max)
 {
+	rate_query_count = 0;
+	rate_fallback_count = 0;
+	max_rate_query_speed = 0.0;
 	if(N_radius < 2 || N_speed < 2)
 	{
 		using_interpolated_rate = false;
@@ -529,11 +532,12 @@ void Solar_Model::Interpolate_Total_DM_Scattering_Rate(obscura::DM_Particle& DM,
 	}
 	else
 	{
+		if(!std::isfinite(v_max) || v_max <= 0.0)
+			throw std::invalid_argument("scattering-rate interpolation maximum speed must be finite and positive");
 		int mpi_processes, mpi_rank;
 		MPI_Comm_size(MPI_COMM_WORLD, &mpi_processes);
 		MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
 
-		const double vMax = 0.75;
 		const unsigned int process_count = static_cast<unsigned int>(mpi_processes);
 		const unsigned int base_radius_count = N_radius / process_count;
 		const unsigned int remainder = N_radius % process_count;
@@ -558,7 +562,7 @@ void Solar_Model::Interpolate_Total_DM_Scattering_Rate(obscura::DM_Particle& DM,
 
 		// Each rank computes its exact contiguous slice of the requested grid. Uneven
 		// slices avoid padding N_radius to a multiple of the MPI process count.
-		const std::vector<double> speeds = libphysica::Linear_Space(0, vMax, N_speed);
+		const std::vector<double> speeds = libphysica::Linear_Space(0, v_max, N_speed);
 		std::vector<double> local_rates;
 		local_rates.reserve(static_cast<size_t>(local_N_radius) * N_speed);
 		for(unsigned int local_radius_index = 0; local_radius_index < local_N_radius; local_radius_index++)
@@ -581,8 +585,8 @@ void Solar_Model::Interpolate_Total_DM_Scattering_Rate(obscura::DM_Particle& DM,
 		rate_grid_radius_points = N_radius;
 		rate_grid_speed_points = N_speed;
 		rate_grid_inverse_radius_step = static_cast<double>(N_radius - 1) / rSun;
-		rate_grid_inverse_speed_step = static_cast<double>(N_speed - 1) / vMax;
-		rate_grid_max_speed = vMax;
+		rate_grid_inverse_speed_step = static_cast<double>(N_speed - 1) / v_max;
+		rate_grid_max_speed = v_max;
 		using_interpolated_rate = true;
 	}
 }
@@ -595,6 +599,33 @@ unsigned int Solar_Model::Scattering_Rate_Interpolation_Radius_Points() const
 unsigned int Solar_Model::Scattering_Rate_Interpolation_Speed_Points() const
 {
 	return rate_grid_speed_points;
+}
+
+double Solar_Model::Scattering_Rate_Interpolation_Max_Speed() const
+{
+	return rate_grid_max_speed;
+}
+
+uint64_t Solar_Model::Scattering_Rate_Query_Count() const
+{
+	return rate_query_count;
+}
+
+uint64_t Solar_Model::Scattering_Rate_Fallback_Count() const
+{
+	return rate_fallback_count;
+}
+
+double Solar_Model::Scattering_Rate_Fallback_Fraction() const
+{
+	return rate_query_count > 0
+	           ? static_cast<double>(rate_fallback_count) / rate_query_count
+	           : 0.0;
+}
+
+double Solar_Model::Maximum_Scattering_Rate_Query_Speed() const
+{
+	return max_rate_query_speed;
 }
 
 void Solar_Model::Print_Summary(int mpi_rank) const

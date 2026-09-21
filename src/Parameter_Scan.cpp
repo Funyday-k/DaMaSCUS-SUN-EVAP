@@ -238,6 +238,29 @@ void Configuration::Import_Parameter_Scan_Parameter()
 	{
 		interpolation_points = 0;
 	}
+	rate_radius_points = interpolation_points;
+	rate_speed_points = interpolation_points;
+	rate_max_speed = 0.75;
+	if(config.exists("rate_radius_points"))
+	{
+		const int configured_points = config.lookup("rate_radius_points");
+		if(configured_points < 0)
+			throw std::invalid_argument("rate_radius_points must be non-negative");
+		rate_radius_points = static_cast<unsigned int>(configured_points);
+	}
+	if(config.exists("rate_speed_points"))
+	{
+		const int configured_points = config.lookup("rate_speed_points");
+		if(configured_points < 0)
+			throw std::invalid_argument("rate_speed_points must be non-negative");
+		rate_speed_points = static_cast<unsigned int>(configured_points);
+	}
+	if(config.exists("rate_max_speed"))
+		rate_max_speed = config.lookup("rate_max_speed");
+	if(!std::isfinite(rate_max_speed) || rate_max_speed <= 0.0)
+		throw std::invalid_argument("rate_max_speed must be finite and positive");
+	if((rate_radius_points >= 2) != (rate_speed_points >= 2))
+		throw std::invalid_argument("rate_radius_points and rate_speed_points must both enable or disable interpolation");
 	try
 	{
 		cross_section_min = config.lookup("cross_section_min");
@@ -655,7 +678,12 @@ void Configuration::Print_Summary(int mpi_rank)
 				  << "\tFixed PRNG seed:\t\t" << (fixed_seed == 0 ? "random" : std::to_string(fixed_seed)) << std::endl
 				  << "\tMax scatterings/traj:\t\t" << maximum_number_of_scatterings << std::endl
 				  << "\tTrajectory boundary [Rsun]:\t" << TRAJECTORY_BOUNDARY_RSUN << std::endl
-				  << "\tSc. rate interpolation:\t\t" << ((interpolation_points > 0) ? "[x] (Grid: " + std::to_string(interpolation_points) + "×" + std::to_string(interpolation_points) + ")" : "[ ]") << std::endl;
+				  << "\tSc. rate interpolation:\t\t"
+				  << ((rate_radius_points >= 2 && rate_speed_points >= 2)
+				          ? "[x] (Grid: " + std::to_string(rate_radius_points) + "×"
+				                + std::to_string(rate_speed_points) + ", vmax: "
+				                + std::to_string(rate_max_speed) + "c)"
+				          : "[ ]") << std::endl;
 		if(run_mode == "Parameter point" && isoreflection_rings > 1)
 			std::cout << "\tIsoreflection rings:\t\t" << isoreflection_rings << std::endl;
 		else if(run_mode == "Parameter scan")
@@ -667,11 +695,11 @@ void Configuration::Print_Summary(int mpi_rank)
 	}
 }
 
-double Compute_p_Value(unsigned int sample_size, obscura::DM_Particle& DM, obscura::DM_Detector& detector, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, unsigned int rate_interpolation_points, int mpi_rank, unsigned long int max_scatterings, SnapshotConfig snapshot_config, unsigned int fixed_seed)
+double Compute_p_Value_With_Rate_Grid(unsigned int sample_size, obscura::DM_Particle& DM, obscura::DM_Detector& detector, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, unsigned int rate_radius_points, unsigned int rate_speed_points, double rate_max_speed, int mpi_rank, unsigned long int max_scatterings, SnapshotConfig snapshot_config, unsigned int fixed_seed)
 {
 	double u_min = detector.Minimum_DM_Speed(DM);
 
-	solar_model.Interpolate_Total_DM_Scattering_Rate(DM, rate_interpolation_points, rate_interpolation_points);
+	solar_model.Interpolate_Total_DM_Scattering_Rate(DM, rate_radius_points, rate_speed_points, rate_max_speed);
 	Simulation_Data data_set(sample_size, g_max_trajectories, u_min);
 	data_set.Configure(TRAJECTORY_BOUNDARY_RSUN * rSun, 1, max_scatterings);
 	data_set.Generate_Data(DM, solar_model, halo_model, snapshot_config, fixed_seed, false);
@@ -682,9 +710,20 @@ double Compute_p_Value(unsigned int sample_size, obscura::DM_Particle& DM, obscu
 	return (p < 1.0e-100) ? 0.0 : p;
 }
 
+double Compute_p_Value(unsigned int sample_size, obscura::DM_Particle& DM, obscura::DM_Detector& detector, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, unsigned int rate_interpolation_points, int mpi_rank, unsigned long int max_scatterings, SnapshotConfig snapshot_config, unsigned int fixed_seed)
+{
+	return Compute_p_Value_With_Rate_Grid(
+	    sample_size, DM, detector, solar_model, halo_model,
+	    rate_interpolation_points, rate_interpolation_points, 0.75,
+	    mpi_rank, max_scatterings, snapshot_config, fixed_seed);
+}
+
 // 2. 	Class to perform parameter scans in the (m_DM, sigma)-plane to search for equal-p-value contours.
 Parameter_Scan::Parameter_Scan(const std::vector<double>& masses, const std::vector<double>& coupl, std::string ID, unsigned int samplesize, unsigned int interpolation_points, double CL, unsigned long int max_scatterings)
-: DM_masses(masses), couplings(coupl), sample_size(samplesize), scattering_rate_interpolation_points(interpolation_points), maximum_number_of_scatterings(max_scatterings), snapshot_config(), fixed_seed(0), certainty_level(CL)
+: DM_masses(masses), couplings(coupl), sample_size(samplesize),
+  scattering_rate_radius_points(interpolation_points),
+  scattering_rate_speed_points(interpolation_points), scattering_rate_max_speed(0.75),
+  maximum_number_of_scatterings(max_scatterings), snapshot_config(), fixed_seed(0), certainty_level(CL)
 {
 	if(DM_masses.empty() || couplings.empty())
 		throw std::invalid_argument("Parameter_Scan requires non-empty mass and coupling grids");
@@ -712,6 +751,9 @@ Parameter_Scan::Parameter_Scan(const std::vector<double>& masses, const std::vec
 Parameter_Scan::Parameter_Scan(Configuration& config)
 : Parameter_Scan(libphysica::Log_Space(config.constraints_mass_min, config.constraints_mass_max, config.constraints_masses), libphysica::Log_Space(config.cross_section_min, config.cross_section_max, config.cross_sections), config.ID, config.sample_size, config.interpolation_points, config.constraints_certainty, config.maximum_number_of_scatterings)
 {
+	scattering_rate_radius_points = config.rate_radius_points;
+	scattering_rate_speed_points = config.rate_speed_points;
+	scattering_rate_max_speed = config.rate_max_speed;
 	snapshot_config = config.snapshot_config;
 	fixed_seed = config.fixed_seed;
 }
@@ -963,7 +1005,10 @@ void Parameter_Scan::Perform_STA_Scan(obscura::DM_Particle& DM, obscura::DM_Dete
 			Print_Grid(mpi_rank, row, column);
 			MPI_Barrier(MPI_COMM_WORLD);
 
-			p = Compute_p_Value(sample_size, DM, detector, solar_model, halo_model, scattering_rate_interpolation_points, mpi_rank, maximum_number_of_scatterings, snapshot_config, fixed_seed);
+			p = Compute_p_Value_With_Rate_Grid(sample_size, DM, detector, solar_model, halo_model,
+			                    scattering_rate_radius_points, scattering_rate_speed_points,
+			                    scattering_rate_max_speed, mpi_rank, maximum_number_of_scatterings,
+			                    snapshot_config, fixed_seed);
 
 			p_value_grid[row][column] = p;
 			if(mpi_rank == 0)
@@ -1035,7 +1080,10 @@ void Parameter_Scan::Perform_Full_Scan(obscura::DM_Particle& DM, obscura::DM_Det
 				Print_Grid(mpi_rank, row, column);
 				MPI_Barrier(MPI_COMM_WORLD);
 
-				p = Compute_p_Value(sample_size, DM, detector, solar_model, halo_model, scattering_rate_interpolation_points, mpi_rank, maximum_number_of_scatterings, snapshot_config, fixed_seed);
+				p = Compute_p_Value_With_Rate_Grid(sample_size, DM, detector, solar_model, halo_model,
+				                    scattering_rate_radius_points, scattering_rate_speed_points,
+				                    scattering_rate_max_speed, mpi_rank, maximum_number_of_scatterings,
+				                    snapshot_config, fixed_seed);
 
 				p_value_grid[row][column] = p;
 				if(mpi_rank == 0)

@@ -197,18 +197,20 @@ TEST(TestSolarModel, TestTotalDMScatteringRateRegularGridNodes)
 	DM.Set_Sigma_Proton(pb);
 	const unsigned int radius_points = 31;
 	const unsigned int speed_points = 29;
+	const double max_speed = 0.02;
 	const unsigned int radius_indices[] = {0, 7, 15, 30};
 	const unsigned int speed_indices[] = {0, 5, 14, 28};
 
-	SSM.Interpolate_Total_DM_Scattering_Rate(DM, radius_points, speed_points);
+	SSM.Interpolate_Total_DM_Scattering_Rate(DM, radius_points, speed_points, max_speed);
 	EXPECT_EQ(SSM.Scattering_Rate_Interpolation_Radius_Points(), radius_points);
 	EXPECT_EQ(SSM.Scattering_Rate_Interpolation_Speed_Points(), speed_points);
+	EXPECT_DOUBLE_EQ(SSM.Scattering_Rate_Interpolation_Max_Speed(), max_speed);
 	for(const auto radius_index : radius_indices)
 	{
 		const double radius = rSun * radius_index / (radius_points - 1);
 		for(const auto speed_index : speed_indices)
 		{
-			const double speed = 0.75 * speed_index / (speed_points - 1);
+			const double speed = max_speed * speed_index / (speed_points - 1);
 			const double expected = SSM.Total_DM_Scattering_Rate_Computed(DM, radius, speed);
 			const double tolerance = std::max(1.0e-30, 1.0e-10 * std::fabs(expected));
 			EXPECT_NEAR(SSM.Total_DM_Scattering_Rate(DM, radius, speed), expected, tolerance);
@@ -222,6 +224,69 @@ TEST(TestSolarModel, TestTotalDMScatteringRateRegularGridNodes)
 	const double speed = 0.21;
 	EXPECT_DOUBLE_EQ(SSM.Total_DM_Scattering_Rate(DM, radius, speed),
 	                 SSM.Total_DM_Scattering_Rate_Computed(DM, radius, speed));
+}
+
+TEST(TestSolarModel, TestScatteringRateFallbackIsCountedWithoutWarning)
+{
+	Solar_Model SSM;
+	obscura::DM_Particle_SD DM(0.1 * GeV);
+	DM.Set_Low_Mass_Mode(true);
+	DM.Fix_Coupling_Ratio(1.0, 0.0);
+	DM.Set_Sigma_Proton(1.0e-32 * cm * cm);
+	DM.Set_Sigma_Electron(1.0e-80 * cm * cm);
+	const double max_speed = 0.02;
+	const double query_speed = 1.1 * max_speed;
+	const double radius = 0.4 * rSun;
+
+	SSM.Interpolate_Total_DM_Scattering_Rate(DM, 31, 17, max_speed);
+	const double expected = SSM.Total_DM_Scattering_Rate_Computed(DM, radius, query_speed);
+	testing::internal::CaptureStderr();
+	const double actual = SSM.Total_DM_Scattering_Rate(DM, radius, query_speed);
+	const std::string stderr_output = testing::internal::GetCapturedStderr();
+
+	EXPECT_DOUBLE_EQ(actual, expected);
+	EXPECT_TRUE(stderr_output.empty());
+	EXPECT_EQ(SSM.Scattering_Rate_Query_Count(), 1u);
+	EXPECT_EQ(SSM.Scattering_Rate_Fallback_Count(), 1u);
+	EXPECT_DOUBLE_EQ(SSM.Scattering_Rate_Fallback_Fraction(), 1.0);
+	EXPECT_DOUBLE_EQ(SSM.Maximum_Scattering_Rate_Query_Speed(), query_speed);
+}
+
+TEST(TestSolarModel, TestRectangularGridAccuracyAcrossRepresentativeMasses)
+{
+	const double masses[] = {0.01, 0.1, 1.0};
+	const double max_speeds[] = {0.08, 0.02, 0.01};
+	const double radius_fractions[] = {0.0, 0.1, 0.3, 0.5, 0.7, 0.9, 0.99};
+	const double speed_fractions[] = {0.0, 0.1, 0.25, 0.5, 0.75, 0.95};
+
+	for(unsigned int mass_index = 0; mass_index < 3; mass_index++)
+	{
+		Solar_Model SSM;
+		obscura::DM_Particle_SD DM(masses[mass_index] * GeV);
+		DM.Set_Low_Mass_Mode(true);
+		DM.Fix_Coupling_Ratio(1.0, 0.0);
+		DM.Set_Sigma_Proton(1.0e-32 * cm * cm);
+		DM.Set_Sigma_Electron(1.0e-80 * cm * cm);
+		SSM.Interpolate_Total_DM_Scattering_Rate(
+		    DM, 1000, 256, max_speeds[mass_index]);
+
+		double weighted_absolute_error = 0.0;
+		double total_exact_rate = 0.0;
+		for(const double radius_fraction : radius_fractions)
+			for(const double speed_fraction : speed_fractions)
+			{
+				const double radius = radius_fraction * rSun;
+				const double speed = speed_fraction * max_speeds[mass_index];
+				const double exact = SSM.Total_DM_Scattering_Rate_Computed(DM, radius, speed);
+				const double interpolated = SSM.Total_DM_Scattering_Rate(DM, radius, speed);
+				weighted_absolute_error += std::fabs(interpolated - exact);
+				total_exact_rate += exact;
+			}
+		ASSERT_GT(total_exact_rate, 0.0);
+		EXPECT_LT(weighted_absolute_error / total_exact_rate, 1.0e-3)
+		    << "mass_GeV=" << masses[mass_index];
+		EXPECT_EQ(SSM.Scattering_Rate_Fallback_Count(), 0u);
+	}
 }
 
 TEST(TestSolarModel, TestTotalDMScatteringRateRegularGridSDProton)

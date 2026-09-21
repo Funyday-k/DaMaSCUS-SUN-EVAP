@@ -1433,8 +1433,22 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 	print_progress_update(global_target_samples, global_target_samples > 0 || !early_stopped);
 	if(mpi_rank == 0)
 		std::cout << std::endl;
+	rate_radius_points = simulator.Scattering_Rate_Interpolation_Radius_Points();
+	rate_speed_points = simulator.Scattering_Rate_Interpolation_Speed_Points();
+	rate_max_speed = simulator.Scattering_Rate_Interpolation_Max_Speed();
+	rate_query_count = simulator.Scattering_Rate_Query_Count();
+	rate_fallback_count = simulator.Scattering_Rate_Fallback_Count();
+	rate_max_speed_seen = simulator.Maximum_Scattering_Rate_Query_Speed();
 	MPI_Barrier(MPI_COMM_WORLD);
 	Perform_MPI_Reductions(capture_mode);
+	uint64_t rate_counts[2] = {rate_query_count, rate_fallback_count};
+	MPI_Allreduce(MPI_IN_PLACE, rate_counts, 2, MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+	rate_query_count = rate_counts[0];
+	rate_fallback_count = rate_counts[1];
+	MPI_Allreduce(MPI_IN_PLACE, &rate_max_speed_seen, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+	rate_fallback_fraction = rate_query_count > 0
+	                             ? static_cast<double>(rate_fallback_count) / rate_query_count
+	                             : 0.0;
 }
 
 void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
@@ -2407,6 +2421,13 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 			         << "  \"radial_exterior_max_bin_width_Rsun\": " << EXTERIOR_MAX_BIN_WIDTH_RSUN << ",\n"
 			         << "  \"outer_domain_removal_Rsun\": " << outer_removal_radius_rsun << ",\n"
 			         << "  \"interpolation_points\": " << trajectory_diagnostic_config.interpolation_points << ",\n"
+			         << "  \"rate_radius_points\": " << rate_radius_points << ",\n"
+			         << "  \"rate_speed_points\": " << rate_speed_points << ",\n"
+			         << "  \"rate_max_speed\": " << rate_max_speed << ",\n"
+			         << "  \"rate_query_count\": " << rate_query_count << ",\n"
+			         << "  \"rate_fallback_count\": " << rate_fallback_count << ",\n"
+			         << "  \"rate_fallback_fraction\": " << rate_fallback_fraction << ",\n"
+			         << "  \"rate_max_speed_seen\": " << rate_max_speed_seen << ",\n"
 			         << "  \"max_optical_depth_step\": " << NormalModeMaxOpticalDepthStep() << ",\n"
 			         << "  \"optical_depth_relative_tolerance\": " << OpticalDepthRelativeTolerance() << ",\n"
 			         << "  \"energy_definition\": \"0.5*m_chi*(v^2-v_escape(r)^2); bound iff energy < 0\",\n"
@@ -3133,9 +3154,16 @@ void Simulation_Data::Write_Transport_Products(const std::string& dir, obscura::
          << ",\n\"R_match_rsun\":" << In_Units(initial_and_final_radius,rSun)
          << ",\n\"R_incident_au\":" << INCIDENT_SAMPLING_RADIUS_AU
          << ",\n\"R_transit_reference_rsun\":" << std::min(outer_removal_radius_rsun, TRANSIT_REFERENCE_RSUN)
-         << ",\n\"R_remove_rsun\":" << outer_removal_radius_rsun
-         << ",\n\"interpolation_points\":" << interpolation_points
-         << ",\n\"rk_position_tolerance_km\":" << RK45PositionToleranceKm()
+		 << ",\n\"R_remove_rsun\":" << outer_removal_radius_rsun
+		 << ",\n\"interpolation_points\":" << interpolation_points
+		 << ",\n\"rate_radius_points\":" << rate_radius_points
+		 << ",\n\"rate_speed_points\":" << rate_speed_points
+		 << ",\n\"rate_max_speed\":" << rate_max_speed
+		 << ",\n\"rate_query_count\":" << rate_query_count
+		 << ",\n\"rate_fallback_count\":" << rate_fallback_count
+		 << ",\n\"rate_fallback_fraction\":" << rate_fallback_fraction
+		 << ",\n\"rate_max_speed_seen\":" << rate_max_speed_seen
+		 << ",\n\"rk_position_tolerance_km\":" << RK45PositionToleranceKm()
          << ",\n\"rk_velocity_tolerance_km_s\":" << RK45VelocityToleranceKmPerSec()
          << ",\n\"rk_phase_tolerance\":" << RK45PhaseTolerance()
          << ",\n\"max_optical_depth_step\":" << NormalModeMaxOpticalDepthStep()

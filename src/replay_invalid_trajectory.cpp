@@ -154,8 +154,9 @@ int main(int argc, char* argv[])
 		Solar_Model solar_model(solar_model_data_file);
 		solar_model.Interpolate_Total_DM_Scattering_Rate(
 		    *cfg.DM,
-		    cfg.interpolation_points,
-		    cfg.interpolation_points);
+		    cfg.rate_radius_points,
+		    cfg.rate_speed_points,
+		    cfg.rate_max_speed);
 
 		Trajectory_Simulator simulator(
 		    solar_model,

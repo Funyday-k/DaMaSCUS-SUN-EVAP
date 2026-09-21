@@ -134,7 +134,8 @@ int main(int argc, char* argv[])
 					  << "\tu_min [km/sec]:\t" << libphysica::Round(In_Units(u_min, km / sec)) << "\t\t"
 					  << "sigma_e [cm2]:\t" << libphysica::Round(In_Units(cfg.DM->Get_Interaction_Parameter("Electrons"), cm * cm)) << std::endl
 					  << std::endl;
-		SSM.Interpolate_Total_DM_Scattering_Rate(*cfg.DM, cfg.interpolation_points, cfg.interpolation_points);
+		SSM.Interpolate_Total_DM_Scattering_Rate(
+		    *cfg.DM, cfg.rate_radius_points, cfg.rate_speed_points, cfg.rate_max_speed);
 
 		data_set.outer_removal_radius_rsun = cfg.outer_removal_radius_rsun;
 		data_set.interpolation_points = cfg.interpolation_points;

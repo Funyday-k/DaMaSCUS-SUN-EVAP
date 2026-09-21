@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: build-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      OMPI_MCA_rmaps_base_oversubscribe: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install native and Python test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            git \
+            libboost-dev \
+            libconfig++-dev \
+            libopenmpi-dev \
+            openmpi-bin \
+            python3 \
+            python3-numpy \
+            python3-scipy \
+            python3-matplotlib
+
+      - name: Configure Release test build
+        run: |
+          cmake -S . -B build-ci \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=ON \
+            -DCODE_COVERAGE=OFF \
+            -DDAMASCUS_ENABLE_LTO=OFF \
+            -DDAMASCUS_ENABLE_NATIVE_ARCH=OFF \
+            -DMPIEXEC_MAX_NUMPROCS=4
+
+      - name: Build
+        run: cmake --build build-ci --config Release --parallel 2
+
+      - name: Run CTest suite
+        run: ctest --test-dir build-ci --output-on-failure --timeout 120

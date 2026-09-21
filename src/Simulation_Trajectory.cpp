@@ -29,6 +29,28 @@ using namespace libphysica::natural_units;
 
 namespace
 {
+#ifndef DAMASCUS_SUN_RK45_POSITION_TOLERANCE_KM
+#define DAMASCUS_SUN_RK45_POSITION_TOLERANCE_KM 0.5
+#endif
+#ifndef DAMASCUS_SUN_RK45_VELOCITY_TOLERANCE_KM_S
+#define DAMASCUS_SUN_RK45_VELOCITY_TOLERANCE_KM_S 5.0e-4
+#endif
+#ifndef DAMASCUS_SUN_RK45_PHASE_TOLERANCE
+#define DAMASCUS_SUN_RK45_PHASE_TOLERANCE 5.0e-8
+#endif
+#ifndef DAMASCUS_SUN_MAX_OPTICAL_DEPTH_STEP
+#define DAMASCUS_SUN_MAX_OPTICAL_DEPTH_STEP 0.025
+#endif
+#ifndef DAMASCUS_SUN_OPTICAL_DEPTH_RELATIVE_TOLERANCE
+#define DAMASCUS_SUN_OPTICAL_DEPTH_RELATIVE_TOLERANCE 5.0e-3
+#endif
+
+constexpr double RK45_POSITION_TOLERANCE_KM =
+    DAMASCUS_SUN_RK45_POSITION_TOLERANCE_KM;
+constexpr double RK45_VELOCITY_TOLERANCE_KM_S =
+    DAMASCUS_SUN_RK45_VELOCITY_TOLERANCE_KM_S;
+constexpr double RK45_PHASE_TOLERANCE =
+    DAMASCUS_SUN_RK45_PHASE_TOLERANCE;
 constexpr double RK45_MIN_STEP_FACTOR = 0.1;
 constexpr double RK45_MAX_STEP_FACTOR = 4.0;
 // 单次 Runge_Kutta_45_Step 内层 while(!accepted) 的最大重试次数。
@@ -39,10 +61,13 @@ constexpr double FREE_ENERGY_DRIFT_REL_E_SCALE_EV = 1.0e-30;
 constexpr double BOUNDARY_ENERGY_ABSOLUTE_TOLERANCE_EV_AT_10_MEV = 1.0e-4;
 constexpr double BOUNDARY_ENERGY_RELATIVE_TOLERANCE = 1.0e-8;
 constexpr unsigned int MAX_BOUNDARY_REFINEMENT_RETRIES = 32;
+constexpr unsigned int MAX_UNCAPTURED_ENERGY_REFINEMENT_RETRIES = 64;
 constexpr int BOUNDARY_HERMITE_SCAN_INTERVALS = 64;
 constexpr int BOUNDARY_HERMITE_BISECTION_ITERATIONS = 80;
-constexpr double MAX_OPTICAL_DEPTH_STEP = 0.05;
-constexpr double OPTICAL_DEPTH_RELATIVE_TOLERANCE = 1.0e-2;
+constexpr double MAX_OPTICAL_DEPTH_STEP =
+    DAMASCUS_SUN_MAX_OPTICAL_DEPTH_STEP;
+constexpr double OPTICAL_DEPTH_RELATIVE_TOLERANCE =
+    DAMASCUS_SUN_OPTICAL_DEPTH_RELATIVE_TOLERANCE;
 constexpr double OPTICAL_DEPTH_ABSOLUTE_TOLERANCE = 1.0e-12 * MAX_OPTICAL_DEPTH_STEP;
 constexpr unsigned int MAX_OPTICAL_DEPTH_RETRIES = 100;
 constexpr std::size_t MAX_OPTICAL_DEPTH_PIECES = 4;
@@ -1433,9 +1458,9 @@ const char* TrajectoryNumericalFailureDetailKey(
 	}
 }
 
-double RK45PositionToleranceKm() { return In_Units(1.0 * km, km); }
-double RK45VelocityToleranceKmPerSec() { return In_Units(1.0e-3 * km / sec, km / sec); }
-double RK45PhaseTolerance() { return 1.0e-7; }
+double RK45PositionToleranceKm() { return RK45_POSITION_TOLERANCE_KM; }
+double RK45VelocityToleranceKmPerSec() { return RK45_VELOCITY_TOLERANCE_KM_S; }
+double RK45PhaseTolerance() { return RK45_PHASE_TOLERANCE; }
 double RK45AbsoluteMaxStepSec() { return In_Units(RK45_Absolute_Max_Time_Step(), sec); }
 double NormalModeMaxOpticalDepthStep() { return MAX_OPTICAL_DEPTH_STEP; }
 double OpticalDepthRelativeTolerance() { return OPTICAL_DEPTH_RELATIVE_TOLERANCE; }
@@ -1961,6 +1986,7 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 	unsigned long int step_attempts = 0;
 	unsigned int optical_depth_retries = 0;
 	unsigned int boundary_refinement_retries = 0;
+	unsigned int uncaptured_energy_refinement_retries = 0;
 	// Capture normalization must use the same collision-location accuracy as transport.
 	// Coarse capture-only interpolation can spuriously bind a low-energy incident
 	// particle before its first collision. Only the stopping condition differs.
@@ -2131,7 +2157,47 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 			    In_Units(propagator_state_before.time_step, sec);
 			current_bincount.failure_accepted_step_s =
 			    In_Units(actual_dt, sec);
-			return TrajectoryTerminationReason::NonFiniteState;
+					return TrajectoryTerminationReason::NonFiniteState;
+			}
+
+		// An incident particle is unbound by construction and can become bound
+		// only at a scattering. Near-parabolic injection makes the conserved
+		// energy a small difference of much larger kinetic and potential terms,
+		// so otherwise acceptable absolute RK errors can flip its sign. Refine
+		// only that step instead of imposing prohibitively tight global tolerances.
+		if(!current_bincount.is_captured)
+		{
+			const double energy_after_eV =
+			    Capture_Energy_eV(event_after.Radius(), event_after.Speed(), DM);
+			const double energy_tolerance_eV =
+			    Boundary_Energy_Tolerance_eV(free_flight_reference_energy_eV, DM);
+			if(std::isfinite(energy_after_eV)
+			   && energy_after_eV < -energy_tolerance_eV)
+			{
+				uncaptured_energy_refinement_retries++;
+				if(uncaptured_energy_refinement_retries
+				   > MAX_UNCAPTURED_ENERGY_REFINEMENT_RETRIES)
+				{
+					current_bincount.numerical_failure_detail =
+					    TrajectoryNumericalFailureDetail::UncapturedBoundMismatch;
+					current_bincount.failure_energy_before_step_eV =
+					    Capture_Energy_eV(event_before.Radius(), event_before.Speed(), DM);
+					current_bincount.failure_energy_after_step_eV = energy_after_eV;
+					current_bincount.failure_reference_energy_eV =
+					    free_flight_reference_energy_eV;
+					current_bincount.failure_attempted_step_s =
+					    In_Units(propagator_state_before.time_step, sec);
+					current_bincount.failure_accepted_step_s =
+					    In_Units(actual_dt, sec);
+					current_event = to_absolute_event(event_after);
+					return TrajectoryTerminationReason::NumericalFailure;
+				}
+
+				particle_propagator.Restore_Scalar_State(propagator_state_before);
+				particle_propagator.time_step =
+				    RK45_Sanitized_Time_Step(0.5 * actual_dt);
+				continue;
+			}
 		}
 
 		if(v_after > v_max)
@@ -2490,6 +2556,7 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 
 		time_steps++;
 		optical_depth_retries = 0;
+		uncaptured_energy_refinement_retries = 0;
 		const bool captured_now = commit_accepted_event(accepted_event);
 		Copy_Event_Into(current_event, accepted_event);
 		current_event.time += time_origin;
@@ -2932,9 +2999,9 @@ Free_Particle_Propagator::Free_Particle_Propagator(const Event& event)
 	}
 
 	// 3. Error tolerances (fixed-size array, no heap allocation)
-	error_tolerances[0] = 1.0 * km;
-	error_tolerances[1] = 1.0e-3 * km / sec;
-	error_tolerances[2] = 1.0e-7;
+	error_tolerances[0] = RK45_POSITION_TOLERANCE_KM * km;
+	error_tolerances[1] = RK45_VELOCITY_TOLERANCE_KM_S * km / sec;
+	error_tolerances[2] = RK45_PHASE_TOLERANCE;
 }
 
 double Free_Particle_Propagator::dr_dt(double v)

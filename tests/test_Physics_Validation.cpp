@@ -251,9 +251,10 @@ double UniformKSDistance(std::vector<double> samples)
 TEST(PhysicsValidation, PointMassEllipticOrbitShowsFourthOrderConvergence)
 {
 	const double duration = 4000.0 * sec;
-	const OrbitError coarse = EllipticOrbitError(400.0 * sec, duration);
-	const OrbitError medium = EllipticOrbitError(200.0 * sec, duration);
-	const OrbitError fine = EllipticOrbitError(100.0 * sec, duration);
+	// Keep all three steps below the adaptive rejection threshold of the current tolerances.
+	const OrbitError coarse = EllipticOrbitError(200.0 * sec, duration);
+	const OrbitError medium = EllipticOrbitError(100.0 * sec, duration);
+	const OrbitError fine = EllipticOrbitError(50.0 * sec, duration);
 
 	// A fourth-order global error should fall by about 2^4 when the fixed
 	// step is halved. The lower bound leaves room for roundoff and the polar

@@ -146,10 +146,13 @@ TEST(TestDataGeneration, ScatteredNeverCapturedPathIsIncludedInPopulationBincoun
 			while(std::getline(stream, line))
 			{
 				std::istringstream row(line);
-				std::array<double, 14> values{};
+				std::array<double, 16> values{};
 				for(double& value : values) ASSERT_TRUE(static_cast<bool>(row >> value));
 				(values[3] <= R_SUN_KM * (1.0 + 1e-12) ? inside_dt_s : outside_dt_s) += values[6];
 				captured_dt_s += values[12];
+				EXPECT_DOUBLE_EQ(values[14], 0.0);
+				EXPECT_NEAR(values[15], values[6] * values[6],
+				            1.0e-12 * std::max(1.0, values[15]));
 			}
 			EXPECT_GT(inside_dt_s, 0.0);
 			EXPECT_GT(outside_dt_s, 0.0);

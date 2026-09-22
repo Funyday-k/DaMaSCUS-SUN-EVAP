@@ -93,11 +93,24 @@ def main() -> None:
         assert meta['maximum_number_of_scatterings']>0 and meta['max_trajectory_wall_time_sec']==0
         assert meta['production_mode'] is True and meta['thermal_validation_mode'] is False
         assert meta['restart_supported'] is False
-        assert meta['population_bincount_version']==1
+        assert meta['population_bincount_version']==2
         population_counts=list(csv.DictReader((product/'block_counts.tsv').open(),delimiter='\t'))
         assert sum(int(row['injected']) for row in population_counts)==meta['N_inj']
         for row in population_counts:
             assert int(row['completed_captured'])+int(row['completed_uncaptured'])==int(row['injected'])
+        counts_by_block={int(row['block']):row for row in population_counts}
+        population_rows=list(csv.DictReader((product/'radial_blocks.tsv').open(),delimiter='\t'))
+        assert population_rows
+        for row in population_rows:
+            block=counts_by_block[int(row['block'])]
+            for prefix,count_key in [('captured_path','completed_captured'),
+                                     ('transit_uncaptured','completed_uncaptured')]:
+                total=float(row[f'{prefix}_dt_s'])
+                square_total=float(row[f'{prefix}_dt_sq_s2'])
+                count=int(block[count_key])
+                tolerance=1e-10*max(1.0,total*total,count*square_total)
+                assert square_total>=0 and square_total<=total*total+tolerance
+                assert total*total<=count*square_total+tolerance
         assert (product/'snapshot').is_dir()
 
         result,output,_=run('failed_transport',run_mode='"Parameter point"',sample_size='4',

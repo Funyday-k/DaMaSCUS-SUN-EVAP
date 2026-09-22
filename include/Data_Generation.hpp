@@ -209,9 +209,10 @@ class Simulation_Data
 	std::vector<double> residence_jackknife_block_dt_hist;
 	std::vector<double> residence_jackknife_block_v2dt_hist;
 	RadialHistogram incident_inbound_block_dt, incident_inbound_block_v2dt;
-	RadialHistogram transit_block_dt, transit_block_v2dt, post_evap_block_dt, post_evap_block_v2dt;
+	RadialHistogram transit_block_dt, transit_block_v2dt, transit_block_dt_sq;
+	RadialHistogram post_evap_block_dt, post_evap_block_v2dt;
 	// Complete paths of ever-captured particles, including pre-capture and outgoing legs.
-	RadialHistogram captured_path_block_dt, captured_path_block_v2dt;
+	RadialHistogram captured_path_block_dt, captured_path_block_v2dt, captured_path_block_dt_sq;
 	std::array<RadialHistogram,5> aphelion_block_dt;
 	std::array<unsigned long int, RESIDENCE_JACKKNIFE_BLOCKS> jackknife_attempted_counts{};
 	std::array<unsigned long int, RESIDENCE_JACKKNIFE_BLOCKS> jackknife_captured_counts{};

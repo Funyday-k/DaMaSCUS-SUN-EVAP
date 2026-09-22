@@ -239,7 +239,7 @@ including maximum scatterings, trajectory wall-time budget, production and therm
 flags. No `input.cfg` is copied. Snapshots report progress; `restart_supported=false`.
 Runs shorter than `snapshot_interval` may leave an empty snapshot directory.
 
-Transport products with `population_bincount_version = 1` partition every accepted
+Transport products with `population_bincount_version = 2` partition every accepted
 incident history into **ever captured** or **never captured**, regardless of the
 number of scatterings. `captured_path_dt_s` includes the incoming, pre-capture,
 captured-residence and post-escape portions of ever-captured histories.
@@ -248,6 +248,12 @@ histories, including scattered escapes. Each path is recorded within the configu
 incident/outgoing reference radius (captured bound orbits extend to the removal
 radius); outer removals end at that boundary. `block_counts.tsv` carries injected
 and completed counts for both populations, which must sum to all injections.
+`radial_blocks.tsv` also stores the per-history squared complete-path residence
+summed in each block. Local analysis combines these conditional Transport moments
+with the independent fixed-injection Capture probability; it must not infer the
+population fraction from the fixed-captured-count Transport run. Version 1 products
+retain enough first moments for this density normalization, but require a rerun for
+an unbiased pair estimator of the annihilation rate.
 
 Data analysis and plotting code is maintained in the sibling DaMaSCUS-SUN
 repository under `../DaMaSCUS-SUN/scripts/`. This EVAP

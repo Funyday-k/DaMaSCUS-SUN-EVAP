@@ -46,10 +46,23 @@ def read_table(path: Path) -> tuple[dict[str, str], dict[int, tuple[int, ...]], 
 
 def read_bincount(path: Path) -> tuple[dict[str, str], dict[int, tuple[int, ...]], list[list[float]]]:
     header, blocks, rows = read_table(path)
-    assert header['bincount_format_version'] == '3'
+    assert header['bincount_format_version'] == '4'
     assert header['derived_observables_version'] == '1'
     assert header['columns'].split() == COLUMNS
-    assert header['output_significant_digits'] == '17'
+    assert header['output_significant_digits'] == '4'
+    assert header['parameter_significant_digits'] == '12'
+    for species in ('p', 'neutron', 'e'):
+        coefficient = float(header[f'sigma_{species}_coefficient'])
+        exponent = header[f'sigma_{species}_exponent']
+        assert str(int(exponent)) == exponent
+        assert coefficient == 0 or 1 <= coefficient < 10
+        assert f'sigma_{species}_cm2' not in header
+    # Statistical cells must be the rounded values, not padded full-double text.
+    for row in rows:
+        for value in row[3:]:
+            assert math.isnan(value) or value == float(format(value, '.4g'))
+    if len(rows) >= 11:
+        assert rows[2][2] == 0.003 and rows[9][2] == 0.01
     assert header['failed_history_policy'] == 'discard_and_replace'
     assert header['radial_covariance_available'] == 'selected_observables_and_integrals'
     assert header['capture_normalization_uncertainty_included'] == 'false'
@@ -66,9 +79,9 @@ def read_bincount(path: Path) -> tuple[dict[str, str], dict[int, tuple[int, ...]
     for i, (name, low, high, kernel) in enumerate(expected_windows):
         actual_name, actual_low, actual_high, actual_kernel = header[f'integration_window_{i}'].split()
         assert (actual_name, actual_kernel) == (name, kernel)
-        assert math.isclose(float(actual_low), min(low, outer), rel_tol=1e-14)
-        assert math.isclose(float(actual_high), min(high, outer), rel_tol=1e-14)
-    assert math.isclose(float(header['gamma_observer_distance_cm']), 14959787070000, rel_tol=2e-15)
+        assert math.isclose(float(actual_low), min(low, outer), rel_tol=6e-12)
+        assert math.isclose(float(actual_high), min(high, outer), rel_tol=6e-12)
+    assert math.isclose(float(header['gamma_observer_distance_cm']), 14959787070000, rel_tol=6e-12)
     for i in range(24):
         name, component, units, estimate, error = header[f'integrated_stat_{i}'].split()
         assert component == COMPONENTS[i % 4]
@@ -80,11 +93,31 @@ def read_bincount(path: Path) -> tuple[dict[str, str], dict[int, tuple[int, ...]
     return header, blocks, rows
 
 
-def close(actual: float, expected: float, *, scale: float = 0.0) -> None:
+def rounding_error(value: float) -> float:
+    """Half a decimal unit at the four-significant-digit reporting precision."""
+    return 0.501 * 10**(math.floor(math.log10(abs(value))) - 3) if value and math.isfinite(value) else 0.0
+
+
+def close(actual: float, expected: float, *, scale: float = 0.0, rounded_inputs: bool = False) -> None:
     if math.isnan(expected):
         assert math.isnan(actual), (actual, expected)
     else:
-        assert math.isclose(actual, expected, rel_tol=2e-8, abs_tol=2e-13 * scale), (actual, expected)
+        # The larger bound applies ONLY to estimates reconstructed from rounded
+        # first/second moments; direct raw-block comparisons keep a half-unit bound.
+        tolerance = rounding_error(actual) + (2e-3 if rounded_inputs else 2e-13) * scale
+        assert math.isclose(actual, expected, rel_tol=2e-8, abs_tol=tolerance), (actual, expected)
+
+
+def validate_sum_error(total: float, squares: float, error: float, count: int) -> None:
+    """Propagate textual moment rounding through N*Q-S^2 before checking SE."""
+    if count < 2:
+        assert math.isnan(error)
+        return
+    assert math.isfinite(error) and error >= 0
+    ds, dq, de = rounding_error(total), rounding_error(squares), rounding_error(error)
+    variance = (count*squares-total*total)/(count-1)
+    tolerance = (count*dq+2*abs(total)*ds+ds*ds)/(count-1) + 2*error*de+de*de
+    assert abs(error*error-variance) <= tolerance + 2e-13*max(1.0, count*squares), (error, variance)
 
 
 def sum_se(total: float, square_total: float, count: int) -> float:
@@ -132,17 +165,17 @@ def validate_moments(path: Path) -> dict[str, str]:
         previous_high = row[2]
         for first, second, error, count in ((3, 4, 5, captured), (6, 14, 7, captured), (8, 9, 10, captured), (11, 12, 13, never)):
             total, square_total = row[first], row[second]
-            tolerance = 1e-10 * max(1.0, total * total, count * square_total)
+            tolerance = 2e-3 * max(1.0, total * total, count * square_total)
             assert square_total <= total * total + tolerance
             assert total * total <= count * square_total + tolerance
             if count == 0:
                 assert total == square_total == 0.0
-            close(row[error], sum_se(total, square_total, count), scale=abs(total))
+            validate_sum_error(total, square_total, row[error], count)
         moments = [row[j] for j in MOMENT_COLUMNS]
         expected = observables(moments, captured, never, factor)
         scales = observable_scales(moments, captured, never, factor)
         for i, number in enumerate(expected):
-            close(row[15 + 2*i], number, scale=scales[i])
+            close(row[15 + 2*i], number, scale=scales[i], rounded_inputs=True)
         assert not any(math.isinf(value) for value in row)
     assert math.isclose(previous_high, float(header['R_remove_rsun']), rel_tol=1e-12)
     return header

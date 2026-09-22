@@ -159,7 +159,7 @@ TEST(TestDataGeneration, ScatteredNeverCapturedPathIsIncludedInPopulationBincoun
 				captured_dt_s += values[8];
 				EXPECT_DOUBLE_EQ(values[9], 0.0);
 				EXPECT_NEAR(values[12], values[11] * values[11],
-				            2.0e-9 * std::max(1.0, values[12]));
+				            2.0e-3 * std::max(1.0, values[12]));
 				EXPECT_TRUE(std::isnan(values[5]));
 				EXPECT_TRUE(std::isnan(values[13]));
 			}
@@ -480,6 +480,24 @@ TEST(TestDataGeneration, TestOutputFailuresAreReported)
 	EXPECT_THROW(data_set.Write_Diagnostic_Output(dir, DM), std::logic_error);
 	rmdir((dir + "snapshot").c_str());
 	rmdir(dir.c_str());
+}
+
+TEST(TestDataGeneration, OutputNumbersUseFourDigitsAndCompactParameters)
+{
+    EXPECT_EQ(Format_Output_Number(1.251933216212515e-19), "1.252e-19");
+    EXPECT_EQ(Format_Output_Number(6.9405878136184549e-21), "6.941e-21");
+    EXPECT_EQ(Format_Output_Number(0.010000000000000002, OUTPUT_PARAMETER_DIGITS), "0.01");
+    EXPECT_EQ(Format_Output_Number(0.0030000000000000005, OUTPUT_PARAMETER_DIGITS), "0.003");
+    EXPECT_EQ(Format_Output_Number(0.40000000000000002, OUTPUT_PARAMETER_DIGITS), "0.4");
+    EXPECT_EQ(Format_Output_Number(-0.0), "0");
+    EXPECT_EQ(Format_Output_Number(std::numeric_limits<double>::quiet_NaN()), "nan");
+    std::ostringstream output;
+    Write_Cross_Section_Header(output, "p", 9.9999999999999994e-37);
+    Write_Cross_Section_Header(output, "neutron", 0);
+    Write_Cross_Section_Header(output, "e", 2.5e-36);
+    EXPECT_EQ(output.str(), "# sigma_p_coefficient = 1\n# sigma_p_exponent = 36\n"
+        "# sigma_neutron_coefficient = 0\n# sigma_neutron_exponent = 0\n"
+        "# sigma_e_coefficient = 2.5\n# sigma_e_exponent = 36\n");
 }
 
 TEST(TestDataGeneration, MomentSumErrorUsesHistorySquares)

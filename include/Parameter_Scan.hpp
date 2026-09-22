@@ -33,7 +33,7 @@ class Configuration : public obscura::Configuration
   public:
 	std::string run_mode;
 	double outer_removal_radius_rsun = DEFAULT_OUTER_REMOVAL_RSUN;
-	bool production_mode = false;
+	bool diagnostic_mode = false;
 	bool thermal_validation_mode = false;
 	unsigned int isoreflection_rings, interpolation_points;
 	unsigned int rate_radius_points, rate_speed_points;
@@ -45,11 +45,14 @@ class Configuration : public obscura::Configuration
 	TrajectoryDiagnosticConfig trajectory_diagnostic_config;
 	double cross_section_min, cross_section_max;
 	bool compute_halo_constraints, perform_full_scan, capture_mode;
-	explicit Configuration(std::string cfg_filename, int MPI_rank = 0);
+	explicit Configuration(std::string cfg_filename, int MPI_rank = 0,
+	                       bool diagnostic = false, bool thermal_validation = false);
 
 	// Serialize only physics/model settings into metadata so result directories
 	// remain self-describing without retaining a copy of the input cfg file.
+	virtual ~Configuration() = default;
 	std::string Physical_Configuration_JSON() const;
+	std::string Physical_Configuration_Header() const;
 	void Print_Summary(int mpi_rank = 0) override;
 };
 

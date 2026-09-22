@@ -134,33 +134,31 @@ TEST(TestDataGeneration, ScatteredNeverCapturedPathIsIncludedInPopulationBincoun
 			continue;
 		found_reflected = true;
 		const std::string dir = TestOutputDir("scattered_uncaptured_population");
-		sample.Write_Transport_Products(dir, dm, halo, sun);
+		sample.Write_Bincount(dir, dm, halo);
 		int rank = 0;
 		MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 		if(rank == 0)
 		{
-			std::ifstream stream(dir + "radial_blocks.tsv");
+			std::ifstream stream(dir + "bincount.tsv");
 			std::string line;
-			std::getline(stream, line);
 			double inside_dt_s = 0.0, outside_dt_s = 0.0, captured_dt_s = 0.0;
 			while(std::getline(stream, line))
 			{
+				if(line.empty() || line[0] == '#') continue;
 				std::istringstream row(line);
-				std::array<double, 16> values{};
+				std::array<double, 11> values{};
 				for(double& value : values) ASSERT_TRUE(static_cast<bool>(row >> value));
-				(values[3] <= R_SUN_KM * (1.0 + 1e-12) ? inside_dt_s : outside_dt_s) += values[6];
-				captured_dt_s += values[12];
-				EXPECT_DOUBLE_EQ(values[14], 0.0);
-				EXPECT_NEAR(values[15], values[6] * values[6],
-				            1.0e-12 * std::max(1.0, values[15]));
+				(values[3] <= 1.0 + 1e-12 ? inside_dt_s : outside_dt_s) += values[9];
+				captured_dt_s += values[7];
+				EXPECT_DOUBLE_EQ(values[8], 0.0);
+				EXPECT_NEAR(values[10], values[9] * values[9],
+				            1.0e-12 * std::max(1.0, values[10]));
 			}
 			EXPECT_GT(inside_dt_s, 0.0);
 			EXPECT_GT(outside_dt_s, 0.0);
 			EXPECT_DOUBLE_EQ(captured_dt_s, 0.0);
-			for(const std::string name : {"metadata.json", "radial_blocks.tsv", "block_counts.tsv",
-			     "trajectory_summary.tsv", "orbit_class_blocks.tsv", "incident_inbound.tsv",
-			     "termination_counts.tsv", "solar_reference.tsv"})
-				std::remove((dir + name).c_str());
+			std::remove((dir + "bincount.tsv").c_str());
+			rmdir((dir + "snapshot").c_str());
 			rmdir(dir.c_str());
 		}
 	}
@@ -179,6 +177,7 @@ TEST(TestDataGeneration, TestInitialShiftFailureIsReported)
 
 	Simulation_Data data_set(1, 1);
 	data_set.Configure(0.5 * rSun, 0, 1, 10);
+	data_set.diagnostic_output_enabled = true;
 	data_set.Generate_Data(DM, SSM, SHM);
 
 	EXPECT_EQ(data_set.Valid_Trajectories(), 0UL);
@@ -188,10 +187,10 @@ TEST(TestDataGeneration, TestInitialShiftFailureIsReported)
 	int rank = 0;
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	const std::string output_dir = TestOutputDir("initial_shift_failure_contract");
-	data_set.Write_Output_Files(output_dir, DM);
+	data_set.Write_Diagnostic_Output(output_dir, DM);
 	if(rank == 0)
 	{
-		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# EARLY_STOP: initial_shift_failure_fraction_exceeded"));
+		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# EARLY_STOP: max_trajectories_reached"));
 		RemoveTestOutputDir(output_dir);
 	}
 }
@@ -208,6 +207,7 @@ TEST(TestDataGeneration, TestComputationallyTruncatedNonCaptureIsExcludedFromCap
 
 	Simulation_Data data_set(1, 1);
 	data_set.Configure(2.0 * rSun, 0, 0, 10);
+	data_set.diagnostic_output_enabled = true;
 	data_set.Generate_Data(DM, SSM, SHM, SnapshotConfig(), 20260710);
 
 	EXPECT_EQ(data_set.Valid_Trajectories(), 0UL);
@@ -217,7 +217,7 @@ TEST(TestDataGeneration, TestComputationallyTruncatedNonCaptureIsExcludedFromCap
 	int rank = 0;
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	const std::string output_dir = TestOutputDir("truncated_output_contract");
-	data_set.Write_Output_Files(output_dir, DM);
+	data_set.Write_Diagnostic_Output(output_dir, DM);
 	if(rank == 0)
 	{
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# valid_trajectories = 0"));
@@ -236,7 +236,7 @@ TEST(TestDataGeneration, TestComputationallyTruncatedNonCaptureIsExcludedFromCap
 	}
 }
 
-TEST(TestDataGeneration, TestWallTimeCutoffRejectsProduction)
+TEST(TestDataGeneration, TestWallTimeCutoffExcludesOnlyFailedHistory)
 {
 	Solar_Model SSM;
 	obscura::Standard_Halo_Model SHM;
@@ -250,6 +250,7 @@ TEST(TestDataGeneration, TestWallTimeCutoffRejectsProduction)
 	data_set.Configure(2.0 * rSun, 0, 10, 10);
 	SnapshotConfig snapshot_config;
 	snapshot_config.max_trajectory_wall_time_sec = 1.0e-12;
+	data_set.diagnostic_output_enabled = true;
 	data_set.Generate_Data(
 	    DM, SSM, SHM, snapshot_config, 20260818);
 
@@ -257,7 +258,7 @@ TEST(TestDataGeneration, TestWallTimeCutoffRejectsProduction)
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	const std::string output_dir =
 	    TestOutputDir("wall_time_censor_contract");
-	data_set.Write_Output_Files(output_dir, DM);
+	data_set.Write_Diagnostic_Output(output_dir, DM);
 	if(rank == 0)
 	{
 		EXPECT_TRUE(FileContains(
@@ -288,13 +289,14 @@ TEST(TestDataGeneration, TestInvalidTrajectoriesContinueUntilExplicitBudget)
 
 	Simulation_Data data_set(1, 3);
 	data_set.Configure(2.0 * rSun, 0, 0, 10);
+	data_set.diagnostic_output_enabled = true;
 	data_set.Generate_Data(DM, SSM, SHM, SnapshotConfig(), 20260710);
 
 	int rank = 0;
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	const std::string output_dir =
 	    TestOutputDir("invalid_trajectory_explicit_budget");
-	data_set.Write_Output_Files(output_dir, DM);
+	data_set.Write_Diagnostic_Output(output_dir, DM);
 	if(rank == 0)
 	{
 		EXPECT_TRUE(FileContains(
@@ -441,32 +443,52 @@ TEST(TestDataGeneration, TestOutputFailuresAreReported)
 {
 	Simulation_Data data_set(1, 1);
 	obscura::DM_Particle_SD DM(0.1 * GeV);
-	const std::string output_dir = TestOutputDir("output_failure");
-	const std::string blocker = output_dir + "regular_file";
+	obscura::Standard_Halo_Model halo;
+	const std::string dir = TestOutputDir("output_failure");
+	EXPECT_NO_THROW(data_set.Prepare_Output_Directory(dir));
+	const std::string blocker = dir + "regular_file";
 	TouchFile(blocker);
 	EXPECT_THROW(data_set.Prepare_Output_Directory(blocker + "/nested"), std::runtime_error);
-	EXPECT_THROW(data_set.Write_Output_Files(blocker + "/nested", DM), std::runtime_error);
-	EXPECT_NO_THROW(data_set.Prepare_Output_Directory(output_dir));
+	EXPECT_THROW(data_set.Prepare_Output_Directory(dir), std::runtime_error);
+	EXPECT_TRUE(FileExists(blocker));
 	std::remove(blocker.c_str());
-
-	// Exercise a failure after successful bincount publication, not just an
-	// invalid top-level directory. A directory cannot be replaced by rename.
-	const std::string evaporation_path = output_dir + "evaporation_times.txt";
-	mkdir(evaporation_path.c_str(), 0755);
-	EXPECT_THROW(data_set.Write_Output_Files(output_dir, DM), std::runtime_error);
-	rmdir(evaporation_path.c_str());
-
-	// Stale diagnostic files must be removable even with diagnostics disabled.
-	const std::string metadata_path = output_dir + "run_metadata.json";
-	mkdir(metadata_path.c_str(), 0755);
-	TouchFile(metadata_path + "/keep");
-	EXPECT_THROW(data_set.Write_Output_Files(output_dir, DM), std::runtime_error);
-	std::remove((metadata_path + "/keep").c_str());
-	rmdir(metadata_path.c_str());
-	RemoveTestOutputDir(output_dir);
+	// A failed rename must leave neither a complete file nor a temporary file.
+	const std::string target = dir + "bincount.tsv";
+	mkdir(target.c_str(), 0755);
+	TouchFile(target + "/keep");
+	EXPECT_THROW(data_set.Write_Bincount(dir, DM, halo), std::runtime_error);
+	EXPECT_FALSE(FileExists(dir + "bincount.tsv.tmp"));
+	EXPECT_TRUE(FileExists(target + "/keep"));
+	std::remove((target + "/keep").c_str());
+	rmdir(target.c_str());
+	// A temporary path that cannot be opened also fails without publication.
+	mkdir((dir + "bincount.tsv.tmp").c_str(), 0755);
+	TouchFile(dir + "bincount.tsv.tmp/keep");
+	EXPECT_THROW(data_set.Write_Bincount(dir, DM, halo), std::runtime_error);
+	EXPECT_FALSE(FileExists(target));
+	std::remove((dir + "bincount.tsv.tmp/keep").c_str());
+	rmdir((dir + "bincount.tsv.tmp").c_str());
+	EXPECT_THROW(data_set.Write_Diagnostic_Output(dir, DM), std::logic_error);
+	rmdir((dir + "snapshot").c_str());
+	rmdir(dir.c_str());
 }
 
-TEST(TestDataGeneration, TestDefaultOutputContract)
+TEST(TestDataGeneration, CompletePathSecondMomentIncludesCrossTerms)
+{
+	RadialHistogram inbound{2.0}, pre_capture{3.0, 11.0}, residence{5.0}, outgoing{7.0};
+	RadialHistogram dt, dt_sq;
+	Accumulate_Complete_Path_Block({&inbound, &pre_capture, &residence, &outgoing}, 7, dt, dt_sq);
+	EXPECT_DOUBLE_EQ(dt[7], 17.0);
+	EXPECT_DOUBLE_EQ(dt_sq[7], 289.0);
+	EXPECT_DOUBLE_EQ(dt_sq[RESIDENCE_JACKKNIFE_BLOCKS + 7], 121.0);
+	EXPECT_DOUBLE_EQ(dt_sq[6], 0.0);
+	// A second history contributes its own square, not the square of the sum.
+	Accumulate_Complete_Path_Block({&inbound}, 7, dt, dt_sq);
+	EXPECT_DOUBLE_EQ(dt[7], 19.0);
+	EXPECT_DOUBLE_EQ(dt_sq[7], 293.0);
+}
+
+TEST(TestDataGeneration, TestExplicitLegacyDiagnosticContract)
 {
 	Solar_Model SSM;
 	obscura::Standard_Halo_Model SHM;
@@ -477,6 +499,7 @@ TEST(TestDataGeneration, TestDefaultOutputContract)
 
 	Simulation_Data data_set(1, 1);
 	data_set.Configure(1.1 * rSun, 0, 100);
+	data_set.diagnostic_output_enabled = true;
 	data_set.Generate_Data(DM, SSM, SHM);
 
 	int rank = 0;
@@ -489,7 +512,7 @@ TEST(TestDataGeneration, TestDefaultOutputContract)
 		TouchFile(output_dir + std::string("evaporation_") + "mode_" + "bincount.txt");
 		TouchFile(output_dir + std::string("computation_") + "time_summary.txt");
 	}
-	data_set.Write_Output_Files(output_dir, DM);
+	data_set.Write_Diagnostic_Output(output_dir, DM);
 	if(rank == 0)
 	{
 		EXPECT_TRUE(FileExists(output_dir + "bincount.txt"));
@@ -569,12 +592,13 @@ TEST(TestDataGeneration, TestTrajectoryDiagnosticOutputContract)
 	EXPECT_NO_THROW(data_set.Configure_Trajectory_Diagnostics(diagnostics));
 	diagnostics.trace_rate = 1.01;
 	EXPECT_THROW(data_set.Configure_Trajectory_Diagnostics(diagnostics), std::invalid_argument);
+	data_set.diagnostic_output_enabled = true;
 	data_set.Generate_Data(DM, SSM, SHM, SnapshotConfig(), 20260722);
 
 	int rank = 0;
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	const std::string output_dir = TestOutputDir("trajectory_diagnostic_contract");
-	data_set.Write_Output_Files(output_dir, DM);
+	data_set.Write_Diagnostic_Output(output_dir, DM);
 	if(rank == 0)
 	{
 		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"schema_version\": \"trajectory-diagnostic-v5\""));
@@ -628,7 +652,7 @@ TEST(TestDataGeneration, TestTraceSelectionIsStableAcrossRunIds)
 	EXPECT_TRUE(TrajectoryTraceSelected(123ULL, 0, 1, 1.0));
 }
 
-TEST(TestDataGeneration, TestFinalOutputContainsOnlyRequestedReports)
+TEST(TestDataGeneration, TestExplicitDiagnosticsContainsOnlyRequestedReports)
 {
 	Solar_Model SSM;
 	obscura::Standard_Halo_Model SHM;
@@ -639,6 +663,7 @@ TEST(TestDataGeneration, TestFinalOutputContainsOnlyRequestedReports)
 
 	Simulation_Data data_set(1, 1);
 	data_set.Configure(1.1 * rSun, 0, 100);
+	data_set.diagnostic_output_enabled = true;
 	data_set.Generate_Data(DM, SSM, SHM);
 
 	int rank = 0;
@@ -646,7 +671,7 @@ TEST(TestDataGeneration, TestFinalOutputContainsOnlyRequestedReports)
 	const std::string output_dir = TestOutputDir("diagnostics_output_contract");
 	if(rank == 0)
 		TouchFile(output_dir + "evaporation_diagnostics.txt");
-	data_set.Write_Output_Files(output_dir, DM);
+	data_set.Write_Diagnostic_Output(output_dir, DM);
 	if(rank == 0)
 	{
 		EXPECT_TRUE(FileExists(output_dir + "bincount.txt"));

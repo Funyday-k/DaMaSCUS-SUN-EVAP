@@ -3,7 +3,7 @@
 Dark Matter Simulation Code for the Sun, with capture- and evaporation-focused
 extensions.
 
-The current schema-10 transport definitions, configuration, output contract, and validation scope are documented below.
+The format-2 `bincount.tsv` transport contract, configuration and validation scope are documented below.
 
 ## Overview
 
@@ -35,7 +35,7 @@ Compared with the upstream DaMaSCUS-SUN workflow, this branch emphasizes:
 - in-memory radial bincount accumulation instead of writing full trajectory
   files;
 - capture detection from the first post-scatter negative-energy state;
-- compact final evaporation-time output for complete valid unbinding events;
+- one final radial sufficient-statistics file for scientific transport;
 - optional richer survival diagnostics behind explicit diagnostic paths;
 - MPI-aware snapshot output for long parameter-point jobs;
 - safeguards for pathological trajectories and low-capture-rate runs;
@@ -166,16 +166,14 @@ Configuration files use libconfig syntax. The most important controls are:
 | Setting | Meaning |
 | --- | --- |
 | `run_mode` | `"Parameter point"` for the main evaporation workflow, `"Capture"` for capture-rate runs, or `"Parameter scan"` for detector-limit scans. |
-| `sample_size` | In Parameter point mode, the exact number of complete captured histories (escape or outer removal). In Capture mode, the exact number of incident trials. Invalid histories invalidate production even if replacements reach the target. |
-| `production_mode` | Stop issuing new trajectories after any failed/truncated history, drain in-flight work, and exit nonzero; an unmet target also fails. Capture stdout JSON or transport metadata records acceptance; diagnostics/replay are disabled. |
+| `sample_size` | In Parameter point mode, the exact number of complete captured histories (escape or outer removal). In Capture mode, the exact number of physically classified incident histories. Numerical/computationally failed histories are discarded and replaced by fresh draws until the target or the explicit attempt budget is reached. |
 | `outer_removal_radius_rsun` | Bound-orbit removal radius in R_sun, default 1100; must exceed the native 1.1 R_sun grid. The obsolete `outer_boundary_radius_au` key is rejected. |
-| `thermal_validation_mode` | Separate Parameter point shape workflow allowing computationally limited histories; never absolute production. |
 | `fixed_seed` | Optional non-negative PRNG seed. `0` or an omitted setting uses nondeterministic seeding; a nonzero value is expanded independently by MPI rank. |
 | `max_trajectories` | Optional hard cap on generated trajectories. `0` or unset means no trajectory-count cap. |
 | `interpolation_points` | Legacy square scattering-rate grid size. It remains supported; the three `rate_*` settings below override its corresponding defaults. `0` disables interpolation when no rectangular-grid settings are supplied. |
 | `rate_radius_points` | Optional number of radial rate-grid points. Defaults to `interpolation_points`. Explicit rate grids must use `(0, 0)` to disable interpolation or at least two points in both dimensions. |
 | `rate_speed_points` | Optional number of speed rate-grid points. Defaults to `interpolation_points`; it follows the same explicit-grid validation as `rate_radius_points`. |
-| `rate_max_speed` | Optional maximum tabulated DM speed in natural units (`0.02` means `0.02c`), constrained to `(0, 0.75]` and defaulting to `0.75`. Faster queries fall back to the direct rate and are counted. When the grid is disabled, this input is ignored and metadata records the actual table limit `0`. |
+| `rate_max_speed` | Optional maximum tabulated DM speed in natural units (`0.02` means `0.02c`), constrained to `(0, 0.75]` and defaulting to `0.75`. Faster queries fall back to the direct rate and are counted. When the grid is disabled, this input is ignored and the bincount header records the actual table limit `0`. |
 | `output_dir` | Root directory for generated result folders; a trailing `/` is optional. A relative path is resolved from the process working directory, so production batch jobs should normally use an absolute path. |
 | `DM_mass` | Dark matter mass in GeV. |
 | `DM_cross_section_nucleon` | DM-nucleon cross section in cm^2. |
@@ -191,28 +189,41 @@ ranks continue working without waiting at a per-batch collective for the
 slowest trajectory. The queue maintains
 `accepted_samples + in_flight <= sample_size`; therefore the final exact-target
 tail may temporarily leave excess ranks idle, but
-`capture_target_overshoot` remains zero. Output headers report
-`mpi_scheduler_work_claims` and `mpi_scheduler_peak_in_flight`.
+`capture_target_overshoot` remains zero. The terminal summary reports work claims and peak in-flight counts.
 
 Rank 0 also advances MPI during trajectory propagation with a nonblocking
 `MPI_Iprobe`, at most once per millisecond. This is needed on MPI transports
 that do not progress passive-target RMA while the window owner is computing:
 otherwise rank 0's first long trajectory can stall every other rank's first
 claim. Progress runs on the main thread, independently of snapshots, and all
-ranks still compute trajectories. Updated final headers identify this path as
-`mpi_scheduler_progress = main_thread_iprobe_v1`.
+ranks still compute trajectories. The scheduling algorithm is unchanged by the output contract.
 
 The exact-target rule still applies: `sample_size = 1` allows only one active
 trajectory, and fewer than 32 remaining target slots cannot keep 32 ranks busy.
 Increasing MPI ranks alone does not remove that intentional tail limit.
 
 For reproducible MPI runs, a nonzero fixed seed is expanded by rank as
-`base_seed + 1000003 * mpi_rank`. Computational cutoffs are tracked separately
-from physical right-censoring so that final evaporation-time files contain only
-complete valid unbinding events. Numerical failures and computational
-truncations are recorded and replaced; their accumulated fraction does not
-stop the work queue. Use `max_trajectories` when an explicit attempt budget is
-required.
+`base_seed + 1000003 * mpi_rank`. Ordinary Capture and Parameter point runs
+record numerical failures and computational truncations and continue issuing
+work. Initial-shift failures also continue; no failure-fraction threshold stops
+the simulation. A failed history contributes neither residence nor complete-path moments and is
+replaced by a fresh independent draw. Transport finishes after `sample_size`
+complete captured histories; Capture finishes after `sample_size` physically
+classified incident histories. Raw attempts, including discarded numerical or
+computational failures, are tracked separately. `max_trajectories` remains an
+explicit total-attempt budget. Without that budget, both workflows continue
+drawing until their target is reached.
+
+`target_reached` reports completion only. There is no zero-error acceptance gate.
+Exit code 2 means the configured attempt budget prevented reaching the target;
+filesystem/configuration errors still fail normally. Rank assignment can vary
+with MPI scheduling; bitwise comparisons should use a single rank and no wall-time cutoff.
+
+Remove `production_mode`, `thermal_validation_mode`, `trajectory_summary_enabled`,
+`trajectory_events_enabled`, `trajectory_trace_rate` and `trajectory_trace_seed`
+from ordinary configuration files. These obsolete keys now produce an explicit
+migration error. A pilot uses the same scientific contract with a smaller
+`sample_size`; it does not enable diagnostics or change error handling.
 
 A trajectory can become physically bound only at a scattering. If an
 uncaptured trajectory acquires negative energy during scatter-free propagation,
@@ -221,121 +232,136 @@ repeated bound Kepler returns to stall its MPI batch.
 
 ## Outputs
 
-Capture (`run_mode = "Capture"`) is a fixed **incident-count** normalization run.
-It never creates a result directory, snapshot, copied cfg or diagnostic file.
-Rank zero prints exactly one `CAPTURE_RESULT_JSON={...}` line (capture schema 1),
-including accepted/rejected status, effective physics/numerics, seed and MPI ranks,
-failure counts, `N_inj`, `N_capt`, `f_cap`, `C_geom_s_inv`, `C_capture_s_inv`, and
-64 `[N_inj, N_capt]` blocks. Failed/incomplete runs still print the record and exit 2.
-Keep the external cfg and Slurm stdout.
+Capture (`run_mode = "Capture"`) is a fixed **valid incident-count** normalization run.
+Stdout contains exactly one `CAPTURE_RESULT_JSON={...}` line (capture schema 2);
+human-readable logs go to stderr. No result directory, snapshot, copied cfg or
+diagnostic file is created, including on a failed run. The record retains
+target completion, physics/numerics, seed, MPI ranks, failure counts,
+`N_inj`, `N_capt`, `f_cap`, `C_geom_s_inv`, `C_capture_s_inv` and 64 count blocks.
+Failed histories do not stop the run: they are discarded and replaced by fresh
+draws. `N_attempted` records every raw trajectory attempt, `N_inj = N_valid`
+records the physically classified incident ensemble used by the estimator, and
+`N_unclassified = N_attempted - N_valid` records discarded failures. Accordingly,
+`f_cap = N_capt / N_inj` and the JSON labels
+`f_cap_denominator = valid_classified_trials`. The 64 Capture blocks use the same
+valid-trial denominator. `target_reached` means the requested valid incident count
+was obtained; exhausting `max_trajectories` first returns exit code 2.
 
-Production transport (`run_mode = "Parameter point"`, `production_mode = true`)
-writes only `metadata.json` (schema 10), `radial_blocks.tsv`, `block_counts.tsv`,
-`trajectory_summary.tsv`, `orbit_class_blocks.tsv`, `incident_inbound.tsv`,
-`termination_counts.tsv`, `solar_reference.tsv`, and the enabled `snapshot/`.
-`trajectory_summary.tsv` is the reduced scientific summary, independent of the
-optional diagnostic summary. Metadata is the canonical effective configuration,
-including maximum scatterings, trajectory wall-time budget, production and thermal
-flags. No `input.cfg` is copied. Snapshots report progress; `restart_supported=false`.
-Runs shorter than `snapshot_interval` may leave an empty snapshot directory.
+Ordinary Transport (`run_mode = "Parameter point"`) has one output contract:
 
-Transport products with `population_bincount_version = 2` partition every accepted
-incident history into **ever captured** or **never captured**, regardless of the
-number of scatterings. `captured_path_dt_s` includes the incoming, pre-capture,
-captured-residence and post-escape portions of ever-captured histories.
-`transit_uncaptured_dt_s` includes the complete recorded paths of all never-captured
-histories, including scattered escapes. Each path is recorded within the configured
-incident/outgoing reference radius (captured bound orbits extend to the removal
-radius); outer removals end at that boundary. `block_counts.tsv` carries injected
-and completed counts for both populations, which must sum to all injections.
-`radial_blocks.tsv` also stores the per-history squared complete-path residence
-summed in each block. Local analysis combines these conditional Transport moments
-with the independent fixed-injection Capture probability; it must not infer the
-population fraction from the fixed-captured-count Transport run. Version 1 products
-retain enough first moments for this density normalization, but require a rerun for
-an unbiased pair estimator of the annihilation rate.
+```text
+results_<log10_mass_GeV>_<log10_sigma_p_cm2>/
+├── bincount.tsv
+└── snapshot/
+```
 
-Data analysis and plotting code is maintained in the sibling DaMaSCUS-SUN
-repository under `../DaMaSCUS-SUN/scripts/`. This EVAP
-repository only produces the server-side Capture stdout record and reduced
-Transport products described above.
+The result directory must be new or empty. A nonempty result directory is
+rejected before simulation, without changing its files. Use a new `output_dir`
+for each run, including retries and concurrent jobs. This protects old snapshots
+and prevents an earlier accepted file from being mistaken for a new result.
+There is no automatic cleanup or migration of historical result directories.
 
-Keep campaign configurations, scheduler scripts and manifests outside this
-repository. After the server jobs finish, copy the Capture Slurm log and reduced
-Transport directory to the local DaMaSCUS-SUN analysis workspace.
+`bincount.tsv` is written to a temporary file, checked, closed, and atomically
+renamed. Its header contains `# key = value` entries for effective physics and
+numerics, actual seed, MPI ranks, global counts, target completion and stopping reason.
+Cross sections explicitly distinguish proton, neutron and electron values.
+The input model settings retain their libconfig units, with halo velocities
+labelled km/s. No source fingerprint or Git compatibility gate is required.
 
-Local transport (`production_mode = false`) also supports the legacy products below.
-Enable `trajectory_summary_enabled`, `trajectory_events_enabled`, and
-`trajectory_trace_rate` as needed for diagnosis and replay:
+The same file contains exactly 64 comment records:
 
-- `bincount.txt`: legacy capture-conditioned residence and velocity-moment output.
-  The grid is uniform at 0.001 R_sun through 1.1 R_sun, then grows by 2% per shell
-  with a 10 R_sun width cap, clipped at the removal surface. Analytic exterior
-  arcs use a round trip or a one-way removal arc as appropriate. Computational
-  and numerical failures do not enter production residence. Prefixes may appear
-  only in the explicitly labelled thermal shape workflow. Use schema-10 products
-  for the new independent capture normalization.
-- `evaporation_times.txt`: compact complete-event table with
-  `rank trajectory_id lifetime_unbinding_sec r_capture_Rsun E_capture_eV
-  dE_capture_eV`, followed by the number of negative-energy exterior arcs,
-  the first/last/maximum osculating Kepler periods at outward `1 R_sun`
-  crossings, and the corresponding first/last/maximum analytic exterior
-  return times. It is sorted by
-  `lifetime_unbinding_sec` with `rank trajectory_id` tie-breakers.
-- `residence_jackknife_blocks.tsv`: exactly 64 deterministic blocks assigned by
-  `splitmix64(base_seed, rank, trajectory_id) % 64`. Each block contains
-  attempted, captured, completed uncaptured escape, accepted residence,
-  invalid, and outer-orbit-removal counts
-  plus its full radial `dt` and `v^2 dt` histograms. The writer refuses to publish the file unless every
-  scalar count and every radial bin closes against `bincount.txt`. This legacy joint-run product does not replace the independent capture and
-  transport blocks used by the schema-10 analysis.
-- `invalid_trajectories.tsv`: local-only replayable ledger for trajectories
-  excluded by numerical or computational validity rules. It is header-only
-  when no invalid trajectory occurred. Each row records the failure stage,
-  exact termination reason and numerical-failure detail, boundary/reference
-  energy diagnostics, capture/survival state, final kinematics, shifted initial
-  condition, and the `std::mt19937` states before initial-condition generation
-  and before trajectory simulation.
+```text
+# block_count_columns = block N_injected N_ever_captured N_never_captured N_residence_samples
+# block_count = 0 3041 157 2883 156
+```
 
-Replay one ledger row with the installed helper:
+The numeric table has eleven columns, named in its `# columns = ...` comment:
+
+| Columns | Meaning and units |
+| --- | --- |
+| `block`, `bin` | Zero-based block and radial-bin indices. |
+| `r_low_rsun`, `r_high_rsun` | Shell boundaries in R_sun. |
+| `captured_residence_dt_sum_s` | Sum of per-history residence after first capture [s]. |
+| `captured_residence_dt_sq_sum_s2` | Sum of squared per-history captured residence [s²]. |
+| `captured_residence_v2dt_sum_km2_s` | Captured-residence integral of speed squared [km²/s]. |
+| `ever_captured_path_dt_sum_s`, `ever_captured_path_dt_sq_sum_s2` | First and second time sums for complete recorded ever-captured paths [s, s²]. |
+| `never_captured_path_dt_sum_s`, `never_captured_path_dt_sq_sum_s2` | First and second time sums for complete recorded never-captured paths [s, s²]. |
+
+Rows are ordered by block, then bin, including zero rows. The existing grid is
+unchanged: 0.001 R_sun shells through 1.1 R_sun, then shell widths grow by 2%,
+capped at 10 R_sun and clipped at the removal boundary. The default 1100 R_sun
+cutoff gives 1626 bins and 104064 rows. For example:
+
+```python
+import numpy as np
+radial = np.loadtxt("bincount.tsv", comments="#")
+# columns: block, bin, r_low, r_high, res_dt, res_dt2, res_v2dt,
+#          ever_dt, ever_dt2, never_dt, never_dt2
+```
+
+Captured residence ends at validated escape on the solar matching surface or
+outer removal. Ever-captured paths include inbound, pre-capture, residence and
+outgoing components; these are added **before squaring each history's bin time**.
+Never-captured paths include scattered and unscattered completed escapes.
+Incoming/outgoing paths are recorded within `R_path_reference_rsun`; captured
+bound paths extend to `R_remove_rsun`. This preserves the existing boundaries.
+
+Counts distinguish all ever-captured histories from complete captured histories:
+`N_ever_captured` includes captures that later failed, while `N_residence_samples`
+is the denominator for both captured-residence and ever-captured complete-path
+moments. Each block includes that denominator as its fourth count.
+`N_never_captured` counts completed never-captured histories only.
+
+For every global/block population,
+`N_residence_samples + N_never_captured + excluded = N_injected`.
+The header records `N_excluded_trajectories`; a block's excluded count is the
+injected count minus its two complete-history counts. `N_unclassified` records
+failed histories that were never classified as captured. Captured histories that
+later failed are the difference `N_ever_captured - N_residence_samples`.
+When there are no failures, these reduce to the original two-population closure.
+The eleven radial columns are unchanged. Format 2 distinguishes this count
+contract and `target_reached` from the former zero-error `accepted` field.
+
+A run that reaches its target writes `target_reached = true` even when failure
+counts are nonzero. Exhausting an explicit attempt budget writes
+`target_reached = false` and exits 2. An I/O failure exits nonzero collectively
+and does not publish a partial file.
+
+Local analysis uses the **independent fixed-injection Capture** probability and
+conditional Transport moments. Do not estimate population fractions from the
+fixed-captured-count Transport ratio. The time-square sums support per-bin pair
+estimators; for a population with N >= 2, use `(S1*S1 - S2)/(N*(N-1))`.
+Block deletion retains correlated radial first moments for jackknife analysis.
+Per-history cross-bin second moments and full velocity distributions are not
+part of this contract.
+
+Analysis and plotting live in the sibling DaMaSCUS-SUN repository. Readers of
+old `metadata.json`/`radial_blocks.tsv` products must migrate to format 2;
+there is no dual-write compatibility mode. Keep cfg files and scheduler logs
+outside the result directory.
+
+Local diagnostics and thermal shape validation remain explicit tools:
 
 ```bash
+DaMaSCUS-SUN CONFIG.cfg --diagnostic
+DaMaSCUS-SUN CONFIG.cfg --thermal-validation
 replay-invalid-trajectory CONFIG.cfg invalid_trajectories.tsv RANK TRAJECTORY_ID
 ```
 
-The helper restores the recorded pre-simulation RNG state and shifted initial
-condition, reruns the current trajectory implementation, and prints the
-original/replayed reason, failure detail, final state, and diagnostic-event
-count. It reads only the current ledger schema; old ledger compatibility is not
-provided.
+Both local entry points require `run_mode = "Parameter point"` and write under
+`output_dir/diagnostics/results_.../`. They preserve legacy diagnostic/replay
+reports, including `bincount.txt`, `evaporation_times.txt`,
+`residence_jackknife_blocks.tsv`, `run_metadata.json`,
+`diagnostic_trajectory_summary.tsv`, `trajectory_events.tsv` and
+`invalid_trajectories.tsv`. These are separate local workflows; they do not
+publish a scientific `bincount.tsv`. The diagnostic CLI traces all histories;
+tests can configure narrower tracing through the internal API. Thermal shape
+validation may retain computationally truncated residence prefixes and is
+never accepted for absolute production analysis.
 
-The terminal summary and `bincount.txt` header report captured and uncaptured
-counts for every `TrajectoryTerminationReason` and every concrete numerical
-failure detail. This breakdown is always available; it is not gated by
-`trajectory_summary_enabled`.
-
-Local trajectory diagnostics are enabled with `trajectory_summary_enabled = true`.
-This adds `run_metadata.json`, `diagnostic_trajectory_summary.tsv`, and
-`trajectory_events.tsv` without changing the capture or evaporation state
-definitions. Set `trajectory_events_enabled = true` and
-`trajectory_trace_rate` in `[0, 1]` to select lifecycle traces by a stable hash;
-set `trajectory_trace_seed` to keep that selection identical across runs. The
-selection does not consume the physics RNG. Traced trajectories include the
-complete pre-initial-condition `std::mt19937` state and shifted initial
-condition, plus real-time scatter, state-transition, solar-crossing, escape,
-censoring, and numerical-failure events.
-
-The bound-exit period is the point-mass osculating Kepler period inferred from
-the negative-energy state at the outward `1 R_sun` matching surface. The
-exterior elapsed time is the physically used analytic travel time: through
-apoapsis to the inbound matching surface for every bound exterior arc. These
-are kept separate because the osculating full period includes a point-mass continuation through
-the solar interior, whereas the simulation uses the extended solar potential
-there.
-
-The `bincount.txt` and snapshot report headers expose both `capture_rate_raw`
-(captured / all attempted) and `capture_rate_valid` (captured / physically
-classified), with separate standard errors and Wilson intervals.
+The replay helper restores the recorded RNG state and shifted initial condition
+and prints the original/replayed termination details. No trajectory ledger or
+replay data is collected by ordinary scientific runs.
 
 When snapshots are enabled, intermediate files are written under `snapshot/`:
 
@@ -354,7 +380,7 @@ When snapshots are enabled, intermediate files are written under `snapshot/`:
   the next checkpoint rather than being dropped.
 
 Snapshot files are progress diagnostics. They do not replace the final
-post-reduction `bincount.txt` and `evaporation_times.txt` products, and they are
+post-reduction `bincount.tsv`, and they are
 not restart checkpoints. A report can temporarily have `snapshot_status =
 partial` while ranks publish their state. If a rank misses the deadline, the
 report remains incomplete rather than reconstructing state that was not
@@ -372,8 +398,10 @@ Snapshot checkpoint I/O is supported on homogeneous POSIX (Linux/macOS) MPI
 nodes sharing the output filesystem. The binary checkpoint representation is
 local to a run and is not a portable interchange or restart format.
 
-Capture-mode runs skip the full output path and print the capture summary
-instead.
+The `snapshot/` directory remains after completed or budget-limited Transport runs,
+even when empty because snapshots were disabled or the run ended before its
+first interval. Existing snapshot contents, heartbeat behavior and checkpoint
+formats are unchanged. Capture never creates this directory.
 
 ## Numerical tests
 

@@ -6,6 +6,7 @@
 #include <array>
 #include <cstdint>
 #include <limits>
+#include <initializer_list>
 
 #include "libphysica/Natural_Units.hpp"
 #include "libphysica/Statistics.hpp"
@@ -18,6 +19,12 @@ namespace DaMaSCUS_SUN
 {
 
 constexpr std::size_t RESIDENCE_JACKKNIFE_BLOCKS = 64;
+
+// Sum one history's recorded path components in seconds before squaring.
+// Storage is bin-major: bin * RESIDENCE_JACKKNIFE_BLOCKS + block.
+void Accumulate_Complete_Path_Block(
+    std::initializer_list<const RadialHistogram*> components, std::size_t block,
+    RadialHistogram& block_dt, RadialHistogram& block_dt_sq);
 
 bool TrajectoryTraceSelected(uint64_t trace_seed, int rank, uint64_t trajectory_id, double rate);
 
@@ -206,14 +213,11 @@ class Simulation_Data
 	// Per-bin sum of squares for error estimation
 	RadialHistogram captured_dt_sq_hist = RadialHistogram(NUM_BINS, 0.0);      // Σ (per-traj dt)²
 	RadialHistogram captured_v2dt_sq_hist = RadialHistogram(NUM_BINS, 0.0);    // Σ (per-traj v²dt)²
-	std::vector<double> residence_jackknife_block_dt_hist;
-	std::vector<double> residence_jackknife_block_v2dt_hist;
-	RadialHistogram incident_inbound_block_dt, incident_inbound_block_v2dt;
-	RadialHistogram transit_block_dt, transit_block_v2dt, transit_block_dt_sq;
-	RadialHistogram post_evap_block_dt, post_evap_block_v2dt;
+	RadialHistogram captured_residence_block_dt, captured_residence_block_dt_sq;
+	RadialHistogram captured_residence_block_v2dt;
 	// Complete paths of ever-captured particles, including pre-capture and outgoing legs.
-	RadialHistogram captured_path_block_dt, captured_path_block_v2dt, captured_path_block_dt_sq;
-	std::array<RadialHistogram,5> aphelion_block_dt;
+	RadialHistogram ever_captured_path_block_dt, ever_captured_path_block_dt_sq;
+	RadialHistogram never_captured_path_block_dt, never_captured_path_block_dt_sq;
 	std::array<unsigned long int, RESIDENCE_JACKKNIFE_BLOCKS> jackknife_attempted_counts{};
 	std::array<unsigned long int, RESIDENCE_JACKKNIFE_BLOCKS> jackknife_captured_counts{};
 	std::array<unsigned long int, RESIDENCE_JACKKNIFE_BLOCKS> jackknife_completed_escape_counts{};
@@ -262,11 +266,13 @@ class Simulation_Data
 	double rate_fallback_fraction = 0.0;
 	double rate_max_speed_seen = 0.0;
 	std::string physical_config_json = "{}";
+	std::string physical_config_header;
+	bool diagnostic_output_enabled = false;
 	bool fixed_injection_capture_run = false;
 	bool thermal_shape_run = false;
-	bool abort_on_invalid_trajectory = false;
-	bool Production_Ready() const;
-	void Write_Transport_Products(const std::string& output_dir, obscura::DM_Particle& DM, obscura::DM_Distribution& halo_model, Solar_Model& solar_model);
+	// Completion only; failed histories are counted and excluded, never a run veto.
+	bool Target_Reached() const;
+	void Write_Bincount(const std::string& output_dir, obscura::DM_Particle& DM, obscura::DM_Distribution& halo_model);
 
 	Simulation_Data(unsigned int sample_size, unsigned int max_trajectories, double u_min = 0.0, unsigned int iso_rings = 1);
 
@@ -278,7 +284,8 @@ class Simulation_Data
 	// Output files
 	// Rank zero checks the destination before expensive work; I/O failures throw.
 	void Prepare_Output_Directory(const std::string& output_dir) const;
-	void Write_Output_Files(const std::string& output_dir, obscura::DM_Particle& DM);
+	// Explicit local/test API; never called by the scientific output path.
+	void Write_Diagnostic_Output(const std::string& output_dir, obscura::DM_Particle& DM);
 
 	double Free_Ratio() const;
 	double Capture_Ratio() const;

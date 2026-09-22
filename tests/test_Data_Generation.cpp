@@ -482,37 +482,90 @@ TEST(TestDataGeneration, TestOutputFailuresAreReported)
 	rmdir(dir.c_str());
 }
 
-TEST(TestDataGeneration, JackknifeSumErrorUsesPopulationDenominators)
+TEST(TestDataGeneration, MomentSumErrorUsesHistorySquares)
 {
-	std::array<double, RESIDENCE_JACKKNIFE_BLOCKS> sums{};
-	std::array<unsigned long int, RESIDENCE_JACKKNIFE_BLOCKS> counts{};
-	// Unequal populations, identical per-history values: sampling error is zero.
-	for(std::size_t block = 0; block < counts.size(); ++block)
-	{
-		counts[block] = block % 5;
-		sums[block] = 3.0 * counts[block];
-	}
-	EXPECT_DOUBLE_EQ(Block_Jackknife_Sum_SE(sums, counts), 0.0);
-	// One history per block reduces to the ordinary sample-mean SE times N.
-	for(std::size_t block = 0; block < counts.size(); ++block)
-	{
-		counts[block] = 1;
-		sums[block] = block % 2 == 0 ? 1.0 : 3.0;
-	}
-	EXPECT_NEAR(Block_Jackknife_Sum_SE(sums, counts), 64.0 / std::sqrt(63.0), 1e-12);
+    // Histories 1, 3, 7 have S=11, Q=59, independently of their hash blocks.
+    EXPECT_NEAR(Moment_Sum_SE(11, 59, 3), std::sqrt(28.0), 1e-14);
+    EXPECT_DOUBLE_EQ(Moment_Sum_SE(30, 90, 10), 0.0);
+    EXPECT_DOUBLE_EQ(Moment_Sum_SE(5, 13, 2), 1.0);
+    EXPECT_TRUE(std::isnan(Moment_Sum_SE(0, 0, 0)));
+    EXPECT_TRUE(std::isnan(Moment_Sum_SE(2, 4, 1)));
+    EXPECT_THROW(Moment_Sum_SE(10, 1, 2), std::runtime_error);
 }
 
-TEST(TestDataGeneration, JackknifeSumErrorHandlesEmptyAndSingleOccupiedBlocks)
+TEST(TestDataGeneration, DerivedObservablesIncludeSecondMomentsAndRatios)
 {
-	std::array<double, RESIDENCE_JACKKNIFE_BLOCKS> sums{};
-	std::array<unsigned long int, RESIDENCE_JACKKNIFE_BLOCKS> counts{};
-	EXPECT_TRUE(std::isnan(Block_Jackknife_Sum_SE(sums, counts)));
-	counts[2] = 1; sums[2] = 2.0;
-	EXPECT_TRUE(std::isnan(Block_Jackknife_Sum_SE(sums, counts)));
-	counts[2] = 10; sums[2] = 20.0;
-	EXPECT_TRUE(std::isnan(Block_Jackknife_Sum_SE(sums, counts)));
-	counts[5] = 10; sums[5] = 20.0;
-	EXPECT_DOUBLE_EQ(Block_Jackknife_Sum_SE(sums, counts), 0.0);
+    const OutputMoments moments{{4, 10, 12, 6, 20, 10, 58}};
+    const auto result = Derived_Radial_Observables(moments, 2, 2, 5);
+    EXPECT_DOUBLE_EQ(result[0], 15); // kBT, including the mass/unit conversion factor.
+    EXPECT_DOUBLE_EQ(result[1], 3);  // (16-10)/2, not a squared mean.
+    EXPECT_DOUBLE_EQ(result[2], 8);
+    EXPECT_DOUBLE_EQ(result[3], 21);
+    EXPECT_DOUBLE_EQ(result[4], 15);
+    const auto unavailable = Derived_Radial_Observables(OutputMoments{}, 0, 1, 5);
+    for(const auto value : unavailable) EXPECT_TRUE(std::isnan(value));
+}
+
+TEST(TestDataGeneration, NonlinearCovarianceKeepsCorrelatedBinsAndPopulationCrossTerms)
+{
+    OutputReplicates a{}, b{}, integrated{}, temperature{}, second_moment_deletions{};
+    // Two perfectly correlated radial bins: integral error must be 3*SE(a),
+    // not sqrt(SE(a)^2 + SE(b)^2). A proportional velocity/time ratio has zero SE.
+    for(std::size_t block = 0; block < a.size(); ++block)
+    {
+        a[block] = block + 1;
+        b[block] = 2 * a[block];
+        integrated[block] = a[block] + b[block];
+        const OutputMoments moments{{a[block], a[block]*a[block], 3*a[block], 6, 20, 4, 8}};
+        temperature[block] = Derived_Radial_Observables(moments, 10, 10, 1)[0];
+        // Hold the first moment fixed and vary Q; the pair estimator's SE must change.
+        const OutputMoments varying_q{{10, 20.0L + block/10.0L, 30, 0, 0, 0, 0}};
+        second_moment_deletions[block] = Derived_Radial_Observables(varying_q, 10, 10, 1)[1];
+    }
+    const auto variance = Block_Jackknife_Covariance(a, a);
+    EXPECT_DOUBLE_EQ(Block_Jackknife_Covariance(a, b), 2 * variance);
+    EXPECT_DOUBLE_EQ(Block_Jackknife_Covariance(integrated, integrated), 9 * variance);
+    EXPECT_DOUBLE_EQ(Block_Jackknife_Covariance(temperature, temperature), 0);
+    EXPECT_GT(Block_Jackknife_Covariance(second_moment_deletions, second_moment_deletions), 0);
+    a[2] = std::numeric_limits<long double>::quiet_NaN();
+    EXPECT_TRUE(std::isnan(Block_Jackknife_Covariance(a, b)));
+    EXPECT_TRUE(std::isfinite(Block_Jackknife_Covariance(b, b)));
+}
+
+TEST(TestDataGeneration, CompactReplicatesRetainSmallMomentsAfterDeletingDominantBlock)
+{
+    std::array<std::vector<double>, 7> storage;
+    for(auto& histogram : storage) histogram.resize(64);
+    OutputBlockCounts counts{};
+    double velocity_square_sum = 0;
+    const std::array<double, 4> times{{1e10, 3, 4, 5}};
+    for(std::size_t block = 0; block < times.size(); ++block)
+    {
+        const auto t = times[block];
+        counts[block] = 1;
+        const std::array<double, 7> moments{{t, t*t, 3*t, t, t*t, t, t*t}};
+        for(std::size_t moment = 0; moment < moments.size(); ++moment)
+            storage[moment][block] = moments[moment];
+        velocity_square_sum += 9*t*t;
+    }
+    std::array<const std::vector<double>*, 7> histograms{};
+    for(std::size_t moment = 0; moment < histograms.size(); ++moment) histograms[moment] = &storage[moment];
+    std::ostringstream output;
+    output << std::setprecision(17);
+    ASSERT_NO_THROW(Write_Compact_Radial_Statistics(output, {0, R_SUN_KM}, histograms,
+        {velocity_square_sum}, counts, counts, 1));
+    EXPECT_NE(output.str().find("# integrated_stat_count = 24"), std::string::npos);
+    EXPECT_EQ(output.str().find(" = nan\n"), std::string::npos);
+    EXPECT_EQ(output.str().find("\tnan"), std::string::npos);
+}
+
+TEST(TestDataGeneration, DetectorKernelHasCorrectSphericalAndFarFieldLimits)
+{
+    EXPECT_DOUBLE_EQ(Detector_Radial_Integral(0, 10), 0);
+    // At r/D=1/2 the analytic expression contains log(3).
+    EXPECT_NEAR(Detector_Radial_Integral(5, 10), 10*(0.25 - 0.1875*std::log(3.0)), 1e-14);
+    EXPECT_NEAR(Detector_Radial_Integral(1, 1e6), 1.0/3e12, 1e-24);
+    EXPECT_THROW(Detector_Radial_Integral(10, 10), std::invalid_argument);
 }
 
 TEST(TestDataGeneration, CompletePathSecondMomentIncludesCrossTerms)

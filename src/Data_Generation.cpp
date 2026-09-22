@@ -655,29 +655,6 @@ bool TrajectoryTraceSelected(uint64_t trace_seed, int rank, uint64_t trajectory_
 	return Diagnostic_Trace_Selected(trace_seed, rank, trajectory_id, rate);
 }
 
-double Block_Jackknife_Sum_SE(
-    const std::array<double, RESIDENCE_JACKKNIFE_BLOCKS>& block_sums,
-    const std::array<unsigned long int, RESIDENCE_JACKKNIFE_BLOCKS>& block_counts)
-{
-	const long double n = std::accumulate(block_counts.begin(), block_counts.end(), 0.0L);
-	const long double total = std::accumulate(block_sums.begin(), block_sums.end(), 0.0L);
-	if(n < 2.0L) return std::numeric_limits<double>::quiet_NaN();
-	std::array<long double, RESIDENCE_JACKKNIFE_BLOCKS> estimates{};
-	for(std::size_t block = 0; block < estimates.size(); ++block)
-	{
-		const long double remaining = n - block_counts[block];
-		if(remaining == 0.0L) return std::numeric_limits<double>::quiet_NaN();
-		// Condition on the observed population size. Empty blocks remain part
-		// of the fixed hash partition; deleting one leaves the full estimate.
-		estimates[block] = n * (total - block_sums[block]) / remaining;
-	}
-	const long double mean = std::accumulate(estimates.begin(), estimates.end(), 0.0L) / estimates.size();
-	long double squared_deviations = 0.0L;
-	for(const auto estimate : estimates)
-		squared_deviations += (estimate - mean) * (estimate - mean);
-	return static_cast<double>(std::sqrt(squared_deviations * (estimates.size() - 1) / estimates.size()));
-}
-
 void Accumulate_Complete_Path_Block(
     std::initializer_list<const RadialHistogram*> components, std::size_t block,
     RadialHistogram& block_dt, RadialHistogram& block_dt_sq)
@@ -3306,7 +3283,7 @@ void Simulation_Data::Write_Bincount(const std::string& dir, obscura::DM_Particl
 	{
 		std::ofstream file(temporary);
 		if(!file) throw std::runtime_error("cannot open temporary bincount.tsv");
-		file << std::setprecision(10);
+		file << std::setprecision(std::numeric_limits<double>::max_digits10);
 		file << "# bincount_format_version = 3\n"
 		     << "# run_mode = Parameter point\n"
 		     << "# m_chi_GeV = " << In_Units(DM.mass, GeV) << '\n'
@@ -3328,7 +3305,7 @@ void Simulation_Data::Write_Bincount(const std::string& dir, obscura::DM_Particl
 		     << "# N_residence_samples = " << number_of_residence_samples << '\n'
 		     << "# N_unclassified = " << number_of_trajectories - Valid_Trajectories() << '\n'
 		     << "# N_excluded_trajectories = " << number_of_trajectories - number_of_residence_samples - number_of_completed_outward_escapes << '\n'
-		     << "# failed_history_policy = record_and_continue\n"
+		     << "# failed_history_policy = discard_and_replace\n"
 		     << "# N_outer_removed = " << number_of_outer_domain_removed_particles << '\n'
 		     << "# numerical_failures = " << number_of_numerical_failures << '\n'
 		     << "# computational_failures = " << number_of_computational_truncations << '\n'
@@ -3362,12 +3339,10 @@ void Simulation_Data::Write_Bincount(const std::string& dir, obscura::DM_Particl
 		     << "# radial_bins = " << edges.size() - 1 << '\n'
 		     << "# jackknife_blocks = " << RESIDENCE_JACKKNIFE_BLOCKS << '\n'
 		     << "# jackknife_assignment = splitmix64(base_seed,rank,trajectory_id)%64\n"
-		     << "# output_significant_digits = 10\n"
-		     << "# jackknife_se_scale = total_sum_at_fixed_population_count\n"
-		     << "# jackknife_se_definition = theta_b=N*(S-S_b)/(N-N_b); SE=sqrt((B-1)/B*sum_b((theta_b-mean(theta))^2)); B=64\n"
-		     << "# jackknife_se_population = captured/ever use N_residence_samples; never uses N_never_captured; all 64 hash blocks included\n"
-		     << "# jackknife_se_undefined = nan when N<2 or any deletion leaves no histories\n"
-		     << "# radial_covariance_available = false\n"
+		     << "# output_significant_digits = " << std::numeric_limits<double>::max_digits10 << '\n'
+		     << "# marginal_se_definition = sqrt((N*Q-S*S)/(N-1)); total sum at fixed population count; nan for N<2\n"
+		     << "# marginal_se_population = captured/ever use N_residence_samples; never uses N_never_captured\n"
+		     << "# radial_covariance_available = selected_observables_and_integrals\n"
 		     << "# capture_normalization_uncertainty_included = false\n"
 		     << "# captured_residence = first capture to validated matching-surface escape or outer removal\n"
 		     << "# ever_captured_path = recorded inbound + pre-capture + residence + outgoing; includes outer removals\n"
@@ -3379,42 +3354,15 @@ void Simulation_Data::Write_Bincount(const std::string& dir, obscura::DM_Particl
 			file << "# block_count = " << block << ' ' << jackknife_attempted_counts[block]
 			     << ' ' << jackknife_captured_counts[block] << ' ' << jackknife_completed_escape_counts[block]
 			     << ' ' << jackknife_residence_sample_counts[block] << '\n';
-		file << "# columns = bin r_low_rsun r_high_rsun captured_residence_dt_sum_s captured_residence_dt_sq_sum_s2 captured_residence_dt_se_s captured_residence_v2dt_sum_km2_s captured_residence_v2dt_se_km2_s ever_captured_path_dt_sum_s ever_captured_path_dt_sq_sum_s2 ever_captured_path_dt_se_s never_captured_path_dt_sum_s never_captured_path_dt_sq_sum_s2 never_captured_path_dt_se_s\n";
 		const std::array<const RadialHistogram*, 7> histograms{{
 		    &captured_residence_block_dt, &captured_residence_block_dt_sq,
 		    &captured_residence_block_v2dt, &ever_captured_path_block_dt,
 		    &ever_captured_path_block_dt_sq, &never_captured_path_block_dt,
 		    &never_captured_path_block_dt_sq}};
-		for(std::size_t bin = 0; bin + 1 < edges.size(); ++bin)
-		{
-			std::array<double, 7> totals{};
-			std::array<std::array<double, RESIDENCE_JACKKNIFE_BLOCKS>, 7> blocks{};
-			for(std::size_t moment = 0; moment < histograms.size(); ++moment)
-			{
-				long double total = 0.0L;
-				for(std::size_t block = 0; block < RESIDENCE_JACKKNIFE_BLOCKS; ++block)
-				{
-					const double contribution = value(*histograms[moment], bin * RESIDENCE_JACKKNIFE_BLOCKS + block);
-					if(!std::isfinite(contribution) || contribution < 0.0)
-						throw std::runtime_error("nonfinite or negative bincount moment");
-					blocks[moment][block] = contribution;
-					total += contribution;
-				}
-				totals[moment] = static_cast<double>(total);
-				if(!std::isfinite(totals[moment])) throw std::runtime_error("nonfinite bincount total");
-			}
-			const double residence_se = Block_Jackknife_Sum_SE(blocks[0], jackknife_residence_sample_counts);
-			const double velocity_se = Block_Jackknife_Sum_SE(blocks[2], jackknife_residence_sample_counts);
-			const double ever_se = Block_Jackknife_Sum_SE(blocks[3], jackknife_residence_sample_counts);
-			const double never_se = Block_Jackknife_Sum_SE(blocks[5], jackknife_completed_escape_counts);
-			for(const auto error : {residence_se, velocity_se, ever_se, never_se})
-				if(std::isinf(error)) throw std::runtime_error("nonfinite bincount jackknife error");
-			file << bin << '\t' << edges[bin] / R_SUN_KM << '\t' << edges[bin + 1] / R_SUN_KM
-			     << '\t' << totals[0] << '\t' << totals[1] << '\t' << residence_se
-			     << '\t' << totals[2] << '\t' << velocity_se
-			     << '\t' << totals[3] << '\t' << totals[4] << '\t' << ever_se
-			     << '\t' << totals[5] << '\t' << totals[6] << '\t' << never_se << '\n';
-		}
+		const long double c_km_s = In_Units(1.0, km / sec);
+		Write_Compact_Radial_Statistics(file, edges, histograms, captured_v2dt_sq_hist,
+		    jackknife_residence_sample_counts, jackknife_completed_escape_counts,
+		    In_Units(DM.mass, eV) / (3 * c_km_s * c_km_s));
 		file.flush();
 		const bool written = file.good();
 		file.close();

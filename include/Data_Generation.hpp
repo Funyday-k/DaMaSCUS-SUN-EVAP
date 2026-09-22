@@ -14,23 +14,17 @@
 #include "obscura/DM_Particle.hpp"
 
 #include "Simulation_Trajectory.hpp"
+#include "Output_Statistics.hpp"
 
 namespace DaMaSCUS_SUN
 {
 
-constexpr std::size_t RESIDENCE_JACKKNIFE_BLOCKS = 64;
 
 // Sum one history's recorded path components in seconds before squaring.
 // Storage is bin-major: bin * RESIDENCE_JACKKNIFE_BLOCKS + block.
 void Accumulate_Complete_Path_Block(
     std::initializer_list<const RadialHistogram*> components, std::size_t block,
     RadialHistogram& block_dt, RadialHistogram& block_dt_sq);
-
-// Delete-one-block SE on the total-sum scale: N times the conditional-mean SE.
-// Returns NaN if a deletion leaves no histories; units match block_sums.
-double Block_Jackknife_Sum_SE(
-    const std::array<double, RESIDENCE_JACKKNIFE_BLOCKS>& block_sums,
-    const std::array<unsigned long int, RESIDENCE_JACKKNIFE_BLOCKS>& block_counts);
 
 bool TrajectoryTraceSelected(uint64_t trace_seed, int rank, uint64_t trajectory_id, double rate);
 

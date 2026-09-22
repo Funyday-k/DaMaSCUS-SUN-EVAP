@@ -282,7 +282,7 @@ std::string Configuration::Physical_Configuration_Header() const
 	// Mirror the active constructor settings, omitting ignored cfg values.
 	// Runtime mass, density, spin and cross sections come from Write_Bincount.
 	std::ostringstream output;
-	output << std::setprecision(10);
+	output << std::setprecision(std::numeric_limits<double>::max_digits10);
 	auto field = [&](const char* label, const char* setting) {
 		output << "# " << label << " = ";
 		Append_JSON_Setting(output, config.lookup(setting));

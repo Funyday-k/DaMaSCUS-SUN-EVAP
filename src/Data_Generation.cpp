@@ -1312,9 +1312,12 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 			}
 
 			MPIWorkOutcome outcome;
+			// Failed histories are discarded and replaced by a fresh draw.
+			// Capture therefore targets a fixed number of physically classified
+			// incident histories, while Transport targets complete captured histories.
 			outcome.accepted_sample =
 			    capture_mode
-			    ? true  // fixed incident count in Capture mode
+			    ? (trajectory.bincount.is_captured || completed_outward_escape)
 			    : accepted_residence_sample;
 			outcome.initial_shift_failure = !initial_shift_ok;
 			outcome.numerical_failure =
@@ -2851,7 +2854,7 @@ void Simulation_Data::Print_Summary(unsigned int mpi_rank)
 bool Simulation_Data::Target_Reached() const
 {
 	if(fixed_injection_capture_run)
-		return number_of_trajectories == requested_captured_particles;
+		return Valid_Trajectories() >= requested_captured_particles;
 	return number_of_residence_samples >= requested_captured_particles;
 }
 
@@ -3132,14 +3135,16 @@ std::string Simulation_Data::Run_Metadata_JSON(obscura::DM_Particle& DM, obscura
          << ",\n\"max_optical_depth_step\":" << NormalModeMaxOpticalDepthStep()
          << ",\n\"optical_depth_relative_tolerance\":" << OpticalDepthRelativeTolerance()
          << ",\n\"requested_samples\":" << requested_captured_particles
-         << ",\n\"N_inj\":" << number_of_trajectories << ",\n\"N_capt\":" << number_of_captured_particles << ",\n\"N_completed\":" << number_of_residence_samples
+         << ",\n\"N_attempted\":" << number_of_trajectories
+         << ",\n\"N_inj\":" << (fixed_injection_capture_run ? Valid_Trajectories() : number_of_trajectories)
+         << ",\n\"N_capt\":" << number_of_captured_particles << ",\n\"N_completed\":" << number_of_residence_samples
          << ",\n\"N_outer_removed\":" << number_of_outer_domain_removed_particles << ",\n\"N_numerical_failures\":" << number_of_numerical_failures
          << ",\n\"N_computational_failures\":" << number_of_computational_truncations << ",\n\"runtime_seconds\":" << computing_time
 
          << ",\n\"max_trajectories\":" << (maximum_trajectories == std::numeric_limits<uint64_t>::max() ? 0 : maximum_trajectories)
          << ",\n\"maximum_number_of_scatterings\":" << maximum_number_of_scatterings
          << ",\n\"max_trajectory_wall_time_sec\":" << max_trajectory_wall_time_sec
-         << ",\n\"failed_history_policy\":\"record_and_continue\""
+         << ",\n\"failed_history_policy\":\"discard_and_replace\""
          << ",\n\"thermal_validation_mode\":" << (thermal_shape_run ? "true" : "false")
          << ",\n\"early_stop_reason\":\"" << Stop_Reason_Key(early_stop_reason) << "\"";
     return meta.str();
@@ -3154,17 +3159,18 @@ void Simulation_Data::Print_Capture_Result_JSON(obscura::DM_Particle& DM, obscur
     capture << "{\"capture_result_schema\":2," << Run_Metadata_JSON(DM, halo)
         << ",\"N_valid\":" << Valid_Trajectories()
         << ",\"N_unclassified\":" << number_of_trajectories - Valid_Trajectories()
-        << ",\"f_cap_denominator\":\"all_injected_trials\""
+        << ",\"f_cap_denominator\":\"valid_classified_trials\""
         << ",\"fixed_injection\":" << (fixed_injection_capture_run?"true":"false")
         << ",\n\"C_geom_s_inv\":" << geom << ",\n\"f_cap\":"
-        << (number_of_trajectories?static_cast<double>(number_of_captured_particles)/number_of_trajectories:0)
+        << (Valid_Trajectories()?static_cast<double>(number_of_captured_particles)/Valid_Trajectories():0)
         << ",\n\"blocks\":[";
     for(std::size_t k=0;k<RESIDENCE_JACKKNIFE_BLOCKS;++k) {
         if(k) capture << ',';
-        capture << '[' << jackknife_attempted_counts[k] << ',' << jackknife_captured_counts[k] << ']';
+        capture << '[' << (jackknife_captured_counts[k] + jackknife_completed_escape_counts[k])
+                << ',' << jackknife_captured_counts[k] << ']';
     }
     capture << "],\"C_capture_s_inv\":"
-        << geom * (number_of_trajectories ? static_cast<double>(number_of_captured_particles)/number_of_trajectories : 0.0)
+        << geom * (Valid_Trajectories() ? static_cast<double>(number_of_captured_particles)/Valid_Trajectories() : 0.0)
         << "}";
     std::string record = capture.str();
     record.erase(std::remove(record.begin(), record.end(), '\n'), record.end());

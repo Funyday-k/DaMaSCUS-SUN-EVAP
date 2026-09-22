@@ -166,7 +166,7 @@ Configuration files use libconfig syntax. The most important controls are:
 | Setting | Meaning |
 | --- | --- |
 | `run_mode` | `"Parameter point"` for the main evaporation workflow, `"Capture"` for capture-rate runs, or `"Parameter scan"` for detector-limit scans. |
-| `sample_size` | In Parameter point mode, the exact number of complete captured histories (escape or outer removal). In Capture mode, the exact number of incident trials. Failed histories are recorded and skipped; Transport continues until the complete-capture target or the explicit attempt budget is reached. |
+| `sample_size` | In Parameter point mode, the exact number of complete captured histories (escape or outer removal). In Capture mode, the exact number of physically classified incident histories. Numerical/computationally failed histories are discarded and replaced by fresh draws until the target or the explicit attempt budget is reached. |
 | `outer_removal_radius_rsun` | Bound-orbit removal radius in R_sun, default 1100; must exceed the native 1.1 R_sun grid. The obsolete `outer_boundary_radius_au` key is rejected. |
 | `fixed_seed` | Optional non-negative PRNG seed. `0` or an omitted setting uses nondeterministic seeding; a nonzero value is expanded independently by MPI rank. |
 | `max_trajectories` | Optional hard cap on generated trajectories. `0` or unset means no trajectory-count cap. |
@@ -206,11 +206,13 @@ For reproducible MPI runs, a nonzero fixed seed is expanded by rank as
 `base_seed + 1000003 * mpi_rank`. Ordinary Capture and Parameter point runs
 record numerical failures and computational truncations and continue issuing
 work. Initial-shift failures also continue; no failure-fraction threshold stops
-the simulation. A failed Transport history contributes neither residence nor
-complete-path moments. Transport finishes after `sample_size` complete captured
-histories; Capture still finishes after exactly `sample_size` incident attempts,
-including failed attempts. `max_trajectories` remains an explicit total-attempt
-budget. Without that budget, Transport continues seeking complete captures.
+the simulation. A failed history contributes neither residence nor complete-path moments and is
+replaced by a fresh independent draw. Transport finishes after `sample_size`
+complete captured histories; Capture finishes after `sample_size` physically
+classified incident histories. Raw attempts, including discarded numerical or
+computational failures, are tracked separately. `max_trajectories` remains an
+explicit total-attempt budget. Without that budget, both workflows continue
+drawing until their target is reached.
 
 `target_reached` reports completion only. There is no zero-error acceptance gate.
 Exit code 2 means the configured attempt budget prevented reaching the target;
@@ -230,17 +232,20 @@ repeated bound Kepler returns to stall its MPI batch.
 
 ## Outputs
 
-Capture (`run_mode = "Capture"`) is a fixed **incident-count** normalization run.
+Capture (`run_mode = "Capture"`) is a fixed **valid incident-count** normalization run.
 Stdout contains exactly one `CAPTURE_RESULT_JSON={...}` line (capture schema 2);
 human-readable logs go to stderr. No result directory, snapshot, copied cfg or
 diagnostic file is created, including on a failed run. The record retains
 target completion, physics/numerics, seed, MPI ranks, failure counts,
 `N_inj`, `N_capt`, `f_cap`, `C_geom_s_inv`, `C_capture_s_inv` and 64 count blocks.
-Failed histories do not stop the fixed-injection run. `N_valid` and
-`N_unclassified` identify classified and failed attempts. For compatibility with
-the fixed-incident estimator, `f_cap` remains `N_capt / N_inj`, explicitly labelled
-`f_cap_denominator = all_injected_trials`; failure counts are retained. The
-`target_reached` field replaces the old `production_accepted` veto.
+Failed histories do not stop the run: they are discarded and replaced by fresh
+draws. `N_attempted` records every raw trajectory attempt, `N_inj = N_valid`
+records the physically classified incident ensemble used by the estimator, and
+`N_unclassified = N_attempted - N_valid` records discarded failures. Accordingly,
+`f_cap = N_capt / N_inj` and the JSON labels
+`f_cap_denominator = valid_classified_trials`. The 64 Capture blocks use the same
+valid-trial denominator. `target_reached` means the requested valid incident count
+was obtained; exhausting `max_trajectories` first returns exit code 2.
 
 Ordinary Transport (`run_mode = "Parameter point"`) has one output contract:
 

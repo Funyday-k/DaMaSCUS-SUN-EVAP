@@ -4,6 +4,9 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <iomanip>
+#include <locale>
+#include <sstream>
 #include <numeric>
 #include <ostream>
 #include <stdexcept>
@@ -63,8 +66,33 @@ void Write_Number(std::ostream& output, long double number)
 {
     const double stored = static_cast<double>(number);
     if(std::isinf(stored)) throw std::runtime_error("nonfinite derived output statistic");
-    output << stored;
+    output << Format_Output_Number(stored);
 }
+}
+
+std::string Format_Output_Number(double value, int significant_digits)
+{
+    std::ostringstream text;
+    text.imbue(std::locale::classic());
+    text << std::defaultfloat << std::setprecision(significant_digits) << (value == 0 ? 0.0 : value);
+    return text.str();
+}
+
+void Write_Cross_Section_Header(std::ostream& output, const std::string& species, double sigma_cm2)
+{
+    if(!std::isfinite(sigma_cm2) || sigma_cm2 < 0)
+        throw std::runtime_error("invalid cross section in output header");
+    // Splitting scientific notation also handles rounding across powers of ten.
+    std::ostringstream scientific;
+    scientific.imbue(std::locale::classic());
+    scientific << std::scientific << std::setprecision(OUTPUT_PARAMETER_DIGITS - 1) << sigma_cm2;
+    const auto text = scientific.str();
+    const auto separator = text.find('e');
+    std::string coefficient = text.substr(0, separator);
+    while(coefficient.back() == '0') coefficient.pop_back();
+    if(coefficient.back() == '.') coefficient.pop_back();
+    output << "# sigma_" << species << "_coefficient = " << coefficient << '\n'
+           << "# sigma_" << species << "_exponent = " << -std::stoi(text.substr(separator + 1)) << '\n';
 }
 
 double Moment_Sum_SE(long double sum, long double square_sum, unsigned long count)
@@ -116,6 +144,7 @@ void Write_Compact_Radial_Statistics(
     const OutputBlockCounts& captured_counts, const OutputBlockCounts& never_counts,
     long double temperature_factor)
 {
+    output << std::defaultfloat << std::setprecision(OUTPUT_PARAMETER_DIGITS);
     const unsigned long captured = std::accumulate(captured_counts.begin(), captured_counts.end(), 0UL);
     const unsigned long never = std::accumulate(never_counts.begin(), never_counts.end(), 0UL);
     const long double outer_rsun = edges_km.back() / R_SUN_KM;

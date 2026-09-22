@@ -3,7 +3,7 @@
 Dark Matter Simulation Code for the Sun, with capture- and evaporation-focused
 extensions.
 
-The format-3 `bincount.tsv` transport contract, configuration and validation scope are documented below.
+The format-4 `bincount.tsv` transport contract, configuration and validation scope are documented below.
 
 ## Overview
 
@@ -275,9 +275,38 @@ The same file contains exactly 64 comment records:
 # block_count = 0 3041 157 2883 156
 ```
 
-Format 3 writes **one row per radial bin**, with 31 named columns. Metadata and
-moments retain `max_digits10` (17 significant decimal digits); counts are exact
-integers. The first fourteen columns retain their order, followed by the velocity
+Format 4 writes **one row per radial bin**, with 31 named columns. Statistical
+values, standard errors and covariances use **at most four significant digits**.
+All calculations use the existing internal precision and are rounded only when
+written. Counts are exact integers. Fixed parameters and radial boundaries use
+compact decimal notation (up to 12 significant digits), so `0.01`, `0.4` and
+`0.08` do not acquire binary floating-point tails. Geometry keeps enough digits
+to distinguish narrow bins, including the clipped final shell.
+
+Cross sections are represented by a coefficient and an integer exponent:
+
+```text
+# cross_section_definition = sigma_cm2 = coefficient * 10^(-exponent); coefficient=0 denotes zero
+# sigma_p_coefficient = 1
+# sigma_p_exponent = 36
+```
+
+This denotes 10^-36 cm². A non-unit coefficient preserves points such as
+2.5 × 10^-36 cm²; a zero cross section uses coefficient 0 and exponent 0.
+The old `sigma_p_cm2`, `sigma_neutron_cm2` and `sigma_e_cm2` header keys are
+replaced by the corresponding `sigma_{p,neutron,e}_{coefficient,exponent}` keys.
+Readers must recognize version 4 and reconstruct `coefficient * 10**(-exponent)`.
+
+The precision fields are `output_significant_digits = 4` and
+`parameter_significant_digits = 12`. Derived estimates and SE are computed
+**before** any rounding. Use the supplied quadratic estimates rather than
+subtracting `S*S-Q` from four-digit moment totals: cancellation can amplify
+textual rounding. Covariances and displayed SE² agree only to reporting
+precision; nearly singular covariance matrices can acquire small negative
+eigenvalues through decimal rounding. Comparisons and matrix use must account
+for that reporting precision.
+
+The first fourteen columns retain their order, followed by the velocity
 second moment and derived observables:
 
 | Columns | Meaning and units |
@@ -387,7 +416,7 @@ injected count minus its two complete-history counts. `N_unclassified` records
 failed histories that were never classified as captured. Captured histories that
 later failed are the difference `N_ever_captured - N_residence_samples`.
 When there are no failures, these reduce to the original two-population closure.
-Format 3 retains the format-2 counts and completion semantics while replacing
+Format 4 retains the format-2 counts and completion semantics while replacing
 the block-by-bin matrix with totals and per-bin standard errors.
 
 A run that reaches its target writes `target_reached = true` even when failure
@@ -400,13 +429,14 @@ conditional Transport moments. Do not estimate population fractions from the
 fixed-captured-count Transport ratio. The time-square sums support per-bin pair
 estimators; for a population with N >= 2, use `(S1*S1 - S2)/(N*(N-1))`.
 The square sums remain sums of per-history squares, not squares of block or
-global sums. They preserve the pair-estimator point estimate at full double precision.
+global sums. The program computes the pair-estimator point estimate at internal
+precision and then reports it to four significant digits.
 The derived columns and selected integrals supply its jackknife uncertainty.
 Per-history cross-bin second moments and full velocity distributions are not provided.
 
 Analysis and plotting live in the sibling DaMaSCUS-SUN repository. Readers of
-old `metadata.json`/`radial_blocks.tsv` products and format-2 `bincount.tsv`
-must migrate to format 3;
+old `metadata.json`/`radial_blocks.tsv` products and format-2/3 `bincount.tsv`
+must migrate to format 4;
 there is no dual-write compatibility mode. Keep cfg files and scheduler logs
 outside the result directory.
 

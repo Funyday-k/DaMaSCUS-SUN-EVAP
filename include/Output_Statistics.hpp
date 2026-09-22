@@ -4,14 +4,24 @@
 #include <array>
 #include <cstddef>
 #include <iosfwd>
+#include <string>
 #include <vector>
 
 namespace DaMaSCUS_SUN
 {
 constexpr std::size_t RESIDENCE_JACKKNIFE_BLOCKS = 64;
+constexpr int OUTPUT_STATISTIC_DIGITS = 4;
+constexpr int OUTPUT_PARAMETER_DIGITS = 12;
 using OutputBlockCounts = std::array<unsigned long, RESIDENCE_JACKKNIFE_BLOCKS>;
 using OutputMoments = std::array<long double, 7>;
 using OutputReplicates = std::array<long double, RESIDENCE_JACKKNIFE_BLOCKS>;
+
+// Decimal input parameters / geometry omit insignificant trailing zeros.
+// Statistical values and errors are rounded only when serialized.
+std::string Format_Output_Number(double value, int significant_digits = OUTPUT_STATISTIC_DIGITS);
+
+// sigma [cm^2] = coefficient * 10^(-exponent); exponent is always an integer.
+void Write_Cross_Section_Header(std::ostream& output, const std::string& species, double sigma_cm2);
 
 // Fixed-N error of a sum from per-history first and second moments.
 // Independent of how histories were assigned to jackknife blocks.

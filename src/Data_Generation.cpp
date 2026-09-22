@@ -3283,14 +3283,15 @@ void Simulation_Data::Write_Bincount(const std::string& dir, obscura::DM_Particl
 	{
 		std::ofstream file(temporary);
 		if(!file) throw std::runtime_error("cannot open temporary bincount.tsv");
-		file << std::setprecision(std::numeric_limits<double>::max_digits10);
-		file << "# bincount_format_version = 3\n"
+		file << std::defaultfloat << std::setprecision(OUTPUT_PARAMETER_DIGITS);
+		file << "# bincount_format_version = 4\n"
 		     << "# run_mode = Parameter point\n"
 		     << "# m_chi_GeV = " << In_Units(DM.mass, GeV) << '\n'
-		     << "# sigma_p_cm2 = " << In_Units(DM.Sigma_Proton(), cm * cm) << '\n'
-		     << "# sigma_neutron_cm2 = " << In_Units(DM.Sigma_Neutron(), cm * cm) << '\n'
-		     << "# sigma_e_cm2 = " << In_Units(DM.Sigma_Electron(), cm * cm) << '\n'
-		     << "# DM_spin = " << DM.spin << '\n'
+		     << "# cross_section_definition = sigma_cm2 = coefficient * 10^(-exponent); coefficient=0 denotes zero\n";
+		Write_Cross_Section_Header(file, "p", In_Units(DM.Sigma_Proton(), cm * cm));
+		Write_Cross_Section_Header(file, "neutron", In_Units(DM.Sigma_Neutron(), cm * cm));
+		Write_Cross_Section_Header(file, "e", In_Units(DM.Sigma_Electron(), cm * cm));
+		file << "# DM_spin = " << DM.spin << '\n'
 		     << "# DM_fraction = " << DM.fractional_density << '\n'
 		     << "# halo_density_GeV_cm3 = " << In_Units(halo.DM_density, GeV / (cm * cm * cm)) << '\n'
 		     << physical_config_header
@@ -3339,7 +3340,10 @@ void Simulation_Data::Write_Bincount(const std::string& dir, obscura::DM_Particl
 		     << "# radial_bins = " << edges.size() - 1 << '\n'
 		     << "# jackknife_blocks = " << RESIDENCE_JACKKNIFE_BLOCKS << '\n'
 		     << "# jackknife_assignment = splitmix64(base_seed,rank,trajectory_id)%64\n"
-		     << "# output_significant_digits = " << std::numeric_limits<double>::max_digits10 << '\n'
+		     << "# output_significant_digits = " << OUTPUT_STATISTIC_DIGITS << '\n'
+		     << "# parameter_significant_digits = " << OUTPUT_PARAMETER_DIGITS << '\n'
+		     << "# output_rounding = statistics, SE and covariance use at most 4 significant digits; parameters and geometry omit trailing zeros\n"
+		     << "# rounded_statistics = derived values are computed before rounding; use the supplied pair estimates instead of subtracting rounded S*S-Q\n"
 		     << "# marginal_se_definition = sqrt((N*Q-S*S)/(N-1)); total sum at fixed population count; nan for N<2\n"
 		     << "# marginal_se_population = captured/ever use N_residence_samples; never uses N_never_captured\n"
 		     << "# radial_covariance_available = selected_observables_and_integrals\n"

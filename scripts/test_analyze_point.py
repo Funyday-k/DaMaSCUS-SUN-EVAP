@@ -9,11 +9,26 @@ import tempfile
 import unittest
 from pathlib import Path
 import numpy as np
-from analyze_point import analyze, read_capture_result, BLOCKS, K_B_EV_K, C_KM_S
+from analyze_point import analyze, read_capture_result, population_density, population_annihilation, read_transport_blocks, BLOCKS, K_B_EV_K, C_KM_S
 from summarize_transport_scan import summarize
 from analyze_point import AU_CM, R_SUN_CM, chord_matrix, containment, require_accepted, angular_grid, cumulative_angle
 
 class GeometryTests(unittest.TestCase):
+    def test_equal_populations_include_annihilation_cross_term(self) -> None:
+        """Two equal densities give four times either self-pair rate [s^-1]."""
+        edges=np.array([0.,R_SUN_CM,2*R_SUN_CM])
+        rates=population_annihilation(np.full((2,3),[2.,2.,4.]),edges,3e-26)
+        np.testing.assert_allclose(rates[:,3],4*rates[:,0])
+        np.testing.assert_allclose(rates[:,2],2*rates[:,0])
+        np.testing.assert_allclose(rates[:,3],.5*3e-26*16*(4*np.pi/3*np.diff(edges**3)))
+
+    def test_annihilation_preserves_native_density_variation(self) -> None:
+        """Equal-volume shells with n=0,2 have twice the rate of their mean n=1."""
+        edges=np.array([0.,1.,np.cbrt(2.)])*R_SUN_CM
+        rates=population_annihilation(np.array([[0.,0.,0.],[2.,0.,2.]]),edges,3e-26)
+        averaged=population_annihilation(np.array([[1.,0.,1.]]),edges[[0,2]],3e-26)
+        np.testing.assert_allclose(rates[:,3].sum(),2*averaged[0,3])
+
     def test_observer_inside_a_shell_sees_sources_behind_them(self) -> None:
         edges=np.array([0.0,2*AU_CM,3*AU_CM]); psi=np.array([0.0,np.pi/2,np.pi])
         path=chord_matrix(edges,psi,False,2*AU_CM)
@@ -106,6 +121,52 @@ class AnalysisContractTests(unittest.TestCase):
 
     def run_analysis(self) -> dict:
         return analyze(self.output,read_capture_result(self.capture),make_plots=False)
+
+    def add_population_columns(self) -> None:
+        """Add full-path moments [s, km^2/s] and exhaustive incident block counts."""
+        self.meta['population_bincount_version']=1
+        self.meta['population_normalization']='C_geom / N_inj / shell_volume'
+        self.write_json(self.output/'metadata.json',self.meta)
+        data=np.loadtxt(self.output/'radial_blocks.tsv',skiprows=1)
+        data[:,6]=2+np.repeat(np.arange(BLOCKS)%4,3)
+        data[:,7]=data[:,6]*100
+        data=np.column_stack([data,data[:,4]+data[:,10]+3,data[:,5]+data[:,11]+300])
+        np.savetxt(self.output/'radial_blocks.tsv',data,header='population fixture')
+        np.savetxt(self.output/'block_counts.tsv',np.column_stack([np.arange(BLOCKS),
+                   np.ones(BLOCKS),np.full(BLOCKS,2),np.ones(BLOCKS)]),header='block captured injected uncaptured')
+
+    def test_population_densities_cover_all_paths_with_common_normalization(self) -> None:
+        """Check linear closure, volume-conserving rebinning and total covariance."""
+        self.add_population_columns()
+        result=self.run_analysis()
+        data,edges,_=read_transport_blocks(self.output,self.meta)
+        _,density,error=population_density(data,edges,np.full(BLOCKS,2),1e20)
+        volume=4*np.pi/3*np.diff(edges**3)
+        np.testing.assert_array_equal(density[:,2],density[:,:2].sum(axis=1))
+        np.testing.assert_allclose(density[:,:2].T@volume,1e20/128*data[:,[12,6]].sum(axis=0))
+        merged,dens,_=population_density(data,edges,np.full(BLOCKS,2),1e20,merge=3)
+        self.assertIn(R_SUN_CM,merged)
+        np.testing.assert_allclose(dens.T@(4*np.pi/3*np.diff(merged**3)),density.T@volume)
+        total=data[:,[12,6]].sum(axis=1).reshape(BLOCKS,3)
+        reps=1e20*(total.sum(axis=0)-total)/126/volume
+        np.testing.assert_allclose(error[:,2],np.sqrt(63/64*((reps-reps.mean(axis=0))**2).sum(axis=0)))
+        self.assertEqual(result['population_density']['N_never_captured'],64)
+        annihilation=result['population_annihilation']['Gamma_s_inv']
+        self.assertAlmostEqual(annihilation['total']/sum(annihilation[k] for k in ['CC','UU','CU']),1)
+
+    def test_missing_uncaptured_counts_are_rejected(self) -> None:
+        """A captured-only count file must not normalize a complete population."""
+        self.add_population_columns()
+        counts=np.loadtxt(self.output/'block_counts.tsv',skiprows=1)
+        counts[0,3]=0
+        np.savetxt(self.output/'block_counts.tsv',counts,header='block captured injected uncaptured')
+        with self.assertRaisesRegex(ValueError,'cover all injections'): self.run_analysis()
+
+    def test_old_subset_cannot_be_plotted_as_complete_population(self) -> None:
+        """Legacy unscattered-only products remain usable solely for old analysis."""
+        data,edges,_=read_transport_blocks(self.output,self.meta)
+        with self.assertRaisesRegex(ValueError,'rerun old transport'):
+            population_density(data,edges,np.full(BLOCKS,2),1e20)
 
     def test_all_reported_diagnostics_have_correct_delete_block_errors(self) -> None:
         result=self.run_analysis()

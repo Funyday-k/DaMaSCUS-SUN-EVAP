@@ -1259,6 +1259,10 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
                           incident_inbound_block_dt,incident_inbound_block_v2dt);
                 if(!capture_mode) {
                     if(accepted_residence_sample) {
+                        add_block(incident_inbound.dt_hist,incident_inbound.v2dt_hist,captured_path_block_dt,captured_path_block_v2dt);
+                        add_block(trajectory.bincount.transit_dt_hist,trajectory.bincount.transit_v2dt_hist,captured_path_block_dt,captured_path_block_v2dt);
+                        add_block(trajectory.bincount.dt_hist,trajectory.bincount.v2dt_hist,captured_path_block_dt,captured_path_block_v2dt);
+                        add_block(trajectory.bincount.post_evap_dt_hist,trajectory.bincount.post_evap_v2dt_hist,captured_path_block_dt,captured_path_block_v2dt);
                         add_block(trajectory.bincount.post_evap_dt_hist,trajectory.bincount.post_evap_v2dt_hist,post_evap_block_dt,post_evap_block_v2dt);
                         const double ap=trajectory.bincount.max_aphelion_km/R_SUN_KM;
                         const std::size_t cls = !std::isfinite(ap) || ap<10 ? 0 : (ap<83 ? 1 : (ap<215 ? 2 : (ap<1100 ? 3 : 4)));
@@ -1266,7 +1270,7 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
                         GrowRadialHistograms(trajectory.bincount.dt_hist.size()*RESIDENCE_JACKKNIFE_BLOCKS,hist);
                         for(std::size_t b=0;b<trajectory.bincount.dt_hist.size();++b)
                             hist[b*RESIDENCE_JACKKNIFE_BLOCKS+jackknife_block]+=trajectory.bincount.dt_hist[b];
-                    } else if(completed_outward_escape && !trajectory.bincount.is_captured && trajectory.number_of_scatterings==0) {
+                    } else if(completed_outward_escape && !trajectory.bincount.is_captured) {
                         GrowRadialHistograms(incident_inbound.dt_hist.size(),trajectory.bincount.transit_dt_hist,
                                              trajectory.bincount.transit_v2dt_hist);
                         for(std::size_t b=0;b<incident_inbound.dt_hist.size();++b) {
@@ -1600,6 +1604,8 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 	Allreduce_MPI_Histogram(transit_block_v2dt);
 	Allreduce_MPI_Histogram(post_evap_block_dt);
 	Allreduce_MPI_Histogram(post_evap_block_v2dt);
+	Allreduce_MPI_Histogram(captured_path_block_dt);
+	Allreduce_MPI_Histogram(captured_path_block_v2dt);
 	for(auto& hist: aphelion_block_dt) Allreduce_MPI_Histogram(hist);
 	Allreduce_MPI_Histogram(captured_dt_hist);
 	Allreduce_MPI_Histogram(captured_v2dt_hist);
@@ -3184,18 +3190,20 @@ void Simulation_Data::Write_Transport_Products(const std::string& dir, obscura::
     publish("incident_inbound.tsv",inbound.str());
     if(!fixed_injection_capture_run) {
         std::ostringstream blocks, classes, samples; blocks << std::setprecision(17); classes << std::setprecision(17);
-        blocks << "block\tbin\tr_low_km\tr_high_km\tcaptured_dt_s\tcaptured_v2dt_km2_s\ttransit_uncaptured_dt_s\ttransit_uncaptured_v2dt_km2_s\tpost_evap_dt_s\tpost_evap_v2dt_km2_s\tincident_inbound_dt_s\tincident_inbound_v2dt_km2_s\n";
+        blocks << "block\tbin\tr_low_km\tr_high_km\tcaptured_dt_s\tcaptured_v2dt_km2_s\ttransit_uncaptured_dt_s\ttransit_uncaptured_v2dt_km2_s\tpost_evap_dt_s\tpost_evap_v2dt_km2_s\tincident_inbound_dt_s\tincident_inbound_v2dt_km2_s\tcaptured_path_dt_s\tcaptured_path_v2dt_km2_s\n";
         classes << "class\tblock\tbin\tdt_s\n";
-        samples << "block\tcompleted_captured\n";
+        samples << "block\tcompleted_captured\tinjected\tcompleted_uncaptured\n";
         for(std::size_t k=0;k<RESIDENCE_JACKKNIFE_BLOCKS;++k) {
-            samples << k << '\t' << jackknife_residence_sample_counts[k] << '\n';
+            samples << k << '\t' << jackknife_residence_sample_counts[k]
+                    << '\t' << jackknife_attempted_counts[k] << '\t' << jackknife_completed_escape_counts[k] << '\n';
             for(std::size_t b=0;b+1<edges.size();++b) {
                 const std::size_t j=b*RESIDENCE_JACKKNIFE_BLOCKS+k;
                 blocks << k << '\t' << b << '\t' << edges[b] << '\t' << edges[b+1]
                     << '\t' << value(residence_jackknife_block_dt_hist,j) << '\t' << value(residence_jackknife_block_v2dt_hist,j)
                     << '\t' << value(transit_block_dt,j) << '\t' << value(transit_block_v2dt,j)
                     << '\t' << value(post_evap_block_dt,j) << '\t' << value(post_evap_block_v2dt,j)
-                    << '\t' << value(incident_inbound_block_dt,j) << '\t' << value(incident_inbound_block_v2dt,j) << '\n';
+                    << '\t' << value(incident_inbound_block_dt,j) << '\t' << value(incident_inbound_block_v2dt,j)
+                    << '\t' << value(captured_path_block_dt,j) << '\t' << value(captured_path_block_v2dt,j) << '\n';
                 for(std::size_t c=0;c<5;++c)
                     if(value(aphelion_block_dt[c],j)>0) classes << c << '\t' << k << '\t' << b << '\t' << value(aphelion_block_dt[c],j) << '\n';
             }
@@ -3219,7 +3227,10 @@ void Simulation_Data::Write_Transport_Products(const std::string& dir, obscura::
     meta << "{\n\"schema_version\":10,\n" << Run_Metadata_JSON(DM, halo)
          << ",\n\"captured_end\":\"validated escape at matching surface or outer removal\",\n\"post_evap\":\"separate outgoing occupation from validated escape to recording boundary; excluded from captured_dt\""
          << ",\n\"incident_inbound\":\"all successfully propagated incident particles, diagnostic reference sphere to solar surface; separate from captured residence\""
-         << ",\n\"transit_uncaptured\":\"unscattered solar-intersecting incident subset from diagnostic reference inward through Sun and outward to the same reference; not a full halo density\""
+         << ",\n\"population_bincount_version\":1"
+         << ",\n\"captured_path\":\"complete recorded paths of ever-captured particles: incident inbound + pre-capture + captured residence + post-escape outgoing; includes outer-domain removals\""
+         << ",\n\"transit_uncaptured\":\"complete recorded paths of all never-captured particles, including scattered escapes; incident reference inward through Sun and outward to the same reference\""
+         << ",\n\"population_normalization\":\"both path populations use C_geom / N_inj / shell_volume; their sum covers all accepted simulated incident histories, not non-solar-intersecting halo particles\""
          << ",\n\"restart_supported\":false,\n\"radial_edges_km\":[";
     for(std::size_t i=0;i<edges.size();++i) { if(i) meta << ','; meta << edges[i]; }
     meta << "]\n}\n"; publish("metadata.json",meta.str());

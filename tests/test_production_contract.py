@@ -95,6 +95,11 @@ def main() -> None:
         assert meta['maximum_number_of_scatterings']>0 and meta['max_trajectory_wall_time_sec']==0
         assert meta['production_mode'] is True and meta['thermal_validation_mode'] is False
         assert meta['restart_supported'] is False
+        assert meta['population_bincount_version']==1
+        population_counts=list(csv.DictReader((product/'block_counts.tsv').open(),delimiter='\t'))
+        assert sum(int(row['injected']) for row in population_counts)==meta['N_inj']
+        for row in population_counts:
+            assert int(row['completed_captured'])+int(row['completed_uncaptured'])==int(row['injected'])
         assert (product/'snapshot').is_dir()
 
         result,output,_=run('failed_transport',run_mode='"Parameter point"',sample_size='4',
@@ -133,6 +138,8 @@ def main() -> None:
                                   cwd=root,capture_output=True,text=True,timeout=30)
             assert result.returncode==0,result.stderr
             derived=json.loads((product/'derived.json').read_text())
+            assert derived['population_density']['N_inj']==meta['N_inj']
+            assert (product/'tables/number_density.tsv').is_file()
             assert math.isclose(derived['central']['C_s_inv'],cap['C_capture_s_inv'])
             for key in ['C_s_inv','Gamma_tot_s_inv','I_out_s2_cm3']:
                 assert math.isfinite(derived['central'][key])

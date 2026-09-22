@@ -177,6 +177,11 @@ TEST(TransportContract, CaptureAndTransportShareFirstCollisionAccuracy) {
         capture.Enable_Capture_Mode(true); capture.Fix_PRNG_Seed(seed); transport.Fix_PRNG_Seed(seed);
         const auto a=capture.Simulate(initial,dm,0), b=transport.Simulate(initial,dm,0);
         if(b.bincount.is_captured) {
+            // The pre-capture prefix is retained for the complete ever-captured
+            // population, independently of the lifetime histogram below.
+            EXPECT_NEAR(sum(b.bincount.transit_dt_hist),
+                        b.bincount.t_capture-In_Units(initial.time,sec),
+                        1e-8*std::max(1.0,b.bincount.t_capture));
             double inside=0,outside=0;
             for(std::size_t bin=0;bin<b.bincount.dt_hist.size();++bin)
                 (BincountBinUpperKm(bin)<=R_SUN_KM*(1+1e-12) ? inside : outside) += b.bincount.dt_hist[bin];

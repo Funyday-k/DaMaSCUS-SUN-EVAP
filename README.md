@@ -239,6 +239,38 @@ including maximum scatterings, trajectory wall-time budget, production and therm
 flags. No `input.cfg` is copied. Snapshots report progress; `restart_supported=false`.
 Runs shorter than `snapshot_interval` may leave an empty snapshot directory.
 
+Transport products with `population_bincount_version = 1` partition every accepted
+incident history into **ever captured** or **never captured**, regardless of the
+number of scatterings. `captured_path_dt_s` includes the incoming, pre-capture,
+captured-residence and post-escape portions of ever-captured histories.
+`transit_uncaptured_dt_s` includes the complete recorded paths of all never-captured
+histories, including scattered escapes. Each path is recorded within the configured
+incident/outgoing reference radius (captured bound orbits extend to the removal
+radius); outer removals end at that boundary. `block_counts.tsv` carries injected
+and completed counts for both populations, which must sum to all injections.
+
+The analyzer writes `tables/number_density.tsv` and `figure/number_density.{pdf,png}`
+(linear radius from 0--10 solar radii and logarithmic density):
+both populations use `C_geom * sum(dt) / N_inj / shell_volume`, and total is their
+sum. These are densities of the simulated solar-intersecting population, not a
+full halo including non-intersecting trajectories. Classification refers to the
+whole history, not instantaneous binding energy. The existing `captured_dt_s`
+and `tables/radial_profile.tsv` retain their first-capture-to-escape/removal meaning
+and independent Capture normalization for residence/lifetime analysis. Legacy
+schema-10 outputs without the population marker cannot supply the complete
+three-curve plot; rerun Transport to obtain the missing contributions.
+
+`figure/annihilation_distribution.{pdf,png}` shows `dGamma/d(r/R_sun)` over the
+same linear radial range on a logarithmic vertical axis, with captured--captured,
+uncaptured--uncaptured, cross and total terms.
+It uses the configured `--sigma-v` (default `3e-26` cm³/s) and the full-path density
+above: `Gamma_bin = 0.5 * sigma_v * (n_C + n_U)^2 * shell_volume`. Rates are
+calculated on native shells and summed before display rebinning. Native shell
+rates and plotted radial rates are saved in `tables/population_annihilation.tsv`
+and `tables/annihilation_distribution_plot.tsv`. This empirical squared-density
+estimate includes finite-sample bias; it is separate from the captured-residence
+annihilation source in `annihilation_source.json`.
+
 Analyze locally with an independent capture log or an extracted JSON record:
 
 ```bash

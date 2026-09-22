@@ -114,6 +114,56 @@ TEST(TestDataGeneration, TestConfigure)
 	// ASSERT_EQ(data_set.data[0].size(), sample_size);
 }
 
+TEST(TestDataGeneration, ScatteredNeverCapturedPathIsIncludedInPopulationBincount)
+{
+	Solar_Model sun;
+	obscura::Standard_Halo_Model halo;
+	obscura::DM_Particle_SD dm(0.1 * GeV);
+	dm.Set_Low_Mass_Mode(true);
+	dm.Set_Sigma_Proton(1.0e-34 * cm * cm);
+	bool found_reflected = false;
+	// Each run injects exactly one particle. Select a physically completed,
+	// scattered but never-captured path: the former scatter-count filter made
+	// its entire transit histogram zero, including inside the Sun.
+	for(unsigned int seed = 1; seed <= 32 && !found_reflected; ++seed)
+	{
+		Simulation_Data sample(1, 1);
+		sample.Configure(TRAJECTORY_BOUNDARY_RSUN * rSun, 0, 100000);
+		sample.Generate_Data(dm, sun, halo, SnapshotConfig(), seed);
+		if(sample.Reflection_Ratio() != 1.0 || sample.Capture_Ratio() != 0.0)
+			continue;
+		found_reflected = true;
+		const std::string dir = TestOutputDir("scattered_uncaptured_population");
+		sample.Write_Transport_Products(dir, dm, halo, sun);
+		int rank = 0;
+		MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+		if(rank == 0)
+		{
+			std::ifstream stream(dir + "radial_blocks.tsv");
+			std::string line;
+			std::getline(stream, line);
+			double inside_dt_s = 0.0, outside_dt_s = 0.0, captured_dt_s = 0.0;
+			while(std::getline(stream, line))
+			{
+				std::istringstream row(line);
+				std::array<double, 14> values{};
+				for(double& value : values) ASSERT_TRUE(static_cast<bool>(row >> value));
+				(values[3] <= R_SUN_KM * (1.0 + 1e-12) ? inside_dt_s : outside_dt_s) += values[6];
+				captured_dt_s += values[12];
+			}
+			EXPECT_GT(inside_dt_s, 0.0);
+			EXPECT_GT(outside_dt_s, 0.0);
+			EXPECT_DOUBLE_EQ(captured_dt_s, 0.0);
+			for(const std::string name : {"metadata.json", "radial_blocks.tsv", "block_counts.tsv",
+			     "trajectory_summary.tsv", "orbit_class_blocks.tsv", "incident_inbound.tsv",
+			     "termination_counts.tsv", "solar_reference.tsv"})
+				std::remove((dir + name).c_str());
+			rmdir(dir.c_str());
+		}
+	}
+	EXPECT_TRUE(found_reflected);
+}
+
 TEST(TestDataGeneration, TestInitialShiftFailureIsReported)
 {
 	Solar_Model SSM;

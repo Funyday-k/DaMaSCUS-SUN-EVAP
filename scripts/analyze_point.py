@@ -120,8 +120,11 @@ def read_transport_blocks(directory: Path, meta: dict) -> tuple[np.ndarray,np.nd
         or meta['R_transit_reference_rsun']>meta['R_remove_rsun']):
         raise ValueError('invalid radial edges or missing solar surface')
     bins=len(edges)-1
+    population_version=meta.get('population_bincount_version',0)
+    if population_version not in (0,1):
+        raise ValueError('unsupported population bincount version')
     data=np.loadtxt(directory/'radial_blocks.tsv',skiprows=1,ndmin=2)
-    if data.shape!=(BLOCKS*bins,12) or not np.all(np.isfinite(data)) or np.any(data[:,4:]<0):
+    if data.shape!=(BLOCKS*bins,14 if population_version else 12) or not np.all(np.isfinite(data)) or np.any(data[:,4:]<0):
         raise ValueError('incomplete/nonfinite/negative radial block data')
     if not (np.array_equal(data[:,0],np.repeat(np.arange(BLOCKS),bins))
             and np.array_equal(data[:,1],np.tile(np.arange(bins),BLOCKS))):
@@ -134,9 +137,9 @@ def read_transport_blocks(directory: Path, meta: dict) -> tuple[np.ndarray,np.nd
         or not np.allclose(data[:,11].reshape(BLOCKS,bins).sum(axis=0),inbound[:,4],rtol=1e-12,atol=1e-2)):
         raise ValueError('incident inbound block moments do not close')
     samples=np.loadtxt(directory/'block_counts.tsv',skiprows=1,ndmin=2)
-    if (samples.shape!=(BLOCKS,2) or not np.all(np.isfinite(samples))
+    if (samples.shape!=(BLOCKS,4 if population_version else 2) or not np.all(np.isfinite(samples))
         or not np.array_equal(samples[:,0],np.arange(BLOCKS))
-        or np.any(samples[:,1]<0) or np.any(samples[:,1]!=np.floor(samples[:,1]))):
+        or np.any(samples[:,1:]<0) or np.any(samples[:,1:]!=np.floor(samples[:,1:]))):
         raise ValueError('invalid transport block counts')
     counts=samples[:,1]
     if (counts.sum()<2 or counts.sum()!=meta['N_completed'] or meta['N_completed']!=meta['N_capt']
@@ -144,7 +147,140 @@ def read_transport_blocks(directory: Path, meta: dict) -> tuple[np.ndarray,np.nd
         raise ValueError('incomplete captured ensemble or captured count mismatch')
     if np.any((counts==0)&(data[:,4].reshape(BLOCKS,bins).sum(axis=1)>0)):
         raise ValueError('empty block contains captured residence')
+    if population_version:
+        if (samples[:,2].sum()!=meta['N_inj']
+            or not np.array_equal(samples[:,1]+samples[:,3],samples[:,2])):
+            raise ValueError('captured + uncaptured counts do not cover all injections')
+        for column,number in [(12,counts),(6,samples[:,3])]:
+            if np.any((number==0)&(data[:,column:column+2].reshape(BLOCKS,bins,2).sum(axis=(1,2))>0)):
+                raise ValueError('empty population block contains residence')
+        if np.any(data[:,12:14]+1e-8 < data[:,4:6]+data[:,8:10]):
+            raise ValueError('captured path omits captured residence or outgoing leg')
     return data,edges,counts
+
+
+def population_density(data: np.ndarray, edges_cm: np.ndarray, injected: np.ndarray,
+                       geom_s_inv: float, merge: int = 1) -> tuple[np.ndarray,np.ndarray,np.ndarray]:
+    """Shell densities [cm^-3] and joint jackknife SE for ever/never-captured paths.
+
+    Both populations use C_geom [s^-1] / N_inj / shell volume [cm^3].
+    Merge residence moments before dividing by volume; retain the solar surface.
+    """
+    bins=len(edges_cm)-1
+    if data.shape!=(BLOCKS*bins,14):
+        raise ValueError('complete population columns are required; rerun old transport products')
+    if (injected.shape!=(BLOCKS,) or np.any(injected<0)
+        or not np.all(np.isfinite(injected)) or np.any(injected!=np.floor(injected))
+        or injected.sum()<=injected.max() or not np.isfinite(geom_s_inv) or geom_s_inv<=0
+        or type(merge) is not int or merge<1):
+        raise ValueError('invalid population normalization or bin merge')
+    boundaries=np.unique(np.r_[np.arange(0,bins,merge),bins,
+                              np.flatnonzero(np.isclose(edges_cm,R_SUN_CM,rtol=1e-12,atol=0))])
+    edges=edges_cm[boundaries]
+    moments=data[:,[12,6]].reshape(BLOCKS,bins,2)
+    moments=np.add.reduceat(moments,boundaries[:-1],axis=1)
+    volume=4*np.pi/3*np.diff(edges**3)
+    total=moments.sum(axis=0)
+    density=geom_s_inv*total/injected.sum()/volume[:,None]
+    density=np.column_stack([density,density.sum(axis=1)])
+    reps=geom_s_inv*(total[None,:,:]-moments)/(injected.sum()-injected)[:,None,None]/volume[None,:,None]
+    reps=np.concatenate([reps,reps.sum(axis=2,keepdims=True)],axis=2)
+    error=np.sqrt((BLOCKS-1)/BLOCKS*((reps-reps.mean(axis=0))**2).sum(axis=0))
+    return edges,density,error
+
+
+def population_annihilation(density_cm3: np.ndarray, edges_cm: np.ndarray,
+                            sigma_v_cm3_s: float) -> np.ndarray:
+    """Shell rates [s^-1] for CC, UU, CU and total, using 1/2 <sigma v> n^2 dV.
+
+    C/U are ever/never-captured histories; density columns are C, U, C+U
+    in cm^-3. Use the native shells before merging rates for a radial plot.
+    """
+    if (density_cm3.shape!=(len(edges_cm)-1,3) or np.any(density_cm3<0)
+        or not np.all(np.isfinite(density_cm3)) or np.any(np.diff(edges_cm)<=0)
+        or not np.isfinite(sigma_v_cm3_s) or sigma_v_cm3_s<=0):
+        raise ValueError('invalid annihilation density, shells or coefficient')
+    captured,uncaptured=density_cm3[:,:2].T
+    volume_cm3=4*np.pi/3*np.diff(edges_cm**3)
+    components=.5*sigma_v_cm3_s*volume_cm3[:,None]*np.column_stack(
+        [captured**2,uncaptured**2,2*captured*uncaptured])
+    return np.column_stack([components,components.sum(axis=1)])
+
+
+def plot_population_density(output: Path, meta: dict, data: np.ndarray,
+                            edges_cm: np.ndarray, geom_s_inv: float,
+                            sigma_v_cm3_s: float = 3e-26) -> None:
+    """Plot density [cm^-3] and dGamma/d(r/R_sun) [s^-1] over 0--10 R_sun.
+
+    Radius is linear and both vertical axes are logarithmic. Empty Monte Carlo
+    bins remain zero in the tables and are omitted from the logarithmic plots.
+    """
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    injected=np.loadtxt(output/'block_counts.tsv',skiprows=1)[:,2]
+    edges,density,error=population_density(data,edges_cm,injected,geom_s_inv,merge=20)
+    radius=((edges[:-1]**3+edges[1:]**3)/2)**(1/3)/R_SUN_CM
+    dest=output/'figure'; dest.mkdir(exist_ok=True)
+    with plt.rc_context({'font.family':'serif','font.size':11,'text.usetex':True}):
+        fig,ax=plt.subplots(figsize=(6,4.5))
+        colors=['#2475ad','#d77829','#30333b']
+        labels=['Ever captured','Never captured','Total']
+        for j in range(3):
+            plotted=np.where(density[:,j]>0,density[:,j],np.nan)
+            ax.plot(radius,plotted,color=colors[j],ls='--' if j==2 else '-',lw=1.7,label=labels[j])
+            if j<2:
+                lower=np.where(density[:,j]-error[:,j]>0,density[:,j]-error[:,j],np.nan)
+                ax.fill_between(radius,lower,density[:,j]+error[:,j],
+                                where=np.isfinite(lower),color=colors[j],alpha=.12)
+        ax.axvline(1,color='0.65',lw=.8)
+        ax.set(xlabel=r'$r/R_\odot$',ylabel=r'Number density [cm$^{-3}$]',xlim=(0,10),yscale='log',
+               xticks=np.arange(0,11))
+        exponent=np.log10(meta['sigma_SD_cm2'])
+        ax.set_title(rf'$m_\chi={meta["m_chi_GeV"]:g}$ GeV, $\sigma_{{\rm SD}}=10^{{{exponent:g}}}$ cm$^2$')
+        ax.legend(frameon=False,fontsize=10)
+        ax.grid(axis='y',which='major',alpha=.15)
+        fig.text(.5,.025,rf'Simulated solar-crossing histories; $N_{{\rm inj}}={meta["N_inj"]}$; bands: $1\sigma$ MC',
+                 ha='center',fontsize=9)
+        fig.tight_layout(rect=(0,.05,1,1))
+        for suffix in ('pdf','png'):
+            fig.savefig(dest/f'number_density.{suffix}',dpi=200)
+        plt.close(fig)
+        # Squaring a merged density would erase sub-bin density variations.
+        # Compute n^2 on native shells, then conservatively sum shell rates.
+        _,native_density,_=population_density(data,edges_cm,injected,geom_s_inv)
+        native_rates=population_annihilation(native_density,edges_cm,sigma_v_cm3_s)
+        starts=np.searchsorted(edges_cm,edges[:-1])
+        rates=np.add.reduceat(native_rates,starts,axis=0)
+        radial_rates=rates/np.diff(edges/R_SUN_CM)[:,None]
+        fig,ax=plt.subplots(figsize=(6,4.5))
+        ann_colors=[colors[0],colors[1],'#6b5891',colors[2]]
+        ann_labels=['Captured--captured','Uncaptured--uncaptured','Cross term','Total']
+        for j in range(4):
+            plotted=np.where(radial_rates[:,j]>0,radial_rates[:,j],np.nan)
+            ax.stairs(plotted,edges/R_SUN_CM,color=ann_colors[j],
+                      ls='--' if j==3 else '-',lw=1.7,label=ann_labels[j],baseline=None)
+        ax.axvline(1,color='0.65',lw=.8)
+        ax.set(xlabel=r'$x=r/R_\odot$',ylabel=r'$d\Gamma/dx$ [s$^{-1}$]',
+               xlim=(0,10),yscale='log',xticks=np.arange(0,11))
+        ax.set_title(rf'$m_\chi={meta["m_chi_GeV"]:g}$ GeV, $\sigma_{{\rm SD}}=10^{{{exponent:g}}}$ cm$^2$')
+        ax.legend(frameon=False,fontsize=10)
+        ax.grid(axis='y',alpha=.15)
+        coefficient=f'{sigma_v_cm3_s:.3g}'.split('e')
+        sigma_label=(rf'{coefficient[0]}\times10^{{{int(coefficient[1])}}}'
+                     if len(coefficient)==2 else coefficient[0])
+        fig.text(.5,.025,rf'Ever/never-captured histories; $\langle\sigma v\rangle={sigma_label}$ cm$^3$/s',
+                 ha='center',fontsize=9)
+        fig.tight_layout(rect=(0,.05,1,1))
+        for suffix in ('pdf','png'):
+            fig.savefig(dest/f'annihilation_distribution.{suffix}',dpi=200)
+        plt.close(fig)
+    np.savetxt(output/'tables/number_density_plot.tsv',
+               np.column_stack([edges[:-1]/R_SUN_CM,edges[1:]/R_SUN_CM,density,error]),delimiter='\t',
+               header='r_low_rsun r_high_rsun ever_captured_cm3 never_captured_cm3 total_cm3 ever_captured_se never_captured_se total_se')
+    np.savetxt(output/'tables/annihilation_distribution_plot.tsv',
+               np.column_stack([edges[:-1]/R_SUN_CM,edges[1:]/R_SUN_CM,radial_rates]),delimiter='\t',
+               header='r_low_rsun r_high_rsun dGamma_CC_dx_s_inv dGamma_UU_dx_s_inv dGamma_CU_dx_s_inv dGamma_total_dx_s_inv')
 
 
 def read_incident_inbound(directory: Path, meta: dict, edges_cm: np.ndarray) -> np.ndarray:
@@ -369,6 +505,26 @@ def analyze(output: Path, capture: dict, sigma_v: float = 3e-26,
     tables=output/'tables'; tables.mkdir(exist_ok=True)
     volume=4*np.pi/3*np.diff(edges**3)
     np.savetxt(tables/'radial_profile.tsv',np.column_stack([edges[:-1]/R_SUN_CM,edges[1:]/R_SUN_CM,mu,C*mu,total_dt/n,mu*mu*volume]),delimiter='\t',header='r_low_rsun r_high_rsun mu_s_cm3 n_cm3 tau_bin_s I_bin_s2_cm3')
+    if m.get('population_bincount_version')==1:
+        injected=np.loadtxt(output/'block_counts.tsv',skiprows=1)[:,2]
+        _,density,density_error=population_density(data,edges,injected,cap['C_geom_s_inv'])
+        np.savetxt(tables/'number_density.tsv',np.column_stack([edges[:-1]/R_SUN_CM,edges[1:]/R_SUN_CM,density,density_error]),
+                   delimiter='\t',header='r_low_rsun r_high_rsun ever_captured_cm3 never_captured_cm3 total_cm3 ever_captured_se never_captured_se total_se')
+        population_rates=population_annihilation(density,edges,sigma_v)
+        np.savetxt(tables/'population_annihilation.tsv',
+                   np.column_stack([edges[:-1]/R_SUN_CM,edges[1:]/R_SUN_CM,population_rates]),delimiter='\t',
+                   header='r_low_rsun r_high_rsun Gamma_CC_s_inv Gamma_UU_s_inv Gamma_CU_s_inv Gamma_total_s_inv')
+        result['population_density']={'definition':m['population_normalization'],
+                                     'N_inj':m['N_inj'],'N_ever_captured':m['N_completed'],
+                                     'N_never_captured':m['N_inj']-m['N_completed'],
+                                     'integrated_number':dict(zip(['ever_captured','never_captured','total'],density.T@volume)),
+                                     'uncertainty':'joint delete-block ratios; total preserves covariance between populations'}
+        result['population_annihilation']={'sigma_v_cm3_s':sigma_v,
+            'definition':'native-shell 0.5 * sigma_v * (n_ever_captured + n_never_captured)^2 * volume; includes cross term',
+            'Gamma_s_inv':dict(zip(['CC','UU','CU','total'],population_rates.sum(axis=0))),
+            'estimator':'squared empirical densities, not corrected for finite-sample bias'}
+        if make_plots:
+            plot_population_density(output,m,data,edges,cap['C_geom_s_inv'],sigma_v)
     np.savetxt(tables/'gamma_profile.tsv',np.column_stack([np.degrees(psi),intensity,cumulative_angle(psi,intensity)]),delimiter='\t',header='psi_deg intensity_cm2_s_sr cumulative_flux_cm2_s')
     # Additive attribution includes cross-class annihilation terms: integral mu_c*mu_total.
     class_mu=classes/n/volume

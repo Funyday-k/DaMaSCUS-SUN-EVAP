@@ -2,6 +2,7 @@
 
 #include "gtest/gtest.h"
 #include <cstdio>
+#include <cmath>
 #include <cstdint>
 #include <fstream>
 #include <iomanip>
@@ -58,6 +59,7 @@ void RemoveTestOutputDir(const std::string& directory)
 	std::remove((directory + "trajectory_events.tsv").c_str());
 	std::remove((directory + "invalid_trajectories.tsv").c_str());
 	std::remove((directory + "residence_jackknife_blocks.tsv").c_str());
+	std::remove((directory + "radial_blocks.tsv").c_str());
 	rmdir(directory.c_str());
 }
 
@@ -146,13 +148,20 @@ TEST(TestDataGeneration, ScatteredNeverCapturedPathIsIncludedInPopulationBincoun
 			{
 				if(line.empty() || line[0] == '#') continue;
 				std::istringstream row(line);
-				std::array<double, 11> values{};
-				for(double& value : values) ASSERT_TRUE(static_cast<bool>(row >> value));
-				(values[3] <= 1.0 + 1e-12 ? inside_dt_s : outside_dt_s) += values[9];
-				captured_dt_s += values[7];
-				EXPECT_DOUBLE_EQ(values[8], 0.0);
-				EXPECT_NEAR(values[10], values[9] * values[9],
-				            1.0e-12 * std::max(1.0, values[10]));
+				std::array<double, 14> values{};
+				for(double& value : values)
+				{
+					std::string token;
+					ASSERT_TRUE(static_cast<bool>(row >> token));
+					value = std::stod(token);
+				}
+				(values[2] <= 1.0 + 1e-12 ? inside_dt_s : outside_dt_s) += values[11];
+				captured_dt_s += values[8];
+				EXPECT_DOUBLE_EQ(values[9], 0.0);
+				EXPECT_NEAR(values[12], values[11] * values[11],
+				            2.0e-9 * std::max(1.0, values[12]));
+				EXPECT_TRUE(std::isnan(values[5]));
+				EXPECT_TRUE(std::isnan(values[13]));
 			}
 			EXPECT_GT(inside_dt_s, 0.0);
 			EXPECT_GT(outside_dt_s, 0.0);
@@ -471,6 +480,92 @@ TEST(TestDataGeneration, TestOutputFailuresAreReported)
 	EXPECT_THROW(data_set.Write_Diagnostic_Output(dir, DM), std::logic_error);
 	rmdir((dir + "snapshot").c_str());
 	rmdir(dir.c_str());
+}
+
+TEST(TestDataGeneration, MomentSumErrorUsesHistorySquares)
+{
+    // Histories 1, 3, 7 have S=11, Q=59, independently of their hash blocks.
+    EXPECT_NEAR(Moment_Sum_SE(11, 59, 3), std::sqrt(28.0), 1e-14);
+    EXPECT_DOUBLE_EQ(Moment_Sum_SE(30, 90, 10), 0.0);
+    EXPECT_DOUBLE_EQ(Moment_Sum_SE(5, 13, 2), 1.0);
+    EXPECT_TRUE(std::isnan(Moment_Sum_SE(0, 0, 0)));
+    EXPECT_TRUE(std::isnan(Moment_Sum_SE(2, 4, 1)));
+    EXPECT_THROW(Moment_Sum_SE(10, 1, 2), std::runtime_error);
+}
+
+TEST(TestDataGeneration, DerivedObservablesIncludeSecondMomentsAndRatios)
+{
+    const OutputMoments moments{{4, 10, 12, 6, 20, 10, 58}};
+    const auto result = Derived_Radial_Observables(moments, 2, 2, 5);
+    EXPECT_DOUBLE_EQ(result[0], 15); // kBT, including the mass/unit conversion factor.
+    EXPECT_DOUBLE_EQ(result[1], 3);  // (16-10)/2, not a squared mean.
+    EXPECT_DOUBLE_EQ(result[2], 8);
+    EXPECT_DOUBLE_EQ(result[3], 21);
+    EXPECT_DOUBLE_EQ(result[4], 15);
+    const auto unavailable = Derived_Radial_Observables(OutputMoments{}, 0, 1, 5);
+    for(const auto value : unavailable) EXPECT_TRUE(std::isnan(value));
+}
+
+TEST(TestDataGeneration, NonlinearCovarianceKeepsCorrelatedBinsAndPopulationCrossTerms)
+{
+    OutputReplicates a{}, b{}, integrated{}, temperature{}, second_moment_deletions{};
+    // Two perfectly correlated radial bins: integral error must be 3*SE(a),
+    // not sqrt(SE(a)^2 + SE(b)^2). A proportional velocity/time ratio has zero SE.
+    for(std::size_t block = 0; block < a.size(); ++block)
+    {
+        a[block] = block + 1;
+        b[block] = 2 * a[block];
+        integrated[block] = a[block] + b[block];
+        const OutputMoments moments{{a[block], a[block]*a[block], 3*a[block], 6, 20, 4, 8}};
+        temperature[block] = Derived_Radial_Observables(moments, 10, 10, 1)[0];
+        // Hold the first moment fixed and vary Q; the pair estimator's SE must change.
+        const OutputMoments varying_q{{10, 20.0L + block/10.0L, 30, 0, 0, 0, 0}};
+        second_moment_deletions[block] = Derived_Radial_Observables(varying_q, 10, 10, 1)[1];
+    }
+    const auto variance = Block_Jackknife_Covariance(a, a);
+    EXPECT_DOUBLE_EQ(Block_Jackknife_Covariance(a, b), 2 * variance);
+    EXPECT_DOUBLE_EQ(Block_Jackknife_Covariance(integrated, integrated), 9 * variance);
+    EXPECT_DOUBLE_EQ(Block_Jackknife_Covariance(temperature, temperature), 0);
+    EXPECT_GT(Block_Jackknife_Covariance(second_moment_deletions, second_moment_deletions), 0);
+    a[2] = std::numeric_limits<long double>::quiet_NaN();
+    EXPECT_TRUE(std::isnan(Block_Jackknife_Covariance(a, b)));
+    EXPECT_TRUE(std::isfinite(Block_Jackknife_Covariance(b, b)));
+}
+
+TEST(TestDataGeneration, CompactReplicatesRetainSmallMomentsAfterDeletingDominantBlock)
+{
+    std::array<std::vector<double>, 7> storage;
+    for(auto& histogram : storage) histogram.resize(64);
+    OutputBlockCounts counts{};
+    double velocity_square_sum = 0;
+    const std::array<double, 4> times{{1e10, 3, 4, 5}};
+    for(std::size_t block = 0; block < times.size(); ++block)
+    {
+        const auto t = times[block];
+        counts[block] = 1;
+        const std::array<double, 7> moments{{t, t*t, 3*t, t, t*t, t, t*t}};
+        for(std::size_t moment = 0; moment < moments.size(); ++moment)
+            storage[moment][block] = moments[moment];
+        velocity_square_sum += 9*t*t;
+    }
+    std::array<const std::vector<double>*, 7> histograms{};
+    for(std::size_t moment = 0; moment < histograms.size(); ++moment) histograms[moment] = &storage[moment];
+    std::ostringstream output;
+    output << std::setprecision(17);
+    ASSERT_NO_THROW(Write_Compact_Radial_Statistics(output, {0, R_SUN_KM}, histograms,
+        {velocity_square_sum}, counts, counts, 1));
+    EXPECT_NE(output.str().find("# integrated_stat_count = 24"), std::string::npos);
+    EXPECT_EQ(output.str().find(" = nan\n"), std::string::npos);
+    EXPECT_EQ(output.str().find("\tnan"), std::string::npos);
+}
+
+TEST(TestDataGeneration, DetectorKernelHasCorrectSphericalAndFarFieldLimits)
+{
+    EXPECT_DOUBLE_EQ(Detector_Radial_Integral(0, 10), 0);
+    // At r/D=1/2 the analytic expression contains log(3).
+    EXPECT_NEAR(Detector_Radial_Integral(5, 10), 10*(0.25 - 0.1875*std::log(3.0)), 1e-14);
+    EXPECT_NEAR(Detector_Radial_Integral(1, 1e6), 1.0/3e12, 1e-24);
+    EXPECT_THROW(Detector_Radial_Integral(10, 10), std::invalid_argument);
 }
 
 TEST(TestDataGeneration, CompletePathSecondMomentIncludesCrossTerms)

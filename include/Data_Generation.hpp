@@ -14,11 +14,11 @@
 #include "obscura/DM_Particle.hpp"
 
 #include "Simulation_Trajectory.hpp"
+#include "Output_Statistics.hpp"
 
 namespace DaMaSCUS_SUN
 {
 
-constexpr std::size_t RESIDENCE_JACKKNIFE_BLOCKS = 64;
 
 // Sum one history's recorded path components in seconds before squaring.
 // Storage is bin-major: bin * RESIDENCE_JACKKNIFE_BLOCKS + block.
@@ -286,6 +286,7 @@ class Simulation_Data
 	void Prepare_Output_Directory(const std::string& output_dir) const;
 	// Explicit local/test API; never called by the scientific output path.
 	void Write_Diagnostic_Output(const std::string& output_dir, obscura::DM_Particle& DM);
+	void Write_Diagnostic_Radial_Blocks(const std::string& output_dir) const;
 
 	double Free_Ratio() const;
 	double Capture_Ratio() const;

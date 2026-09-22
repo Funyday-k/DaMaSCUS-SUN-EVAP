@@ -3,7 +3,7 @@
 Dark Matter Simulation Code for the Sun, with capture- and evaporation-focused
 extensions.
 
-The format-2 `bincount.tsv` transport contract, configuration and validation scope are documented below.
+The format-3 `bincount.tsv` transport contract, configuration and validation scope are documented below.
 
 ## Overview
 
@@ -275,29 +275,59 @@ The same file contains exactly 64 comment records:
 # block_count = 0 3041 157 2883 156
 ```
 
-The numeric table has eleven columns, named in its `# columns = ...` comment:
+Format 3 writes **one row per radial bin**, with fourteen columns named in
+`# columns = ...`. All seven moment columns are totals across the 64 blocks.
+Floating-point values use ten significant decimal digits; this is a scientific
+summary rather than a bit-exact serialization. Counts remain exact integers.
 
 | Columns | Meaning and units |
 | --- | --- |
-| `block`, `bin` | Zero-based block and radial-bin indices. |
+| `bin` | Zero-based radial-bin index. |
 | `r_low_rsun`, `r_high_rsun` | Shell boundaries in R_sun. |
 | `captured_residence_dt_sum_s` | Sum of per-history residence after first capture [s]. |
 | `captured_residence_dt_sq_sum_s2` | Sum of squared per-history captured residence [s²]. |
-| `captured_residence_v2dt_sum_km2_s` | Captured-residence integral of speed squared [km²/s]. |
-| `ever_captured_path_dt_sum_s`, `ever_captured_path_dt_sq_sum_s2` | First and second time sums for complete recorded ever-captured paths [s, s²]. |
-| `never_captured_path_dt_sum_s`, `never_captured_path_dt_sq_sum_s2` | First and second time sums for complete recorded never-captured paths [s, s²]. |
+| `captured_residence_dt_se_s` | Block jackknife SE on the residence-sum scale [s]. |
+| `captured_residence_v2dt_sum_km2_s` | Sum of captured-residence integrals of speed squared [km²/s]. |
+| `captured_residence_v2dt_se_km2_s` | Block jackknife SE on that sum's scale [km²/s]. |
+| `ever_captured_path_dt_sum_s`, `ever_captured_path_dt_sq_sum_s2`, `ever_captured_path_dt_se_s` | Complete ever-captured path time sum, per-history square sum, and sum-scale SE [s, s², s]. |
+| `never_captured_path_dt_sum_s`, `never_captured_path_dt_sq_sum_s2`, `never_captured_path_dt_se_s` | Complete never-captured path time sum, per-history square sum, and sum-scale SE [s, s², s]. |
 
-Rows are ordered by block, then bin, including zero rows. The existing grid is
-unchanged: 0.001 R_sun shells through 1.1 R_sun, then shell widths grow by 2%,
-capped at 10 R_sun and clipped at the removal boundary. The default 1100 R_sun
-cutoff gives 1626 bins and 104064 rows. For example:
+Rows are ordered by bin, including zero rows. The grid is unchanged:
+0.001 R_sun shells through 1.1 R_sun, then shell widths grow by 2%, capped at
+10 R_sun and clipped at the removal boundary. The default 1100 R_sun cutoff
+gives **1626 rows**, instead of the 104064 rows in format 2. No per-block radial
+profiles are published by ordinary Transport runs.
 
 ```python
 import numpy as np
 radial = np.loadtxt("bincount.tsv", comments="#")
-# columns: block, bin, r_low, r_high, res_dt, res_dt2, res_v2dt,
-#          ever_dt, ever_dt2, never_dt, never_dt2
+# bin, r_low, r_high, res_dt, res_dt2, res_dt_se, res_v2dt, res_v2dt_se,
+# ever_dt, ever_dt2, ever_dt_se, never_dt, never_dt2, never_dt_se
 ```
+
+For each first moment, let `S = sum_b(S_b)` and `N = sum_b(N_b)` for the relevant
+complete-history population. Before rounding, compute the 64 delete-block
+replicates on the same total-sum scale:
+
+```text
+theta_b = N * (S - S_b) / (N - N_b)
+SE_sum = sqrt((63/64) * sum_b((theta_b - mean(theta))^2))
+```
+
+`N_b` is the block's complete captured count for residence and ever-captured
+moments, or its complete never-captured count for never-captured moments. All
+64 hash blocks participate, including empty blocks. The fixed `N` multiplier
+avoids treating different block sample counts as changes in the mean.
+Divide both `S` and `SE_sum` by `N` to obtain the conditional mean and its SE.
+When `N < 2`, or any deletion leaves no histories, the SE is `nan` rather than
+zero; moments and counts are still written normally. The internal calculation
+retains full precision and rounds only when writing the table.
+
+These SE columns describe individual first moments only. They exclude independent
+Capture normalization uncertainty and cannot reconstruct cross-bin or
+cross-population covariance, nor the uncertainty of arbitrary integrated or
+nonlinear observables. Full diagnostic block profiles are needed to recompute
+those jackknife estimates. The header records this scope explicitly.
 
 Captured residence ends at validated escape on the solar matching surface or
 outer removal. Ever-captured paths include inbound, pre-capture, residence and
@@ -319,8 +349,8 @@ injected count minus its two complete-history counts. `N_unclassified` records
 failed histories that were never classified as captured. Captured histories that
 later failed are the difference `N_ever_captured - N_residence_samples`.
 When there are no failures, these reduce to the original two-population closure.
-The eleven radial columns are unchanged. Format 2 distinguishes this count
-contract and `target_reached` from the former zero-error `accepted` field.
+Format 3 retains the format-2 counts and completion semantics while replacing
+the block-by-bin matrix with totals and per-bin standard errors.
 
 A run that reaches its target writes `target_reached = true` even when failure
 counts are nonzero. Exhausting an explicit attempt budget writes
@@ -331,12 +361,14 @@ Local analysis uses the **independent fixed-injection Capture** probability and
 conditional Transport moments. Do not estimate population fractions from the
 fixed-captured-count Transport ratio. The time-square sums support per-bin pair
 estimators; for a population with N >= 2, use `(S1*S1 - S2)/(N*(N-1))`.
-Block deletion retains correlated radial first moments for jackknife analysis.
-Per-history cross-bin second moments and full velocity distributions are not
-part of this contract.
+The square sums remain sums of per-history squares, not squares of block or
+global sums. They preserve the pair-estimator point estimate within output
+rounding. Per-bin SE do not supply its jackknife uncertainty. Per-history
+cross-bin second moments and full velocity distributions are not provided.
 
 Analysis and plotting live in the sibling DaMaSCUS-SUN repository. Readers of
-old `metadata.json`/`radial_blocks.tsv` products must migrate to format 2;
+old `metadata.json`/`radial_blocks.tsv` products and format-2 `bincount.tsv`
+must migrate to format 3;
 there is no dual-write compatibility mode. Keep cfg files and scheduler logs
 outside the result directory.
 
@@ -353,7 +385,12 @@ Both local entry points require `run_mode = "Parameter point"` and write under
 reports, including `bincount.txt`, `evaporation_times.txt`,
 `residence_jackknife_blocks.tsv`, `run_metadata.json`,
 `diagnostic_trajectory_summary.tsv`, `trajectory_events.tsv` and
-`invalid_trajectories.tsv`. These are separate local workflows; they do not
+`invalid_trajectories.tsv`. Complete-history `--diagnostic` runs additionally
+write `radial_blocks.tsv` (diagnostic schema 1): all seven full-precision moments
+for each of 64 blocks and each radial bin, plus the four population counts per
+block. This table allows independent reconstruction of the compact totals and
+SE, as well as correlated jackknife calculations. Thermal shape runs do not
+write this complete-history matrix. These separate local workflows do not
 publish a scientific `bincount.tsv`. The diagnostic CLI traces all histories;
 tests can configure narrower tracing through the internal API. Thermal shape
 validation may retain computationally truncated residence prefixes and is

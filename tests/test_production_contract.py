@@ -10,7 +10,7 @@ import re
 import subprocess
 import tempfile
 
-from bincount_contract import read_bincount, validate_completed, validate_moments
+from bincount_contract import read_bincount, validate_completed, validate_moments, validate_against_blocks
 
 
 def main() -> None:
@@ -116,9 +116,13 @@ def main() -> None:
 
         # Explicit debug runs stay outside the normal scientific result directory.
         result, output, config = run('local', ('--diagnostic',), run_mode='"Parameter point"',
-                                     sample_size='4', snapshot_enabled='false')
+                                     sample_size='64', snapshot_enabled='false')
         assert result.returncode == 0, result.stdout + result.stderr
         local = output / 'diagnostics/results_-2.000000_-32.000000'
+        assert (local / 'radial_blocks.tsv').is_file() and not (local / 'bincount.tsv').exists()
+        if args.ranks == 1:
+            validate_against_blocks(root / 'no_snapshot/results_-2.000000_-32.000000/bincount.tsv',
+                                    local / 'radial_blocks.tsv')
         rows = list(csv.DictReader(io.StringIO((local / 'diagnostic_trajectory_summary.tsv').read_text()), delimiter='\t'))
         assert rows and any(row['rng_state_before_simulation'] for row in rows)
         assert len((local / 'trajectory_events.tsv').read_text().splitlines()) > 1

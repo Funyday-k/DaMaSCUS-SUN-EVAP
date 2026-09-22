@@ -2,6 +2,7 @@
 
 #include "gtest/gtest.h"
 #include <cstdio>
+#include <cmath>
 #include <cstdint>
 #include <fstream>
 #include <iomanip>
@@ -58,6 +59,7 @@ void RemoveTestOutputDir(const std::string& directory)
 	std::remove((directory + "trajectory_events.tsv").c_str());
 	std::remove((directory + "invalid_trajectories.tsv").c_str());
 	std::remove((directory + "residence_jackknife_blocks.tsv").c_str());
+	std::remove((directory + "radial_blocks.tsv").c_str());
 	rmdir(directory.c_str());
 }
 
@@ -146,13 +148,20 @@ TEST(TestDataGeneration, ScatteredNeverCapturedPathIsIncludedInPopulationBincoun
 			{
 				if(line.empty() || line[0] == '#') continue;
 				std::istringstream row(line);
-				std::array<double, 11> values{};
-				for(double& value : values) ASSERT_TRUE(static_cast<bool>(row >> value));
-				(values[3] <= 1.0 + 1e-12 ? inside_dt_s : outside_dt_s) += values[9];
-				captured_dt_s += values[7];
-				EXPECT_DOUBLE_EQ(values[8], 0.0);
-				EXPECT_NEAR(values[10], values[9] * values[9],
-				            1.0e-12 * std::max(1.0, values[10]));
+				std::array<double, 14> values{};
+				for(double& value : values)
+				{
+					std::string token;
+					ASSERT_TRUE(static_cast<bool>(row >> token));
+					value = std::stod(token);
+				}
+				(values[2] <= 1.0 + 1e-12 ? inside_dt_s : outside_dt_s) += values[11];
+				captured_dt_s += values[8];
+				EXPECT_DOUBLE_EQ(values[9], 0.0);
+				EXPECT_NEAR(values[12], values[11] * values[11],
+				            2.0e-9 * std::max(1.0, values[12]));
+				EXPECT_TRUE(std::isnan(values[5]));
+				EXPECT_TRUE(std::isnan(values[13]));
 			}
 			EXPECT_GT(inside_dt_s, 0.0);
 			EXPECT_GT(outside_dt_s, 0.0);
@@ -471,6 +480,39 @@ TEST(TestDataGeneration, TestOutputFailuresAreReported)
 	EXPECT_THROW(data_set.Write_Diagnostic_Output(dir, DM), std::logic_error);
 	rmdir((dir + "snapshot").c_str());
 	rmdir(dir.c_str());
+}
+
+TEST(TestDataGeneration, JackknifeSumErrorUsesPopulationDenominators)
+{
+	std::array<double, RESIDENCE_JACKKNIFE_BLOCKS> sums{};
+	std::array<unsigned long int, RESIDENCE_JACKKNIFE_BLOCKS> counts{};
+	// Unequal populations, identical per-history values: sampling error is zero.
+	for(std::size_t block = 0; block < counts.size(); ++block)
+	{
+		counts[block] = block % 5;
+		sums[block] = 3.0 * counts[block];
+	}
+	EXPECT_DOUBLE_EQ(Block_Jackknife_Sum_SE(sums, counts), 0.0);
+	// One history per block reduces to the ordinary sample-mean SE times N.
+	for(std::size_t block = 0; block < counts.size(); ++block)
+	{
+		counts[block] = 1;
+		sums[block] = block % 2 == 0 ? 1.0 : 3.0;
+	}
+	EXPECT_NEAR(Block_Jackknife_Sum_SE(sums, counts), 64.0 / std::sqrt(63.0), 1e-12);
+}
+
+TEST(TestDataGeneration, JackknifeSumErrorHandlesEmptyAndSingleOccupiedBlocks)
+{
+	std::array<double, RESIDENCE_JACKKNIFE_BLOCKS> sums{};
+	std::array<unsigned long int, RESIDENCE_JACKKNIFE_BLOCKS> counts{};
+	EXPECT_TRUE(std::isnan(Block_Jackknife_Sum_SE(sums, counts)));
+	counts[2] = 1; sums[2] = 2.0;
+	EXPECT_TRUE(std::isnan(Block_Jackknife_Sum_SE(sums, counts)));
+	counts[2] = 10; sums[2] = 20.0;
+	EXPECT_TRUE(std::isnan(Block_Jackknife_Sum_SE(sums, counts)));
+	counts[5] = 10; sums[5] = 20.0;
+	EXPECT_DOUBLE_EQ(Block_Jackknife_Sum_SE(sums, counts), 0.0);
 }
 
 TEST(TestDataGeneration, CompletePathSecondMomentIncludesCrossTerms)

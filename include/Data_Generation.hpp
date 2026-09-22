@@ -26,6 +26,12 @@ void Accumulate_Complete_Path_Block(
     std::initializer_list<const RadialHistogram*> components, std::size_t block,
     RadialHistogram& block_dt, RadialHistogram& block_dt_sq);
 
+// Delete-one-block SE on the total-sum scale: N times the conditional-mean SE.
+// Returns NaN if a deletion leaves no histories; units match block_sums.
+double Block_Jackknife_Sum_SE(
+    const std::array<double, RESIDENCE_JACKKNIFE_BLOCKS>& block_sums,
+    const std::array<unsigned long int, RESIDENCE_JACKKNIFE_BLOCKS>& block_counts);
+
 bool TrajectoryTraceSelected(uint64_t trace_seed, int rank, uint64_t trajectory_id, double rate);
 
 // Survival-analysis record for every captured trajectory.
@@ -286,6 +292,7 @@ class Simulation_Data
 	void Prepare_Output_Directory(const std::string& output_dir) const;
 	// Explicit local/test API; never called by the scientific output path.
 	void Write_Diagnostic_Output(const std::string& output_dir, obscura::DM_Particle& DM);
+	void Write_Diagnostic_Radial_Blocks(const std::string& output_dir) const;
 
 	double Free_Ratio() const;
 	double Capture_Ratio() const;

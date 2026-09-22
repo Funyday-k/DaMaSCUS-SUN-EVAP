@@ -655,6 +655,29 @@ bool TrajectoryTraceSelected(uint64_t trace_seed, int rank, uint64_t trajectory_
 	return Diagnostic_Trace_Selected(trace_seed, rank, trajectory_id, rate);
 }
 
+double Block_Jackknife_Sum_SE(
+    const std::array<double, RESIDENCE_JACKKNIFE_BLOCKS>& block_sums,
+    const std::array<unsigned long int, RESIDENCE_JACKKNIFE_BLOCKS>& block_counts)
+{
+	const long double n = std::accumulate(block_counts.begin(), block_counts.end(), 0.0L);
+	const long double total = std::accumulate(block_sums.begin(), block_sums.end(), 0.0L);
+	if(n < 2.0L) return std::numeric_limits<double>::quiet_NaN();
+	std::array<long double, RESIDENCE_JACKKNIFE_BLOCKS> estimates{};
+	for(std::size_t block = 0; block < estimates.size(); ++block)
+	{
+		const long double remaining = n - block_counts[block];
+		if(remaining == 0.0L) return std::numeric_limits<double>::quiet_NaN();
+		// Condition on the observed population size. Empty blocks remain part
+		// of the fixed hash partition; deleting one leaves the full estimate.
+		estimates[block] = n * (total - block_sums[block]) / remaining;
+	}
+	const long double mean = std::accumulate(estimates.begin(), estimates.end(), 0.0L) / estimates.size();
+	long double squared_deviations = 0.0L;
+	for(const auto estimate : estimates)
+		squared_deviations += (estimate - mean) * (estimate - mean);
+	return static_cast<double>(std::sqrt(squared_deviations * (estimates.size() - 1) / estimates.size()));
+}
+
 void Accumulate_Complete_Path_Block(
     std::initializer_list<const RadialHistogram*> components, std::size_t block,
     RadialHistogram& block_dt, RadialHistogram& block_dt_sq)
@@ -1556,6 +1579,9 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 	{
 		MPI_Allreduce(MPI_IN_PLACE,jackknife_attempted_counts.data(),RESIDENCE_JACKKNIFE_BLOCKS,MPI_UNSIGNED_LONG,MPI_SUM,MPI_COMM_WORLD);
 		MPI_Allreduce(MPI_IN_PLACE,jackknife_captured_counts.data(),RESIDENCE_JACKKNIFE_BLOCKS,MPI_UNSIGNED_LONG,MPI_SUM,MPI_COMM_WORLD);
+		// Capture block denominators now include all classified incidents,
+		// so completed never-captured histories must also be global counts.
+		MPI_Allreduce(MPI_IN_PLACE,jackknife_completed_escape_counts.data(),RESIDENCE_JACKKNIFE_BLOCKS,MPI_UNSIGNED_LONG,MPI_SUM,MPI_COMM_WORLD);
 		MPI_Trace_Point(mpi_rank, "before allreduce computing_time capture");
 		MPI_Allreduce(MPI_IN_PLACE, &computing_time, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
 		MPI_Trace_Point(mpi_rank, "leave Perform_MPI_Reductions capture");
@@ -2614,7 +2640,7 @@ void Simulation_Data::Write_Diagnostic_Output(const std::string& output_dir, obs
 			std::cerr << "Warning in Write_Diagnostic_Output(): trajectory diagnostic invariant check failed; inspect run_metadata.json" << std::endl;
 	}
 
-
+	if(!thermal_shape_run) Write_Diagnostic_Radial_Blocks(output_dir);
 }
 
 double Simulation_Data::Free_Ratio() const
@@ -3178,6 +3204,58 @@ void Simulation_Data::Print_Capture_Result_JSON(obscura::DM_Particle& DM, obscur
     if(!std::cout) throw std::runtime_error("Cannot write capture result to stdout");
 }
 
+void Simulation_Data::Write_Diagnostic_Radial_Blocks(const std::string& dir) const
+{
+	if(mpi_rank != 0) return;
+	if(!diagnostic_output_enabled || thermal_shape_run || fixed_injection_capture_run)
+		throw std::logic_error("radial_blocks.tsv requires a complete-history diagnostic run");
+	const auto edges = BuildRadialGrid(outer_removal_radius_rsun * R_SUN_KM);
+	const std::string path = dir + "/radial_blocks.tsv", temporary = path + ".tmp";
+	try
+	{
+		std::ofstream file(temporary);
+		if(!file) throw std::runtime_error("cannot open temporary radial_blocks.tsv");
+		file << std::setprecision(std::numeric_limits<double>::max_digits10)
+		     << "# radial_blocks_format_version = 1\n"
+		     << "# workflow = diagnostic_complete_histories\n"
+		     << "# radial_bins = " << edges.size() - 1 << '\n'
+		     << "# jackknife_blocks = " << RESIDENCE_JACKKNIFE_BLOCKS << '\n'
+		     << "# block_count_columns = block N_injected N_ever_captured N_never_captured N_residence_samples\n";
+		for(std::size_t block = 0; block < RESIDENCE_JACKKNIFE_BLOCKS; ++block)
+			file << "# block_count = " << block << ' ' << jackknife_attempted_counts[block]
+			     << ' ' << jackknife_captured_counts[block] << ' ' << jackknife_completed_escape_counts[block]
+			     << ' ' << jackknife_residence_sample_counts[block] << '\n';
+		file << "# columns = block bin r_low_rsun r_high_rsun captured_residence_dt_sum_s captured_residence_dt_sq_sum_s2 captured_residence_v2dt_sum_km2_s ever_captured_path_dt_sum_s ever_captured_path_dt_sq_sum_s2 never_captured_path_dt_sum_s never_captured_path_dt_sq_sum_s2\n";
+		for(std::size_t block = 0; block < RESIDENCE_JACKKNIFE_BLOCKS; ++block)
+			for(std::size_t bin = 0; bin + 1 < edges.size(); ++bin)
+			{
+				const auto index = bin * RESIDENCE_JACKKNIFE_BLOCKS + block;
+				file << block << '\t' << bin << '\t' << edges[bin] / R_SUN_KM << '\t' << edges[bin + 1] / R_SUN_KM;
+				for(const auto* histogram : {&captured_residence_block_dt, &captured_residence_block_dt_sq,
+				     &captured_residence_block_v2dt, &ever_captured_path_block_dt, &ever_captured_path_block_dt_sq,
+				     &never_captured_path_block_dt, &never_captured_path_block_dt_sq})
+				{
+					const double moment = index < histogram->size() ? (*histogram)[index] : 0.0;
+					if(!std::isfinite(moment) || moment < 0.0)
+						throw std::runtime_error("nonfinite or negative diagnostic block moment");
+					file << '\t' << moment;
+				}
+				file << '\n';
+			}
+		file.flush();
+		const bool written = file.good();
+		file.close();
+		if(!written || file.fail()) throw std::runtime_error("cannot write temporary radial_blocks.tsv");
+		if(std::rename(temporary.c_str(), path.c_str()) != 0)
+			throw std::runtime_error("cannot publish radial_blocks.tsv");
+	}
+	catch(...)
+	{
+		std::remove(temporary.c_str());
+		throw;
+	}
+}
+
 void Simulation_Data::Write_Bincount(const std::string& dir, obscura::DM_Particle& DM, obscura::DM_Distribution& halo)
 {
 	if(mpi_rank != 0) return;
@@ -3228,8 +3306,8 @@ void Simulation_Data::Write_Bincount(const std::string& dir, obscura::DM_Particl
 	{
 		std::ofstream file(temporary);
 		if(!file) throw std::runtime_error("cannot open temporary bincount.tsv");
-		file << std::setprecision(std::numeric_limits<double>::max_digits10);
-		file << "# bincount_format_version = 2\n"
+		file << std::setprecision(10);
+		file << "# bincount_format_version = 3\n"
 		     << "# run_mode = Parameter point\n"
 		     << "# m_chi_GeV = " << In_Units(DM.mass, GeV) << '\n'
 		     << "# sigma_p_cm2 = " << In_Units(DM.Sigma_Proton(), cm * cm) << '\n'
@@ -3284,6 +3362,13 @@ void Simulation_Data::Write_Bincount(const std::string& dir, obscura::DM_Particl
 		     << "# radial_bins = " << edges.size() - 1 << '\n'
 		     << "# jackknife_blocks = " << RESIDENCE_JACKKNIFE_BLOCKS << '\n'
 		     << "# jackknife_assignment = splitmix64(base_seed,rank,trajectory_id)%64\n"
+		     << "# output_significant_digits = 10\n"
+		     << "# jackknife_se_scale = total_sum_at_fixed_population_count\n"
+		     << "# jackknife_se_definition = theta_b=N*(S-S_b)/(N-N_b); SE=sqrt((B-1)/B*sum_b((theta_b-mean(theta))^2)); B=64\n"
+		     << "# jackknife_se_population = captured/ever use N_residence_samples; never uses N_never_captured; all 64 hash blocks included\n"
+		     << "# jackknife_se_undefined = nan when N<2 or any deletion leaves no histories\n"
+		     << "# radial_covariance_available = false\n"
+		     << "# capture_normalization_uncertainty_included = false\n"
 		     << "# captured_residence = first capture to validated matching-surface escape or outer removal\n"
 		     << "# ever_captured_path = recorded inbound + pre-capture + residence + outgoing; includes outer removals\n"
 		     << "# never_captured_path = complete recorded paths of all completed never-captured histories\n"
@@ -3294,23 +3379,42 @@ void Simulation_Data::Write_Bincount(const std::string& dir, obscura::DM_Particl
 			file << "# block_count = " << block << ' ' << jackknife_attempted_counts[block]
 			     << ' ' << jackknife_captured_counts[block] << ' ' << jackknife_completed_escape_counts[block]
 			     << ' ' << jackknife_residence_sample_counts[block] << '\n';
-		file << "# columns = block bin r_low_rsun r_high_rsun captured_residence_dt_sum_s captured_residence_dt_sq_sum_s2 captured_residence_v2dt_sum_km2_s ever_captured_path_dt_sum_s ever_captured_path_dt_sq_sum_s2 never_captured_path_dt_sum_s never_captured_path_dt_sq_sum_s2\n";
-		for(std::size_t block = 0; block < RESIDENCE_JACKKNIFE_BLOCKS; ++block)
-			for(std::size_t bin = 0; bin + 1 < edges.size(); ++bin)
+		file << "# columns = bin r_low_rsun r_high_rsun captured_residence_dt_sum_s captured_residence_dt_sq_sum_s2 captured_residence_dt_se_s captured_residence_v2dt_sum_km2_s captured_residence_v2dt_se_km2_s ever_captured_path_dt_sum_s ever_captured_path_dt_sq_sum_s2 ever_captured_path_dt_se_s never_captured_path_dt_sum_s never_captured_path_dt_sq_sum_s2 never_captured_path_dt_se_s\n";
+		const std::array<const RadialHistogram*, 7> histograms{{
+		    &captured_residence_block_dt, &captured_residence_block_dt_sq,
+		    &captured_residence_block_v2dt, &ever_captured_path_block_dt,
+		    &ever_captured_path_block_dt_sq, &never_captured_path_block_dt,
+		    &never_captured_path_block_dt_sq}};
+		for(std::size_t bin = 0; bin + 1 < edges.size(); ++bin)
+		{
+			std::array<double, 7> totals{};
+			std::array<std::array<double, RESIDENCE_JACKKNIFE_BLOCKS>, 7> blocks{};
+			for(std::size_t moment = 0; moment < histograms.size(); ++moment)
 			{
-				const auto index = bin * RESIDENCE_JACKKNIFE_BLOCKS + block;
-				file << block << '\t' << bin << '\t' << edges[bin] / R_SUN_KM << '\t' << edges[bin + 1] / R_SUN_KM;
-				for(const auto* histogram : {&captured_residence_block_dt, &captured_residence_block_dt_sq,
-				     &captured_residence_block_v2dt, &ever_captured_path_block_dt, &ever_captured_path_block_dt_sq,
-				     &never_captured_path_block_dt, &never_captured_path_block_dt_sq})
+				long double total = 0.0L;
+				for(std::size_t block = 0; block < RESIDENCE_JACKKNIFE_BLOCKS; ++block)
 				{
-					const double moment = value(*histogram, index);
-					if(!std::isfinite(moment) || moment < 0.0)
+					const double contribution = value(*histograms[moment], bin * RESIDENCE_JACKKNIFE_BLOCKS + block);
+					if(!std::isfinite(contribution) || contribution < 0.0)
 						throw std::runtime_error("nonfinite or negative bincount moment");
-					file << '\t' << moment;
+					blocks[moment][block] = contribution;
+					total += contribution;
 				}
-				file << '\n';
+				totals[moment] = static_cast<double>(total);
+				if(!std::isfinite(totals[moment])) throw std::runtime_error("nonfinite bincount total");
 			}
+			const double residence_se = Block_Jackknife_Sum_SE(blocks[0], jackknife_residence_sample_counts);
+			const double velocity_se = Block_Jackknife_Sum_SE(blocks[2], jackknife_residence_sample_counts);
+			const double ever_se = Block_Jackknife_Sum_SE(blocks[3], jackknife_residence_sample_counts);
+			const double never_se = Block_Jackknife_Sum_SE(blocks[5], jackknife_completed_escape_counts);
+			for(const auto error : {residence_se, velocity_se, ever_se, never_se})
+				if(std::isinf(error)) throw std::runtime_error("nonfinite bincount jackknife error");
+			file << bin << '\t' << edges[bin] / R_SUN_KM << '\t' << edges[bin + 1] / R_SUN_KM
+			     << '\t' << totals[0] << '\t' << totals[1] << '\t' << residence_se
+			     << '\t' << totals[2] << '\t' << velocity_se
+			     << '\t' << totals[3] << '\t' << totals[4] << '\t' << ever_se
+			     << '\t' << totals[5] << '\t' << totals[6] << '\t' << never_se << '\n';
+		}
 		file.flush();
 		const bool written = file.good();
 		file.close();

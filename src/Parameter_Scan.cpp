@@ -210,7 +210,8 @@ std::size_t STA_Step_Limit(std::size_t rows, std::size_t columns)
 
 // 1. Configuration class for input file, which extends the obscura::Configuration class.
 
-Configuration::Configuration(std::string cfg_filename, int MPI_rank)
+Configuration::Configuration(std::string cfg_filename, int MPI_rank, bool diagnostic, bool thermal_validation)
+: diagnostic_mode(diagnostic || thermal_validation), thermal_validation_mode(thermal_validation)
 {
 	cfg_file	 = cfg_filename;
 	results_path = "./";
@@ -276,6 +277,54 @@ std::string Configuration::Physical_Configuration_JSON() const
 	return output.str();
 }
 
+std::string Configuration::Physical_Configuration_Header() const
+{
+	// Mirror the active constructor settings, omitting ignored cfg values.
+	// Runtime mass, density, spin and cross sections come from Write_Bincount.
+	std::ostringstream output;
+	output << std::setprecision(std::numeric_limits<double>::max_digits10);
+	auto field = [&](const char* label, const char* setting) {
+		output << "# " << label << " = ";
+		Append_JSON_Setting(output, config.lookup(setting));
+		output << '\n';
+	};
+	field("DM_interaction", "DM_interaction");
+	field("DM_light", "DM_light");
+	const std::string interaction = config.lookup("DM_interaction").c_str();
+	if(interaction == "SI" || interaction == "SD")
+	{
+		field("DM_isospin_conserved", "DM_isospin_conserved");
+		if(static_cast<bool>(config.lookup("DM_isospin_conserved")))
+			output << "# DM_relative_couplings = [1,1]\n";
+		else
+			field("DM_relative_couplings", "DM_relative_couplings");
+	}
+	if(interaction == "SD")
+		output << "# DM_form_factor = \"Contact\"\n";
+	else
+	{
+		field("DM_form_factor", "DM_form_factor");
+		if(std::string(config.lookup("DM_form_factor").c_str()) == "General")
+			field("DM_mediator_mass_MeV", "DM_mediator_mass");
+	}
+	field("halo_model", "DM_distribution");
+	const std::string model = config.lookup("DM_distribution").c_str();
+	if(model == "SHM" || model == "SHM++")
+	{
+		field("SHM_v0_km_s", "SHM_v0");
+		field("SHM_vObserver_km_s", "SHM_vObserver");
+		field("SHM_vEscape_km_s", "SHM_vEscape");
+		if(model == "SHM++")
+		{
+			field("SHMpp_eta", "SHMpp_eta");
+			field("SHMpp_beta", "SHMpp_beta");
+		}
+	}
+	else if(model == "File")
+		field("halo_distribution_file", "file_path");
+	return output.str();
+}
+
 void Configuration::Import_Parameter_Scan_Parameter()
 {
 	try
@@ -329,19 +378,17 @@ void Configuration::Import_Parameter_Scan_Parameter()
             default: throw std::invalid_argument("outer_removal_radius_rsun must be a number");
         }
     }
-    auto read_bool = [&](const char* key, bool& value) {
-        if(config.exists(key) && !config.lookupValue(key, value))
-            throw std::invalid_argument(std::string(key)+" must be a boolean");
-    };
-    read_bool("production_mode", production_mode);
-    read_bool("thermal_validation_mode", thermal_validation_mode);
-	if(thermal_validation_mode && (production_mode || run_mode != "Parameter point"))
-		throw std::invalid_argument("thermal validation is a separate shape-only workflow");
+	for(const char* key : {"production_mode", "thermal_validation_mode", "trajectory_summary_enabled",
+	                       "trajectory_events_enabled", "trajectory_trace_rate", "trajectory_trace_seed"})
+		if(config.exists(key))
+			throw std::invalid_argument(std::string(key) + " is no longer a cfg setting; remove it. Use --diagnostic or --thermal-validation only for local testing.");
+	if(diagnostic_mode && run_mode != "Parameter point")
+		throw std::invalid_argument("local diagnostic/thermal workflows require Parameter point mode");
 	if(!std::isfinite(outer_removal_radius_rsun)
 	   || outer_removal_radius_rsun <= NUM_BINS * BIN_WIDTH_KM / R_SUN_KM)
 		throw std::invalid_argument("outer_removal_radius_rsun must exceed the native 1.1-solar-radius grid");
 	const bool parameter_scan_mode = (run_mode == "Parameter scan");
-    if(parameter_scan_mode && (production_mode || outer_removal_radius_rsun != DEFAULT_OUTER_REMOVAL_RSUN))
+    if(parameter_scan_mode && (outer_removal_radius_rsun != DEFAULT_OUTER_REMOVAL_RSUN))
     {
         throw std::invalid_argument("transport production and custom outer boundaries require individual Parameter point/Capture runs");
     }
@@ -606,61 +653,12 @@ void Configuration::Import_Parameter_Scan_Parameter()
 
 	trajectory_diagnostic_config = TrajectoryDiagnosticConfig();
 	trajectory_diagnostic_config.interpolation_points = interpolation_points;
-	try
-	{
-		trajectory_diagnostic_config.summary_enabled = config.lookup("trajectory_summary_enabled");
-	}
-	catch(const SettingNotFoundException& nfex)
-	{
-	}
-	try
-	{
-		trajectory_diagnostic_config.events_enabled = config.lookup("trajectory_events_enabled");
-	}
-	catch(const SettingNotFoundException& nfex)
-	{
-	}
-	try
-	{
-		trajectory_diagnostic_config.trace_rate = config.lookup("trajectory_trace_rate");
-	}
-	catch(const SettingNotFoundException& nfex)
-	{
-		trajectory_diagnostic_config.trace_rate = trajectory_diagnostic_config.events_enabled ? 0.02 : 0.0;
-	}
-	try
-	{
-		const long long trace_seed = config.lookup("trajectory_trace_seed");
-		if(trace_seed < 0)
-		{
-			std::cerr << "Error in Configuration::Import_Parameter_Scan_Parameter(): 'trajectory_trace_seed' must be a non-negative integer." << std::endl;
-			std::exit(EXIT_FAILURE);
-		}
-		trajectory_diagnostic_config.trace_seed = static_cast<uint64_t>(trace_seed);
-	}
-	catch(const SettingNotFoundException& nfex)
-	{
-		trajectory_diagnostic_config.trace_seed = static_cast<uint64_t>(fixed_seed);
-	}
-	if(!std::isfinite(trajectory_diagnostic_config.trace_rate)
-	   || trajectory_diagnostic_config.trace_rate < 0.0
-	   || trajectory_diagnostic_config.trace_rate > 1.0)
-	{
-		std::cerr << "Error in Configuration::Import_Parameter_Scan_Parameter(): 'trajectory_trace_rate' must lie in [0, 1]." << std::endl;
-		std::exit(EXIT_FAILURE);
-	}
-	if(trajectory_diagnostic_config.events_enabled)
-		trajectory_diagnostic_config.summary_enabled = true;
-
-	// Capture is stdout-only; production never collects local replay diagnostics.
+	trajectory_diagnostic_config.summary_enabled = diagnostic_mode;
+	trajectory_diagnostic_config.events_enabled = diagnostic_mode;
+	trajectory_diagnostic_config.trace_rate = diagnostic_mode ? 1.0 : 0.0;
+	trajectory_diagnostic_config.trace_seed = fixed_seed;
 	if(capture_mode)
 		snapshot_config.enabled = false;
-	if(production_mode || capture_mode)
-	{
-		trajectory_diagnostic_config.summary_enabled = false;
-		trajectory_diagnostic_config.events_enabled = false;
-		trajectory_diagnostic_config.trace_rate = 0.0;
-	}
 
 	if(run_mode != "Parameter point" && run_mode != "Parameter scan" && run_mode != "Capture")
 	{

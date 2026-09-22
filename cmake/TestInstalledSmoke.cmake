@@ -23,6 +23,6 @@ execute_process(COMMAND "${CMAKE_COMMAND}" -E env
 if(NOT result EQUAL 0 OR NOT output MATCHES "Finished in")
   message(FATAL_ERROR "Relocated quickstart failed: ${result}\n${output}\n${error}")
 endif()
-if(NOT EXISTS "${TEST_OUTPUT_DIR}/working/quickstart_results/results_-2.000000_-28.000000/bincount.txt")
-  message(FATAL_ERROR "Relocated quickstart did not produce bincount.txt")
+if(NOT EXISTS "${TEST_OUTPUT_DIR}/working/quickstart_results/results_-2.000000_-32.000000/bincount.tsv")
+  message(FATAL_ERROR "Relocated quickstart did not produce bincount.tsv")
 endif()

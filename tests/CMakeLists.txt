@@ -1,7 +1,9 @@
 # 1. Test executable
 add_test(NAME executable_test
-	COMMAND DaMaSCUS-SUN ${PROJECT_SOURCE_DIR}/examples/quickstart.cfg
-	WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+	COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:DaMaSCUS-SUN>
+		-DCONFIG=${PROJECT_SOURCE_DIR}/examples/quickstart.cfg
+		-DTEST_OUTPUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/quickstart_smoke
+		-P ${PROJECT_SOURCE_DIR}/cmake/TestQuickstart.cmake)
 
 add_test(NAME test_Invalid_Snapshot_Interval_Config
 	COMMAND ${CMAKE_COMMAND}

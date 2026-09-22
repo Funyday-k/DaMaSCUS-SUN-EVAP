@@ -655,6 +655,28 @@ bool TrajectoryTraceSelected(uint64_t trace_seed, int rank, uint64_t trajectory_
 	return Diagnostic_Trace_Selected(trace_seed, rank, trajectory_id, rate);
 }
 
+void Accumulate_Complete_Path_Block(
+    std::initializer_list<const RadialHistogram*> components, std::size_t block,
+    RadialHistogram& block_dt, RadialHistogram& block_dt_sq)
+{
+	if(block >= RESIDENCE_JACKKNIFE_BLOCKS)
+		throw std::out_of_range("invalid jackknife block");
+	RadialHistogram path;
+	for(const auto* component : components)
+	{
+		GrowRadialHistograms(component->size(), path);
+		for(std::size_t bin = 0; bin < component->size(); ++bin)
+			path[bin] += (*component)[bin];
+	}
+	GrowRadialHistograms(path.size() * RESIDENCE_JACKKNIFE_BLOCKS, block_dt, block_dt_sq);
+	for(std::size_t bin = 0; bin < path.size(); ++bin)
+	{
+		const std::size_t index = bin * RESIDENCE_JACKKNIFE_BLOCKS + block;
+		block_dt[index] += path[bin];
+		block_dt_sq[index] += path[bin] * path[bin];
+	}
+}
+
 Simulation_Data::Simulation_Data(unsigned int sample_size, unsigned int max_trajectories, double u_min, unsigned int iso_rings)
 : requested_captured_particles(sample_size),
   maximum_trajectories(
@@ -673,9 +695,11 @@ Simulation_Data::Simulation_Data(unsigned int sample_size, unsigned int max_traj
   mpi_scheduler_work_claims(0), mpi_scheduler_peak_in_flight(0),
   capture_target_overshoot(0),
   computing_time(0.0), early_stopped(false), early_stop_reason(SimulationStopReason::None),
-  residence_jackknife_block_dt_hist(
+  captured_residence_block_dt(
       RESIDENCE_JACKKNIFE_BLOCKS * NUM_BINS, 0.0),
-  residence_jackknife_block_v2dt_hist(
+  captured_residence_block_dt_sq(
+      RESIDENCE_JACKKNIFE_BLOCKS * NUM_BINS, 0.0),
+  captured_residence_block_v2dt(
       RESIDENCE_JACKKNIFE_BLOCKS * NUM_BINS, 0.0),
   mpi_rank(0), mpi_processes(1), isoreflection_rings(iso_rings), minimum_speed_threshold(u_min),
   number_of_data_points(std::vector<unsigned long int>(iso_rings, 0)),
@@ -710,15 +734,15 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 {
 	fixed_injection_capture_run = capture_mode;
 	max_trajectory_wall_time_sec = snapshot_cfg.max_trajectory_wall_time_sec;
-	const bool local_diagnostics = !abort_on_invalid_trajectory && !capture_mode;
+	const bool local_diagnostics = diagnostic_output_enabled && !capture_mode;
 	if(!local_diagnostics)
 	{
 		trajectory_diagnostic_config.summary_enabled = false;
 		trajectory_diagnostic_config.events_enabled = false;
 		trajectory_diagnostic_config.trace_rate = 0.0;
 	}
-	// Scalar captured histories are required output, independent of event tracing.
-	evaporation_diagnostics_enabled = !capture_mode;
+	// Full histories are collected only by the explicit local diagnostic API.
+	evaporation_diagnostics_enabled = local_diagnostics;
 	if(capture_mode)
 		snapshot_cfg.enabled = false;
 	if(snapshot_cfg.enabled && !IsValidSnapshotIntervalSeconds(snapshot_cfg.interval_seconds))
@@ -1141,8 +1165,7 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 				else if(trajectory.bincount.termination_reason
 				        == TrajectoryTerminationReason::WallTimeLimit)
 				{
-					// Diagnostic counter only: production rejects the parameter point,
-					// even if another work-queue claim reaches the requested count.
+					// Diagnostic counter only: this history is excluded and the queue continues.
 					number_of_censored_captured_particles++;
 				}
 				else
@@ -1180,8 +1203,8 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 						GrowRadialHistograms(bins, captured_dt_hist, captured_v2dt_hist,
 						                     captured_dt_sq_hist, captured_v2dt_sq_hist);
 						GrowRadialHistograms(bins * RESIDENCE_JACKKNIFE_BLOCKS,
-						                     residence_jackknife_block_dt_hist,
-						                     residence_jackknife_block_v2dt_hist);
+						                     captured_residence_block_dt, captured_residence_block_dt_sq,
+						                     captured_residence_block_v2dt);
 						for(std::size_t b = 0; b < bins; b++)
 						{
 							captured_dt_hist[b]   += trajectory.bincount.dt_hist[b];
@@ -1190,10 +1213,12 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 							captured_v2dt_sq_hist[b] += trajectory.bincount.v2dt_hist[b] * trajectory.bincount.v2dt_hist[b];
 							const size_t block_offset =
 							    b * RESIDENCE_JACKKNIFE_BLOCKS + jackknife_block;
-							residence_jackknife_block_dt_hist[
+							captured_residence_block_dt[
 							    block_offset] +=
 							    trajectory.bincount.dt_hist[b];
-							residence_jackknife_block_v2dt_hist[
+							captured_residence_block_dt_sq[block_offset] +=
+							    trajectory.bincount.dt_hist[b] * trajectory.bincount.dt_hist[b];
+							captured_residence_block_v2dt[
 							    block_offset] +=
 							    trajectory.bincount.v2dt_hist[b];
 						}
@@ -1246,74 +1271,30 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 				}
 			}
 
-			if(initial_shift_ok && !capture_mode) {
-				auto add_block = [&](const RadialHistogram& dt, const RadialHistogram& v2dt,
-				                     RadialHistogram& bdt, RadialHistogram& bv2dt) {
-					GrowRadialHistograms(dt.size()*RESIDENCE_JACKKNIFE_BLOCKS,bdt,bv2dt);
-					for(std::size_t b=0;b<dt.size();++b) {
-						const std::size_t j=b*RESIDENCE_JACKKNIFE_BLOCKS+jackknife_block;
-						bdt[j]+=dt[b]; bv2dt[j]+=v2dt[b];
+			if(initial_shift_ok && !capture_mode)
+			{
+				if(accepted_residence_sample)
+				{
+					Accumulate_Complete_Path_Block(
+					    {&incident_inbound.dt_hist, &trajectory.bincount.transit_dt_hist,
+					     &trajectory.bincount.dt_hist, &trajectory.bincount.post_evap_dt_hist},
+					    jackknife_block, ever_captured_path_block_dt, ever_captured_path_block_dt_sq);
+				}
+				else if(completed_outward_escape && !trajectory.bincount.is_captured)
+				{
+					// Preserve the completed trajectory passed to the snapshot recorder.
+					GrowRadialHistograms(incident_inbound.dt_hist.size(), trajectory.bincount.transit_dt_hist,
+					                     trajectory.bincount.transit_v2dt_hist);
+					for(std::size_t b = 0; b < incident_inbound.dt_hist.size(); ++b)
+					{
+						trajectory.bincount.transit_dt_hist[b] += incident_inbound.dt_hist[b];
+						trajectory.bincount.transit_v2dt_hist[b] += incident_inbound.v2dt_hist[b];
 					}
-				};
-				auto add_path_component = [](const RadialHistogram& dt,
-				                             const RadialHistogram& v2dt,
-				                             RadialHistogram& path_dt,
-				                             RadialHistogram& path_v2dt) {
-					GrowRadialHistograms(std::max(dt.size(),v2dt.size()),path_dt,path_v2dt);
-					for(std::size_t b=0;b<dt.size();++b) path_dt[b]+=dt[b];
-					for(std::size_t b=0;b<v2dt.size();++b) path_v2dt[b]+=v2dt[b];
-				};
-				auto add_complete_path_block = [&](const RadialHistogram& path_dt,
-				                                   const RadialHistogram& path_v2dt,
-				                                   RadialHistogram& block_dt,
-				                                   RadialHistogram& block_v2dt,
-				                                   RadialHistogram& block_dt_sq) {
-					GrowRadialHistograms(path_dt.size()*RESIDENCE_JACKKNIFE_BLOCKS,
-					                     block_dt,block_v2dt,block_dt_sq);
-					for(std::size_t b=0;b<path_dt.size();++b) {
-						const std::size_t j=b*RESIDENCE_JACKKNIFE_BLOCKS+jackknife_block;
-						block_dt[j]+=path_dt[b];
-						block_v2dt[j]+=path_v2dt[b];
-						block_dt_sq[j]+=path_dt[b]*path_dt[b];
-					}
-				};
-				add_block(incident_inbound.dt_hist,incident_inbound.v2dt_hist,
-				          incident_inbound_block_dt,incident_inbound_block_v2dt);
-				if(!capture_mode) {
-					if(accepted_residence_sample) {
-						RadialHistogram complete_path_dt,complete_path_v2dt;
-						add_path_component(incident_inbound.dt_hist,incident_inbound.v2dt_hist,
-						                   complete_path_dt,complete_path_v2dt);
-						add_path_component(trajectory.bincount.transit_dt_hist,trajectory.bincount.transit_v2dt_hist,
-						                   complete_path_dt,complete_path_v2dt);
-						add_path_component(trajectory.bincount.dt_hist,trajectory.bincount.v2dt_hist,
-						                   complete_path_dt,complete_path_v2dt);
-						add_path_component(trajectory.bincount.post_evap_dt_hist,trajectory.bincount.post_evap_v2dt_hist,
-						                   complete_path_dt,complete_path_v2dt);
-						add_complete_path_block(complete_path_dt,complete_path_v2dt,
-						                        captured_path_block_dt,captured_path_block_v2dt,
-						                        captured_path_block_dt_sq);
-						add_block(trajectory.bincount.post_evap_dt_hist,trajectory.bincount.post_evap_v2dt_hist,post_evap_block_dt,post_evap_block_v2dt);
-                        const double ap=trajectory.bincount.max_aphelion_km/R_SUN_KM;
-                        const std::size_t cls = !std::isfinite(ap) || ap<10 ? 0 : (ap<83 ? 1 : (ap<215 ? 2 : (ap<1100 ? 3 : 4)));
-                        auto& hist=aphelion_block_dt[cls];
-                        GrowRadialHistograms(trajectory.bincount.dt_hist.size()*RESIDENCE_JACKKNIFE_BLOCKS,hist);
-                        for(std::size_t b=0;b<trajectory.bincount.dt_hist.size();++b)
-                            hist[b*RESIDENCE_JACKKNIFE_BLOCKS+jackknife_block]+=trajectory.bincount.dt_hist[b];
-                    } else if(completed_outward_escape && !trajectory.bincount.is_captured) {
-                        GrowRadialHistograms(incident_inbound.dt_hist.size(),trajectory.bincount.transit_dt_hist,
-                                             trajectory.bincount.transit_v2dt_hist);
-                        for(std::size_t b=0;b<incident_inbound.dt_hist.size();++b) {
-                            trajectory.bincount.transit_dt_hist[b]+=incident_inbound.dt_hist[b];
-                            trajectory.bincount.transit_v2dt_hist[b]+=incident_inbound.v2dt_hist[b];
-                        }
-						add_complete_path_block(trajectory.bincount.transit_dt_hist,
-						                        trajectory.bincount.transit_v2dt_hist,
-						                        transit_block_dt,transit_block_v2dt,
-						                        transit_block_dt_sq);
-                    }
-                }
-            }
+					Accumulate_Complete_Path_Block(
+					    {&trajectory.bincount.transit_dt_hist}, jackknife_block,
+					    never_captured_path_block_dt, never_captured_path_block_dt_sq);
+				}
+			}
 
 			if(snapshot_state)
 			{
@@ -1344,15 +1325,13 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 			outcome.computational_truncation =
 			    Is_Computational_Truncation(
 			        trajectory.bincount.termination_reason);
-			outcome.reject_run = abort_on_invalid_trajectory
-                && (outcome.numerical_failure || outcome.computational_truncation);
 			return outcome;
 		};
 
 	MPIWorkQueue work_queue(
 	    requested_captured_particles,
 	    maximum_trajectories,
-	    INITIAL_SHIFT_FAILURE_ABORT_FRACTION,
+	    1.0, // Failed initial shifts are counted and skipped, like other failed histories.
 	    MPI_COMM_WORLD);
 	// Rank 0 owns the queue window and must keep serving remote claims even
 	// during a long trajectory. The heartbeat thread cannot do this under
@@ -1567,7 +1546,7 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 	early_stop_reason = static_cast<SimulationStopReason>(global_stop_reason);
 	early_stopped = early_stop_reason != SimulationStopReason::None;
 
-	if(!abort_on_invalid_trajectory && !capture_mode)
+	if(diagnostic_output_enabled && !capture_mode)
 		Gather_Invalid_Trajectories();
 
 	if(capture_mode)
@@ -1631,23 +1610,17 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 	    "before allreduce jackknife outer-domain counts");
 
 	MPI_Trace_Point(mpi_rank, "before allreduce radial histograms");
-	Allreduce_MPI_Histogram(incident_inbound_block_dt);
-	Allreduce_MPI_Histogram(incident_inbound_block_v2dt);
-	Allreduce_MPI_Histogram(transit_block_dt);
-	Allreduce_MPI_Histogram(transit_block_v2dt);
-	Allreduce_MPI_Histogram(transit_block_dt_sq);
-	Allreduce_MPI_Histogram(post_evap_block_dt);
-	Allreduce_MPI_Histogram(post_evap_block_v2dt);
-	Allreduce_MPI_Histogram(captured_path_block_dt);
-	Allreduce_MPI_Histogram(captured_path_block_v2dt);
-	Allreduce_MPI_Histogram(captured_path_block_dt_sq);
-	for(auto& hist: aphelion_block_dt) Allreduce_MPI_Histogram(hist);
+	Allreduce_MPI_Histogram(ever_captured_path_block_dt);
+	Allreduce_MPI_Histogram(ever_captured_path_block_dt_sq);
+	Allreduce_MPI_Histogram(never_captured_path_block_dt);
+	Allreduce_MPI_Histogram(never_captured_path_block_dt_sq);
+	Allreduce_MPI_Histogram(captured_residence_block_dt_sq);
 	Allreduce_MPI_Histogram(captured_dt_hist);
 	Allreduce_MPI_Histogram(captured_v2dt_hist);
 	Allreduce_MPI_Histogram(captured_dt_sq_hist);
 	Allreduce_MPI_Histogram(captured_v2dt_sq_hist);
-	Allreduce_MPI_Histogram(residence_jackknife_block_dt_hist);
-	Allreduce_MPI_Histogram(residence_jackknife_block_v2dt_hist);
+	Allreduce_MPI_Histogram(captured_residence_block_dt);
+	Allreduce_MPI_Histogram(captured_residence_block_v2dt);
 	MPI_Trace_Point(mpi_rank, "after histogram allreduces");
 	if(evaporation_diagnostics_enabled)
 	{
@@ -1819,12 +1792,12 @@ void Simulation_Data::Perform_MPI_Reductions(bool capture_mode)
 			for(const auto& record : evaporation_records)
 			{
 				CompactEvaporationEvent event;
-				if(!abort_on_invalid_trajectory && Make_Compact_Evaporation_Event(record, event))
+				if(diagnostic_output_enabled && Make_Compact_Evaporation_Event(record, event))
 					compact_evaporation_events.push_back(event);
 			}
 		}
 	}
-	else
+	else if(diagnostic_output_enabled)
 	{
 		const int local_evap_count = static_cast<int>(compact_evaporation_events.size());
 		std::vector<int> evap_counts(mpi_processes, 0);
@@ -1964,8 +1937,21 @@ void Simulation_Data::Prepare_Output_Directory(const std::string& output_dir) co
 	if(!Ensure_Directory_Exists(output_dir))
 		throw std::runtime_error("failed to create output directory " + output_dir);
 
-	// Invalidate any previous completion marker before starting a replacement run.
-	std::remove((output_dir+"/metadata.json").c_str());
+	DIR* directory = opendir(output_dir.c_str());
+	if(!directory)
+		throw std::runtime_error("cannot inspect output directory " + output_dir);
+	bool nonempty = false;
+	while(const dirent* entry = readdir(directory))
+	{
+		if(std::strcmp(entry->d_name, ".") && std::strcmp(entry->d_name, ".."))
+		{
+			nonempty = true;
+			break;
+		}
+	}
+	closedir(directory);
+	if(nonempty)
+		throw std::runtime_error("output directory is not empty; choose a new output_dir to preserve results and snapshots: " + output_dir);
 	// Use an exclusive temporary file so a preflight never overwrites a result.
 	std::string pattern = output_dir + "/.write_probe_XXXXXX";
 	std::vector<char> filename(pattern.begin(), pattern.end());
@@ -1980,10 +1966,13 @@ void Simulation_Data::Prepare_Output_Directory(const std::string& output_dir) co
 		throw std::runtime_error("output directory write check failed: " + output_dir);
 }
 
-void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura::DM_Particle& DM)
+void Simulation_Data::Write_Diagnostic_Output(const std::string& output_dir, obscura::DM_Particle& DM)
 {
 	if(mpi_rank != 0)
 		return;
+
+	if(!diagnostic_output_enabled || fixed_injection_capture_run)
+		throw std::logic_error("diagnostic output requires the explicit local diagnostic API");
 
 	if(!Ensure_Directory_Exists(output_dir))
 		throw std::runtime_error("failed to create output directory " + output_dir);
@@ -2107,8 +2096,8 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 		    block++)
 		{
 			const std::size_t index = bin * RESIDENCE_JACKKNIFE_BLOCKS + block;
-			dt_sum += residence_jackknife_block_dt_hist[index];
-			v2dt_sum += residence_jackknife_block_v2dt_hist[index];
+			dt_sum += captured_residence_block_dt[index];
+			v2dt_sum += captured_residence_block_v2dt[index];
 		}
 		if(!histogram_close(dt_sum, captured_dt_hist[bin])
 		   || !histogram_close(v2dt_sum, captured_v2dt_hist[bin]))
@@ -2223,9 +2212,9 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 			{
 				const std::size_t index = bin * RESIDENCE_JACKKNIFE_BLOCKS + block;
 				blocks << block << '\t' << bin << '\t'
-				       << residence_jackknife_block_dt_hist[index]
+				       << captured_residence_block_dt[index]
 				       << '\t'
-				       << residence_jackknife_block_v2dt_hist[index]
+				       << captured_residence_block_v2dt[index]
 				       << '\n';
 			}
 		}
@@ -2619,7 +2608,7 @@ void Simulation_Data::Write_Output_Files(const std::string& output_dir, obscura:
 		if(!unique_keys || !time_invariants || !evaporation_event_reconciliation || !escape_radius_invariant
 		   || !residence_time_invariant || !event_sequence_invariant || !event_count_invariant
 		   || !trace_selection_invariant || !replay_state_invariant || !bound_exit_orbit_invariant)
-			std::cerr << "Warning in Write_Output_Files(): trajectory diagnostic invariant check failed; inspect run_metadata.json" << std::endl;
+			std::cerr << "Warning in Write_Diagnostic_Output(): trajectory diagnostic invariant check failed; inspect run_metadata.json" << std::endl;
 	}
 
 
@@ -2711,7 +2700,7 @@ void Simulation_Data::Print_Capture_Mode_Summary(unsigned int mpi_rank)
 		          << "CAPTURE MODE summary" << std::endl
 		          << std::endl
 		          << "Termination condition:\t\tpost-scatter E < 0" << std::endl
-		          << "File output:\t\t\tschema-9 capture products" << std::endl
+		          << "File output:\t\t\tstdout-only CAPTURE_RESULT_JSON" << std::endl
 		          << "Simulated trajectories:\t\t" << number_of_trajectories << std::endl
 		          << "Capture-classified trajectories:\t" << Valid_Trajectories() << std::endl
 		          << "Unresolved non-captures:\t\t" << (number_of_trajectories - Valid_Trajectories()) << std::endl
@@ -2811,38 +2800,41 @@ void Simulation_Data::Print_Summary(unsigned int mpi_rank)
 			std::cout << "*** WARNING: numerical failure rate exceeded "
 			          << NUMERICAL_FAILURE_WARNING_FRACTION << " ***" << std::endl;
 
-		// Median for observed unbinding events only; censored records belong in survival analysis.
-		std::vector<double> observed_unbinding_lifetimes;
-		if(evaporation_diagnostics_enabled)
+		if(diagnostic_output_enabled)
 		{
-			for(const auto& rec : evaporation_records)
+			// Median for observed unbinding events only; censored records belong in survival analysis.
+			std::vector<double> observed_unbinding_lifetimes;
+			if(evaporation_diagnostics_enabled)
 			{
-				if(rec.survival_valid && rec.event_observed && Has_Positive_Evaporation_Time(rec.lifetime_unbinding))
-					observed_unbinding_lifetimes.push_back(rec.lifetime_unbinding);
+				for(const auto& rec : evaporation_records)
+				{
+					if(rec.survival_valid && rec.event_observed && Has_Positive_Evaporation_Time(rec.lifetime_unbinding))
+						observed_unbinding_lifetimes.push_back(rec.lifetime_unbinding);
+				}
 			}
-		}
-		else
-		{
-			for(const auto& event : compact_evaporation_events)
-			{
-				if(Has_Positive_Evaporation_Time(event.lifetime_unbinding))
-					observed_unbinding_lifetimes.push_back(event.lifetime_unbinding);
-			}
-		}
-		if(!observed_unbinding_lifetimes.empty())
-		{
-			std::sort(observed_unbinding_lifetimes.begin(), observed_unbinding_lifetimes.end());
-			double median;
-			size_t n = observed_unbinding_lifetimes.size();
-			if(n % 2 == 0)
-				median = 0.5 * (observed_unbinding_lifetimes[n/2 - 1] + observed_unbinding_lifetimes[n/2]);
 			else
-				median = observed_unbinding_lifetimes[n/2];
-			std::cout << "Observed unbinding lifetime median [s]:\t" << std::scientific << std::setprecision(4) << median << " (" << observed_unbinding_lifetimes.size() << " events)" << std::endl;
-		}
-		else
-		{
-			std::cout << "Observed unbinding lifetime median:\tN/A (no positive observed unbinding events)" << std::endl;
+			{
+				for(const auto& event : compact_evaporation_events)
+				{
+					if(Has_Positive_Evaporation_Time(event.lifetime_unbinding))
+						observed_unbinding_lifetimes.push_back(event.lifetime_unbinding);
+				}
+			}
+			if(!observed_unbinding_lifetimes.empty())
+			{
+				std::sort(observed_unbinding_lifetimes.begin(), observed_unbinding_lifetimes.end());
+				double median;
+				size_t n = observed_unbinding_lifetimes.size();
+				if(n % 2 == 0)
+					median = 0.5 * (observed_unbinding_lifetimes[n/2 - 1] + observed_unbinding_lifetimes[n/2]);
+				else
+					median = observed_unbinding_lifetimes[n/2];
+				std::cout << "Observed unbinding lifetime median [s]:\t" << std::scientific << std::setprecision(4) << median << " (" << observed_unbinding_lifetimes.size() << " events)" << std::endl;
+			}
+			else
+			{
+				std::cout << "Observed unbinding lifetime median:\tN/A (no positive observed unbinding events)" << std::endl;
+			}
 		}
 
 		std::cout << std::endl
@@ -2856,13 +2848,11 @@ void Simulation_Data::Print_Summary(unsigned int mpi_rank)
 	}
 }
 
-bool Simulation_Data::Production_Ready() const
+bool Simulation_Data::Target_Reached() const
 {
-    if(thermal_shape_run) return false;
-    if(number_of_numerical_failures || number_of_computational_truncations) return false;
-    if(fixed_injection_capture_run) return number_of_trajectories == requested_captured_particles;
-    return number_of_residence_samples >= requested_captured_particles
-        && number_of_residence_samples == number_of_captured_particles;
+	if(fixed_injection_capture_run)
+		return number_of_trajectories == requested_captured_particles;
+	return number_of_residence_samples >= requested_captured_particles;
 }
 
 void Simulation_Data::Write_Invalid_Trajectories(const std::string& output_dir)
@@ -3112,7 +3102,7 @@ std::string Simulation_Data::Run_Metadata_JSON(obscura::DM_Particle& DM, obscura
 {
     const auto stamp=std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
     std::ostringstream meta; meta << std::setprecision(17);
-    meta << "\"production_accepted\":" << (Production_Ready()?"true":"false")
+    meta << "\"target_reached\":" << (Target_Reached()?"true":"false")
          << ",\n\"workflow\":\"" << (fixed_injection_capture_run?"fixed_injection_capture":(thermal_shape_run?"thermal_shape_validation":"complete_captured_transport"))
          << "\",\n\"git_commit\":\"" << GIT_COMMIT_HASH << "\",\n\"source_sha256\":\"" << DAMASCUS_SOURCE_SHA256
          << "\",\n\"compiler\":\"" << DAMASCUS_COMPILER << "\",\n\"build_type\":\"" << DAMASCUS_BUILD_TYPE
@@ -3149,7 +3139,7 @@ std::string Simulation_Data::Run_Metadata_JSON(obscura::DM_Particle& DM, obscura
          << ",\n\"max_trajectories\":" << (maximum_trajectories == std::numeric_limits<uint64_t>::max() ? 0 : maximum_trajectories)
          << ",\n\"maximum_number_of_scatterings\":" << maximum_number_of_scatterings
          << ",\n\"max_trajectory_wall_time_sec\":" << max_trajectory_wall_time_sec
-         << ",\n\"production_mode\":" << (abort_on_invalid_trajectory ? "true" : "false")
+         << ",\n\"failed_history_policy\":\"record_and_continue\""
          << ",\n\"thermal_validation_mode\":" << (thermal_shape_run ? "true" : "false")
          << ",\n\"early_stop_reason\":\"" << Stop_Reason_Key(early_stop_reason) << "\"";
     return meta.str();
@@ -3161,7 +3151,10 @@ void Simulation_Data::Print_Capture_Result_JSON(obscura::DM_Particle& DM, obscur
     const double geom=In_Units(M_PI*rSun*rSun*halo.DM_density*DM.fractional_density/DM.mass
         *(halo.Average_Speed()+2*G_Newton*mSun/rSun*halo.Eta_Function(0.0)),1/sec);
     std::ostringstream capture; capture << std::setprecision(17);
-    capture << "{\"capture_result_schema\":1," << Run_Metadata_JSON(DM, halo)
+    capture << "{\"capture_result_schema\":2," << Run_Metadata_JSON(DM, halo)
+        << ",\"N_valid\":" << Valid_Trajectories()
+        << ",\"N_unclassified\":" << number_of_trajectories - Valid_Trajectories()
+        << ",\"f_cap_denominator\":\"all_injected_trials\""
         << ",\"fixed_injection\":" << (fixed_injection_capture_run?"true":"false")
         << ",\n\"C_geom_s_inv\":" << geom << ",\n\"f_cap\":"
         << (number_of_trajectories?static_cast<double>(number_of_captured_particles)/number_of_trajectories:0)
@@ -3179,98 +3172,152 @@ void Simulation_Data::Print_Capture_Result_JSON(obscura::DM_Particle& DM, obscur
     if(!std::cout) throw std::runtime_error("Cannot write capture result to stdout");
 }
 
-void Simulation_Data::Write_Transport_Products(const std::string& dir, obscura::DM_Particle& DM, obscura::DM_Distribution& halo, Solar_Model& solar)
+void Simulation_Data::Write_Bincount(const std::string& dir, obscura::DM_Particle& DM, obscura::DM_Distribution& halo)
 {
-    if(mpi_rank != 0) return;
-    if(fixed_injection_capture_run) throw std::logic_error("Capture results belong on stdout");
-    if(!Ensure_Directory_Exists(dir)) throw std::runtime_error("Cannot create transport output directory");
-    // metadata.json is the commit marker; never leave an old accepted marker on failure.
-    std::remove((dir+"/metadata.json").c_str());
-    auto publish = [&](const std::string& name, const std::string& content) {
-        const std::string path=dir+"/"+name, tmp=path+".tmp";
-        std::ofstream f(tmp); f << content; f.close();
-        if(!f || std::rename(tmp.c_str(),path.c_str())!=0)
-            throw std::runtime_error("Cannot publish "+path);
-    };
-    const auto edges=BuildRadialGrid(outer_removal_radius_rsun*R_SUN_KM);
-    std::ostringstream reference; reference << std::setprecision(17);
-    reference << "r_cm\tT_K\tn_H_cm3\tphi_minus_center_km2_s2\n";
-    const double center_escape2=std::pow(In_Units(solar.Local_Escape_Speed(0.0),km/sec),2);
-    for(int j=0;j<=4096;++j) {
-        const double radius=rSun*j/4096.0;
-        reference << In_Units(radius,cm) << '\t' << In_Units(solar.Temperature(radius),Kelvin) << '\t'
-            << In_Units(solar.Number_Density_Nucleus(radius,0),1/(cm*cm*cm)) << '\t'
-            << .5*(center_escape2-std::pow(In_Units(solar.Local_Escape_Speed(radius),km/sec),2)) << '\n';
-    }
-    publish("solar_reference.tsv",reference.str());
-
-    auto value=[](const RadialHistogram& h,std::size_t j){return j<h.size()?h[j]:0.0;};
-    std::ostringstream counts; counts << "termination_reason\tcaptured\tuncaptured\n";
-    for(int i=0;i<TRAJECTORY_TERMINATION_REASON_COUNT;++i)
-        counts << Termination_Reason_Key(static_cast<TrajectoryTerminationReason>(i)) << '\t'
-            << captured_termination_reason_counts[i] << '\t' << uncaptured_termination_reason_counts[i] << '\n';
-    publish("termination_counts.tsv",counts.str());
-    std::ostringstream inbound; inbound << std::setprecision(17);
-    inbound << "bin\tr_low_km\tr_high_km\tincident_inbound_dt_s\tincident_inbound_v2dt_km2_s\n";
-    for(std::size_t b=0;b+1<edges.size();++b) {
-        double dt=0.0, v2dt=0.0;
-        for(std::size_t k=0;k<RESIDENCE_JACKKNIFE_BLOCKS;++k) {
-            const std::size_t j=b*RESIDENCE_JACKKNIFE_BLOCKS+k;
-            dt+=value(incident_inbound_block_dt,j);
-            v2dt+=value(incident_inbound_block_v2dt,j);
-        }
-        inbound << b << '\t' << edges[b] << '\t' << edges[b+1]
-                << '\t' << dt << '\t' << v2dt << '\n';
-    }
-    publish("incident_inbound.tsv",inbound.str());
-    if(!fixed_injection_capture_run) {
-        std::ostringstream blocks, classes, samples; blocks << std::setprecision(17); classes << std::setprecision(17);
-		blocks << "block\tbin\tr_low_km\tr_high_km\tcaptured_dt_s\tcaptured_v2dt_km2_s\ttransit_uncaptured_dt_s\ttransit_uncaptured_v2dt_km2_s\tpost_evap_dt_s\tpost_evap_v2dt_km2_s\tincident_inbound_dt_s\tincident_inbound_v2dt_km2_s\tcaptured_path_dt_s\tcaptured_path_v2dt_km2_s\tcaptured_path_dt_sq_s2\ttransit_uncaptured_dt_sq_s2\n";
-        classes << "class\tblock\tbin\tdt_s\n";
-        samples << "block\tcompleted_captured\tinjected\tcompleted_uncaptured\n";
-        for(std::size_t k=0;k<RESIDENCE_JACKKNIFE_BLOCKS;++k) {
-            samples << k << '\t' << jackknife_residence_sample_counts[k]
-                    << '\t' << jackknife_attempted_counts[k] << '\t' << jackknife_completed_escape_counts[k] << '\n';
-            for(std::size_t b=0;b+1<edges.size();++b) {
-                const std::size_t j=b*RESIDENCE_JACKKNIFE_BLOCKS+k;
-                blocks << k << '\t' << b << '\t' << edges[b] << '\t' << edges[b+1]
-                    << '\t' << value(residence_jackknife_block_dt_hist,j) << '\t' << value(residence_jackknife_block_v2dt_hist,j)
-                    << '\t' << value(transit_block_dt,j) << '\t' << value(transit_block_v2dt,j)
-                    << '\t' << value(post_evap_block_dt,j) << '\t' << value(post_evap_block_v2dt,j)
-                    << '\t' << value(incident_inbound_block_dt,j) << '\t' << value(incident_inbound_block_v2dt,j)
-					<< '\t' << value(captured_path_block_dt,j) << '\t' << value(captured_path_block_v2dt,j)
-					<< '\t' << value(captured_path_block_dt_sq,j) << '\t' << value(transit_block_dt_sq,j) << '\n';
-                for(std::size_t c=0;c<5;++c)
-                    if(value(aphelion_block_dt[c],j)>0) classes << c << '\t' << k << '\t' << b << '\t' << value(aphelion_block_dt[c],j) << '\n';
-            }
-        }
-        publish("radial_blocks.tsv",blocks.str()); publish("block_counts.tsv",samples.str()); publish("orbit_class_blocks.tsv",classes.str());
-        std::ostringstream summary; summary << std::setprecision(17);
-        summary << "trajectory_id\trank\tseed\tblock_id\tcapture_time_s\tcapture_radius_km\tcapture_energy_eV\tcapture_dE_eV\ttermination_reason\tt_end_s\tmax_radius_km\tmax_aphelion_km\tn_scatter\tn_bound_to_unbound\tn_recapture\ttau_in_s\ttau_out_s\tn_exterior_arcs\tfirst_aphelion_km\tlast_aphelion_km\tmax_kepler_period_s\n";
-        for(const auto& rec:evaporation_records) {
-            summary << rec.trajectory_id << '\t' << rec.rank << '\t' << diagnostic_base_seed << '\t'
-                << Residence_Jackknife_Block(diagnostic_base_seed,rec.rank,rec.trajectory_id) << '\t'
-                << rec.t_capture << '\t' << rec.r_first_negative_km << '\t' << rec.E_first_negative_eV << '\t' << rec.dE_first_negative_from_prev_eV << '\t'
-                << Termination_Reason_Key(rec.termination_reason) << '\t' << rec.t_termination-rec.t_capture << '\t'
-                << rec.max_radius_after_capture_km << '\t' << rec.max_aphelion_km << '\t' << rec.number_of_scatterings << '\t'
-                << rec.number_of_bound_to_unbound << '\t' << rec.number_of_recaptures << '\t' << rec.time_inside_sun_after_capture_sec << '\t'
-                << rec.time_outside_sun_after_capture_sec << '\t' << rec.number_of_bound_exterior_arcs << '\t' << rec.first_aphelion_km << '\t'
-                << rec.last_aphelion_km << '\t' << rec.max_bound_exit_kepler_period_sec << '\n';
-        }
-        publish("trajectory_summary.tsv",summary.str());
-    }
-    std::ostringstream meta; meta << std::setprecision(17);
-    meta << "{\n\"schema_version\":10,\n" << Run_Metadata_JSON(DM, halo)
-         << ",\n\"captured_end\":\"validated escape at matching surface or outer removal\",\n\"post_evap\":\"separate outgoing occupation from validated escape to recording boundary; excluded from captured_dt\""
-         << ",\n\"incident_inbound\":\"all successfully propagated incident particles, diagnostic reference sphere to solar surface; separate from captured residence\""
-		 << ",\n\"population_bincount_version\":2"
-         << ",\n\"captured_path\":\"complete recorded paths of ever-captured particles: incident inbound + pre-capture + captured residence + post-escape outgoing; includes outer-domain removals\""
-         << ",\n\"transit_uncaptured\":\"complete recorded paths of all never-captured particles, including scattered escapes; incident reference inward through Sun and outward to the same reference\""
-		 << ",\n\"population_normalization\":\"independent fixed-injection Capture supplies p_cap; Transport supplies conditional mean complete-path residence for ever- and never-captured histories\""
-		 << ",\n\"population_second_moments\":\"per-history complete-path dt_bin squared, then summed by population and jackknife block\""
-         << ",\n\"restart_supported\":false,\n\"radial_edges_km\":[";
-    for(std::size_t i=0;i<edges.size();++i) { if(i) meta << ','; meta << edges[i]; }
-    meta << "]\n}\n"; publish("metadata.json",meta.str());
+	if(mpi_rank != 0) return;
+	if(fixed_injection_capture_run || thermal_shape_run)
+		throw std::logic_error("bincount.tsv requires a scientific Transport run");
+	if(!Ensure_Directory_Exists(dir) || !Ensure_Directory_Exists(dir + "/snapshot"))
+		throw std::runtime_error("cannot create transport output directory");
+	const auto edges = BuildRadialGrid(outer_removal_radius_rsun * R_SUN_KM);
+	const bool target_reached = Target_Reached();
+	auto sum_counts = [](const auto& counts) {
+		return std::accumulate(counts.begin(), counts.end(), 0UL);
+	};
+	if(sum_counts(jackknife_attempted_counts) != number_of_trajectories
+	   || sum_counts(jackknife_captured_counts) != number_of_captured_particles
+	   || sum_counts(jackknife_completed_escape_counts) != number_of_completed_outward_escapes
+	   || sum_counts(jackknife_residence_sample_counts) != number_of_residence_samples)
+		throw std::runtime_error("bincount block counts do not close");
+	for(std::size_t block = 0; block < RESIDENCE_JACKKNIFE_BLOCKS; ++block)
+		if(jackknife_captured_counts[block] + jackknife_completed_escape_counts[block] > jackknife_attempted_counts[block]
+		   || jackknife_residence_sample_counts[block] > jackknife_captured_counts[block]
+		   || jackknife_residence_sample_counts[block] + jackknife_completed_escape_counts[block]
+		      + jackknife_invalid_counts[block] != jackknife_attempted_counts[block])
+			throw std::runtime_error("bincount completed and excluded history counts do not close");
+	auto value = [](const RadialHistogram& histogram, std::size_t index) {
+		return index < histogram.size() ? histogram[index] : 0.0;
+	};
+	// Verify the added block statistic against the unchanged global accumulator.
+	for(std::size_t bin = 0; bin < captured_dt_hist.size(); ++bin)
+	{
+		double dt = 0.0, dt_sq = 0.0, v2dt = 0.0;
+		for(std::size_t block = 0; block < RESIDENCE_JACKKNIFE_BLOCKS; ++block)
+		{
+			const auto index = bin * RESIDENCE_JACKKNIFE_BLOCKS + block;
+			dt += value(captured_residence_block_dt, index);
+			dt_sq += value(captured_residence_block_dt_sq, index);
+			v2dt += value(captured_residence_block_v2dt, index);
+		}
+		auto close = [](double a, double b) {
+			return std::isfinite(a) && std::isfinite(b)
+			       && std::fabs(a - b) <= 1e-10 * std::max({1.0, std::fabs(a), std::fabs(b)});
+		};
+		if(!close(dt, captured_dt_hist[bin]) || !close(dt_sq, captured_dt_sq_hist[bin])
+		   || !close(v2dt, captured_v2dt_hist[bin]))
+			throw std::runtime_error("bincount residence moments do not close");
+	}
+	const std::string path = dir + "/bincount.tsv", temporary = path + ".tmp";
+	try
+	{
+		std::ofstream file(temporary);
+		if(!file) throw std::runtime_error("cannot open temporary bincount.tsv");
+		file << std::setprecision(std::numeric_limits<double>::max_digits10);
+		file << "# bincount_format_version = 2\n"
+		     << "# run_mode = Parameter point\n"
+		     << "# m_chi_GeV = " << In_Units(DM.mass, GeV) << '\n'
+		     << "# sigma_p_cm2 = " << In_Units(DM.Sigma_Proton(), cm * cm) << '\n'
+		     << "# sigma_neutron_cm2 = " << In_Units(DM.Sigma_Neutron(), cm * cm) << '\n'
+		     << "# sigma_e_cm2 = " << In_Units(DM.Sigma_Electron(), cm * cm) << '\n'
+		     << "# DM_spin = " << DM.spin << '\n'
+		     << "# DM_fraction = " << DM.fractional_density << '\n'
+		     << "# halo_density_GeV_cm3 = " << In_Units(halo.DM_density, GeV / (cm * cm * cm)) << '\n'
+		     << physical_config_header
+		     << "# solar_model = AGSS09\n"
+		     << "# R_sun_km = " << R_SUN_KM << '\n'
+		     << "# seed = " << diagnostic_base_seed << '\n'
+		     << "# mpi_ranks = " << mpi_processes << '\n'
+		     << "# requested_captured = " << requested_captured_particles << '\n'
+		     << "# N_injected = " << number_of_trajectories << '\n'
+		     << "# N_ever_captured = " << number_of_captured_particles << '\n'
+		     << "# N_never_captured = " << number_of_completed_outward_escapes << '\n'
+		     << "# N_residence_samples = " << number_of_residence_samples << '\n'
+		     << "# N_unclassified = " << number_of_trajectories - Valid_Trajectories() << '\n'
+		     << "# N_excluded_trajectories = " << number_of_trajectories - number_of_residence_samples - number_of_completed_outward_escapes << '\n'
+		     << "# failed_history_policy = record_and_continue\n"
+		     << "# N_outer_removed = " << number_of_outer_domain_removed_particles << '\n'
+		     << "# numerical_failures = " << number_of_numerical_failures << '\n'
+		     << "# computational_failures = " << number_of_computational_truncations << '\n'
+		     << "# target_reached = " << (target_reached ? "true" : "false") << '\n'
+		     << "# stop_reason = " << Stop_Reason_Key(early_stop_reason) << '\n'
+		     << "# R_incident_au = " << INCIDENT_SAMPLING_RADIUS_AU << '\n'
+		     << "# R_injection_rsun = " << INCIDENT_INJECTION_RSUN << '\n'
+		     << "# R_match_rsun = " << In_Units(initial_and_final_radius, rSun) << '\n'
+		     << "# R_remove_rsun = " << outer_removal_radius_rsun << '\n'
+		     << "# R_path_reference_rsun = " << std::min(outer_removal_radius_rsun, TRANSIT_REFERENCE_RSUN) << '\n'
+		     << "# rate_radius_points = " << rate_radius_points << '\n'
+		     << "# rate_speed_points = " << rate_speed_points << '\n'
+		     << "# rate_max_speed = " << rate_max_speed << '\n'
+		     << "# rate_speed_unit = c\n"
+		     << "# rk_position_tolerance_km = " << RK45PositionToleranceKm() << '\n'
+		     << "# rk_velocity_tolerance_km_s = " << RK45VelocityToleranceKmPerSec() << '\n'
+		     << "# rk_phase_tolerance = " << RK45PhaseTolerance() << '\n'
+		     << "# max_optical_depth_step = " << NormalModeMaxOpticalDepthStep() << '\n'
+		     << "# optical_depth_relative_tolerance = " << OpticalDepthRelativeTolerance() << '\n'
+		     << "# bincount_integration = " << BincountIntegrationScheme() << '\n'
+		     << "# bincount_dense_position_tolerance_km = " << BincountDensePositionToleranceKm() << '\n'
+		     << "# max_trajectories = " << (maximum_trajectories == std::numeric_limits<uint64_t>::max() ? 0 : maximum_trajectories) << '\n'
+		     << "# maximum_number_of_scatterings = " << maximum_number_of_scatterings << '\n'
+		     << "# maximum_free_time_steps = " << maximum_free_time_steps << '\n'
+		     << "# max_trajectory_wall_time_sec = " << max_trajectory_wall_time_sec << '\n'
+		     << "# runtime_seconds = " << computing_time << '\n'
+		     << "# radial_grid = uniform_inner_geometric_width_capped_v5\n"
+		     << "# inner_bin_width_rsun = " << BIN_WIDTH_KM / R_SUN_KM << '\n'
+		     << "# exterior_bin_growth_factor = " << EXTERIOR_BIN_GROWTH_FACTOR << '\n'
+		     << "# exterior_max_bin_width_rsun = " << EXTERIOR_MAX_BIN_WIDTH_RSUN << '\n'
+		     << "# radial_bins = " << edges.size() - 1 << '\n'
+		     << "# jackknife_blocks = " << RESIDENCE_JACKKNIFE_BLOCKS << '\n'
+		     << "# jackknife_assignment = splitmix64(base_seed,rank,trajectory_id)%64\n"
+		     << "# captured_residence = first capture to validated matching-surface escape or outer removal\n"
+		     << "# ever_captured_path = recorded inbound + pre-capture + residence + outgoing; includes outer removals\n"
+		     << "# never_captured_path = complete recorded paths of all completed never-captured histories\n"
+		     << "# second_moments = sum of per-history bin times squared after path components are combined\n"
+		     << "# normalization = independent fixed-injection Capture supplies p_cap; captured moments use N_residence_samples; never-captured moments use N_never_captured; failed histories are excluded\n"
+		     << "# block_count_columns = block N_injected N_ever_captured N_never_captured N_residence_samples\n";
+		for(std::size_t block = 0; block < RESIDENCE_JACKKNIFE_BLOCKS; ++block)
+			file << "# block_count = " << block << ' ' << jackknife_attempted_counts[block]
+			     << ' ' << jackknife_captured_counts[block] << ' ' << jackknife_completed_escape_counts[block]
+			     << ' ' << jackknife_residence_sample_counts[block] << '\n';
+		file << "# columns = block bin r_low_rsun r_high_rsun captured_residence_dt_sum_s captured_residence_dt_sq_sum_s2 captured_residence_v2dt_sum_km2_s ever_captured_path_dt_sum_s ever_captured_path_dt_sq_sum_s2 never_captured_path_dt_sum_s never_captured_path_dt_sq_sum_s2\n";
+		for(std::size_t block = 0; block < RESIDENCE_JACKKNIFE_BLOCKS; ++block)
+			for(std::size_t bin = 0; bin + 1 < edges.size(); ++bin)
+			{
+				const auto index = bin * RESIDENCE_JACKKNIFE_BLOCKS + block;
+				file << block << '\t' << bin << '\t' << edges[bin] / R_SUN_KM << '\t' << edges[bin + 1] / R_SUN_KM;
+				for(const auto* histogram : {&captured_residence_block_dt, &captured_residence_block_dt_sq,
+				     &captured_residence_block_v2dt, &ever_captured_path_block_dt, &ever_captured_path_block_dt_sq,
+				     &never_captured_path_block_dt, &never_captured_path_block_dt_sq})
+				{
+					const double moment = value(*histogram, index);
+					if(!std::isfinite(moment) || moment < 0.0)
+						throw std::runtime_error("nonfinite or negative bincount moment");
+					file << '\t' << moment;
+				}
+				file << '\n';
+			}
+		file.flush();
+		const bool written = file.good();
+		file.close();
+		if(!written || file.fail()) throw std::runtime_error("cannot write temporary bincount.tsv");
+		if(std::rename(temporary.c_str(), path.c_str()) != 0)
+			throw std::runtime_error("cannot publish bincount.tsv");
+	}
+	catch(...)
+	{
+		std::remove(temporary.c_str());
+		throw;
+	}
 }
+
 
 }	// namespace DaMaSCUS_SUN

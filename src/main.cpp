@@ -5,6 +5,7 @@
 #include <cstring>	 // for strlen
 #include <exception>
 #include <iostream>
+#include <memory>
 #include <mpi.h>
 
 #include "libphysica/Natural_Units.hpp"
@@ -31,13 +32,32 @@ int main(int argc, char* argv[])
 	MPI_Comm_size(MPI_COMM_WORLD, &mpi_processes);
 	MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
 
-	if(argc < 2)
+	if(argc < 2 || argc > 4)
 	{
 		if(mpi_rank == 0)
-			std::cerr << "Usage: " << argv[0] << " <config.cfg>" << std::endl;
+			std::cerr << "Usage: " << argv[0] << " <config.cfg> [--diagnostic | --thermal-validation]" << std::endl;
 		MPI_Finalize();
 		return 1;
 	}
+
+	bool diagnostic = false, thermal_validation = false;
+	for(int argument = 2; argument < argc; ++argument)
+	{
+		const std::string option = argv[argument];
+		if(option == "--diagnostic") diagnostic = true;
+		else if(option == "--thermal-validation") thermal_validation = true;
+		else
+		{
+			if(mpi_rank == 0) std::cerr << "Unknown option: " << option << std::endl;
+			MPI_Finalize(); return 1;
+		}
+	}
+	// Keep library/configuration progress away from the machine-readable Capture record.
+	struct LogStreamScope
+	{
+		std::streambuf* original = std::cout.rdbuf(std::cerr.rdbuf());
+		~LogStreamScope() { std::cout.rdbuf(original); }
+	} log_stream;
 
 	// Initial terminal output
 	auto time_start	  = std::chrono::system_clock::now();
@@ -53,7 +73,19 @@ int main(int argc, char* argv[])
 				  << "MPI processes:\t" << mpi_processes << std::endl;
 
 	// Configuration parameters
-	Configuration cfg(argv[1], mpi_rank);
+	std::unique_ptr<Configuration> configuration;
+	try
+	{
+		configuration.reset(new Configuration(argv[1], mpi_rank, diagnostic, thermal_validation));
+	}
+	catch(const std::exception& error)
+	{
+		if(mpi_rank == 0) std::cerr << "Error: " << error.what() << std::endl;
+		MPI_Finalize(); return 1;
+	}
+	Configuration& cfg = *configuration;
+	if(!cfg.capture_mode) std::cout.rdbuf(log_stream.original);
+	if(cfg.diagnostic_mode) g_top_level_dir += "diagnostics/";
 	if(cfg.snapshot_config.enabled && mpi_thread_provided < MPI_THREAD_FUNNELED)
 	{
 		if(mpi_rank == 0)
@@ -84,6 +116,8 @@ int main(int argc, char* argv[])
 		double u_min = 0.0;
 		Simulation_Data data_set(cfg.sample_size, cfg.max_trajectories, u_min, cfg.isoreflection_rings);
 		data_set.physical_config_json = cfg.Physical_Configuration_JSON();
+		data_set.physical_config_header = cfg.Physical_Configuration_Header();
+		data_set.diagnostic_output_enabled = cfg.diagnostic_mode;
 		data_set.Configure(TRAJECTORY_BOUNDARY_RSUN * rSun, 1, cfg.maximum_number_of_scatterings);
 		data_set.Configure_Trajectory_Diagnostics(cfg.trajectory_diagnostic_config);
 		const std::string output_prefix = "results_";
@@ -109,24 +143,6 @@ int main(int argc, char* argv[])
 		};
 		if(!cfg.capture_mode && !root_output_succeeded([&]() {
 			data_set.Prepare_Output_Directory(output_path);
-			const std::string legacy_config = output_path + "input.cfg";
-			errno = 0;
-			if(std::remove(legacy_config.c_str()) != 0 && errno != ENOENT)
-				throw std::runtime_error("Cannot remove legacy output configuration");
-			if(cfg.production_mode)
-			{
-				for(const char* name : {"run_metadata.json", "diagnostic_trajectory_summary.tsv",
-				    "trajectory_events.tsv", "invalid_trajectories.tsv", "capture_summary.json",
-				    "bincount.txt", "captured_bincount.txt", "not_captured_bincount.txt",
-				    "residence_jackknife_blocks.tsv", "evaporation_times.txt",
-				    "evaporation_diagnostics.txt", "evaporation_summary.txt",
-				    "evaporation_mode_summary.txt", "evaporation_mode_bincount.txt", "computation_time_summary.txt"})
-				{
-					const std::string path = output_path + name;
-					if(std::remove(path.c_str()) != 0 && errno != ENOENT)
-						throw std::runtime_error("Cannot remove stale diagnostic output " + path);
-				}
-			}
 		}))
 		{
 			MPI_Finalize();
@@ -145,36 +161,34 @@ int main(int argc, char* argv[])
 		data_set.outer_removal_radius_rsun = cfg.outer_removal_radius_rsun;
 		data_set.interpolation_points = cfg.interpolation_points;
 		data_set.thermal_shape_run = cfg.thermal_validation_mode;
-		data_set.abort_on_invalid_trajectory = cfg.production_mode;
 		data_set.Generate_Data(*cfg.DM, SSM, *cfg.DM_distr, cfg.snapshot_config, cfg.fixed_seed, cfg.capture_mode);
 		if(cfg.capture_mode)
 		{
 			data_set.Print_Capture_Mode_Summary(mpi_rank);
 			if(!root_output_succeeded([&]() {
+				std::cout.rdbuf(log_stream.original);
 				data_set.Print_Capture_Result_JSON(*cfg.DM, *cfg.DM_distr);
 			})) { MPI_Finalize(); return 1; }
-			const bool accepted = data_set.Production_Ready();
+			const bool target_reached = data_set.Target_Reached();
 			MPI_Finalize();
-			return accepted ? 0 : 2;
+			return target_reached ? 0 : 2;
 		}
 		data_set.Print_Summary(mpi_rank);
 
-		// Legacy products and replay ledgers are local diagnostic outputs.
-		if(!cfg.production_mode && !root_output_succeeded([&]() {
-			data_set.Write_Output_Files(output_path, *cfg.DM);
-		}))
+		if(cfg.diagnostic_mode)
 		{
-			MPI_Finalize();
-			return 1;
+			if(!root_output_succeeded([&]() { data_set.Write_Diagnostic_Output(output_path, *cfg.DM); }))
+			{ MPI_Finalize(); return 1; }
 		}
-
-		if(!root_output_succeeded([&]() {
-			data_set.Write_Transport_Products(output_path, *cfg.DM, *cfg.DM_distr, SSM);
-		})) { MPI_Finalize(); return 1; }
-		if(cfg.production_mode && !data_set.Production_Ready())
+		else
 		{
-			if(mpi_rank == 0) std::cerr << "Production rejected: incomplete histories, failed trajectories, or unmet target. See metadata.json." << std::endl;
-			MPI_Finalize(); return 2;
+			if(!root_output_succeeded([&]() { data_set.Write_Bincount(output_path, *cfg.DM, *cfg.DM_distr); }))
+			{ MPI_Finalize(); return 1; }
+			if(!data_set.Target_Reached())
+			{
+				if(mpi_rank == 0) std::cerr << "Transport target not reached within the configured trajectory budget. See bincount.tsv." << std::endl;
+				MPI_Finalize(); return 2;
+			}
 		}
 
 	}

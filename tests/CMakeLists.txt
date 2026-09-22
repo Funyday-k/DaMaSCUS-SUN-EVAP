@@ -277,29 +277,15 @@ add_test(NAME test_Transport_Contract COMMAND test_Transport_Contract WORKING_DI
 set_tests_properties(test_Transport_Contract PROPERTIES TIMEOUT 30 LABELS "physics-validation;unit")
 
 if(Python3_Interpreter_FOUND)
-  execute_process(COMMAND ${Python3_EXECUTABLE} -c "import numpy, scipy" RESULT_VARIABLE HAVE_TRANSPORT_PYTHON OUTPUT_QUIET ERROR_QUIET)
-  if(HAVE_TRANSPORT_PYTHON EQUAL 0)
-    add_test(NAME test_Transport_Analysis COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/test_analyze_point.py)
-    set_tests_properties(test_Transport_Analysis PROPERTIES TIMEOUT 30 LABELS "physics-validation;unit")
-  endif()
-endif()
-
-if(Python3_Interpreter_FOUND)
-  set(PRODUCTION_ANALYSIS_ARG)
-  if(HAVE_TRANSPORT_PYTHON EQUAL 0)
-    set(PRODUCTION_ANALYSIS_ARG --analyze)
-  endif()
   add_test(NAME test_Production_Contract
     COMMAND ${Python3_EXECUTABLE} ${TESTS_DIR}/test_production_contract.py
-      --program $<TARGET_FILE:DaMaSCUS-SUN> --replay $<TARGET_FILE:replay-invalid-trajectory>
-      ${PRODUCTION_ANALYSIS_ARG})
+      --program $<TARGET_FILE:DaMaSCUS-SUN> --replay $<TARGET_FILE:replay-invalid-trajectory>)
   set_tests_properties(test_Production_Contract PROPERTIES TIMEOUT 180 LABELS "output;production")
   if(MPIEXEC_EXECUTABLE AND MPIEXEC_NUMPROC_FLAG AND MPIEXEC_MAX_NUMPROCS GREATER_EQUAL 3)
     add_test(NAME test_Production_Contract_MPI_3Ranks
       COMMAND ${Python3_EXECUTABLE} ${TESTS_DIR}/test_production_contract.py
         --program $<TARGET_FILE:DaMaSCUS-SUN> --replay $<TARGET_FILE:replay-invalid-trajectory>
-        --mpiexec ${MPIEXEC_EXECUTABLE} --numproc-flag=${MPIEXEC_NUMPROC_FLAG} --ranks 3
-        ${PRODUCTION_ANALYSIS_ARG})
+        --mpiexec ${MPIEXEC_EXECUTABLE} --numproc-flag=${MPIEXEC_NUMPROC_FLAG} --ranks 3)
     set_tests_properties(test_Production_Contract_MPI_3Ranks PROPERTIES
       TIMEOUT 180 PROCESSORS 3 RUN_SERIAL TRUE LABELS "output;production;mpi")
   endif()

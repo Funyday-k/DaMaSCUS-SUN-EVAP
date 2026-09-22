@@ -57,9 +57,4 @@
 
 !/scripts/
 /scripts/*
-!/scripts/analyze_point.py
-!/scripts/analyze_thermal.py
 !/scripts/prepare_transport_runs.py
-!/scripts/halo_focused_density.py
-!/scripts/summarize_transport_scan.py
-!/scripts/test_analyze_point.py

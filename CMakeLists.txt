@@ -72,16 +72,15 @@ if(DAMASCUS_ENABLE_NATIVE_ARCH)
   endif()
 endif()
 
-# Fingerprint shipped numerical/build inputs only. Ignored local analysis scripts
-# must not make an otherwise identical clean checkout scientifically incompatible.
+# Fingerprint shipped numerical/build inputs only. Analysis is maintained in the
+# sibling DaMaSCUS-SUN repository and does not affect this production executable.
 file(GLOB DAMASCUS_HASH_FILES CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/*.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/cmake/*.cmake")
 foreach(relative_file IN ITEMS CMakeLists.txt src/CMakeLists.txt tests/CMakeLists.txt
     include/version.hpp.in data/model_agss09.dat
-    scripts/analyze_point.py scripts/analyze_thermal.py scripts/prepare_transport_runs.py
-    scripts/halo_focused_density.py scripts/summarize_transport_scan.py)
+    scripts/prepare_transport_runs.py)
   list(APPEND DAMASCUS_HASH_FILES "${CMAKE_CURRENT_SOURCE_DIR}/${relative_file}")
 endforeach()
 list(SORT DAMASCUS_HASH_FILES)

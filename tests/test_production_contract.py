@@ -9,7 +9,6 @@ import math
 from pathlib import Path
 import re
 import subprocess
-import sys
 import tempfile
 
 
@@ -21,7 +20,6 @@ def main() -> None:
     parser.add_argument('--mpiexec')
     parser.add_argument('--numproc-flag',default='-np')
     parser.add_argument('--ranks',type=int,default=1)
-    parser.add_argument('--analyze',action='store_true')
     args=parser.parse_args()
     repo=Path(__file__).resolve().parents[1]
     template=(repo/'examples/quickstart.cfg').read_text()
@@ -132,19 +130,7 @@ def main() -> None:
         assert 'original_termination_reason=max_scatterings' in replay.stdout
         assert 'replay_scatterings=1' in replay.stdout
 
-        if args.analyze:
-            result=subprocess.run([sys.executable,str(repo/'scripts/analyze_point.py'),str(product),
-                                   '--capture-log',str(root/'capture.out'),'--no-plots'],
-                                  cwd=root,capture_output=True,text=True,timeout=30)
-            assert result.returncode==0,result.stderr
-            derived=json.loads((product/'derived.json').read_text())
-            assert derived['population_density']['N_inj']==meta['N_inj']
-            assert (product/'tables/number_density.tsv').is_file()
-            assert math.isclose(derived['central']['C_s_inv'],cap['C_capture_s_inv'])
-            for key in ['C_s_inv','Gamma_tot_s_inv','I_out_s2_cm3']:
-                assert math.isfinite(derived['central'][key])
-                assert math.isfinite(derived['jackknife_se'][key])
-        print(f'{args.ranks} rank(s): capture, failure, transport, local replay and analysis contracts passed')
+        print(f'{args.ranks} rank(s): capture, failure, transport and local replay contracts passed')
 
 
 if __name__=='__main__':

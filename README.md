@@ -249,44 +249,23 @@ incident/outgoing reference radius (captured bound orbits extend to the removal
 radius); outer removals end at that boundary. `block_counts.tsv` carries injected
 and completed counts for both populations, which must sum to all injections.
 
-The analyzer writes `tables/number_density.tsv` and `figure/number_density.{pdf,png}`
-(linear radius from 0--10 solar radii and logarithmic density):
-both populations use `C_geom * sum(dt) / N_inj / shell_volume`, and total is their
-sum. These are densities of the simulated solar-intersecting population, not a
-full halo including non-intersecting trajectories. Classification refers to the
-whole history, not instantaneous binding energy. The existing `captured_dt_s`
-and `tables/radial_profile.tsv` retain their first-capture-to-escape/removal meaning
-and independent Capture normalization for residence/lifetime analysis. Legacy
-schema-10 outputs without the population marker cannot supply the complete
-three-curve plot; rerun Transport to obtain the missing contributions.
+Data analysis and plotting code is maintained in the sibling DaMaSCUS-SUN
+repository under `../DaMaSCUS-SUN/scripts/`. This EVAP
+repository only produces the server-side Capture stdout record and reduced
+Transport products described above.
 
-`figure/annihilation_distribution.{pdf,png}` shows `dGamma/d(r/R_sun)` over the
-same linear radial range on a logarithmic vertical axis, with captured--captured,
-uncaptured--uncaptured, cross and total terms.
-It uses the configured `--sigma-v` (default `3e-26` cm³/s) and the full-path density
-above: `Gamma_bin = 0.5 * sigma_v * (n_C + n_U)^2 * shell_volume`. Rates are
-calculated on native shells and summed before display rebinning. Native shell
-rates and plotted radial rates are saved in `tables/population_annihilation.tsv`
-and `tables/annihilation_distribution_plot.tsv`. This empirical squared-density
-estimate includes finite-sample bias; it is separate from the captured-residence
-annihilation source in `annihilation_source.json`.
-
-Analyze locally with an independent capture log or an extracted JSON record:
+Generate server configurations with:
 
 ```bash
-python scripts/analyze_point.py TRANSPORT_DIR --capture-log logs/capture.out
-# Alternatively: --capture-json capture_result.json
 python scripts/prepare_transport_runs.py campaign --phase pilot
 ```
 
 The generator writes `configs/POINT/seedN/{capture,transport}.cfg` and a manifest
 with log paths under `logs/` and transport destinations under `results/`.
 Capture disables snapshots; transport enables them. Both production configurations
-disable trajectory diagnostics. No jobs are launched by the generator.
-The analyzer requires schema 10 plus capture schema 1, checks physics, solar-model
-identifier, numerical settings and disjoint rank seeds, and combines independent
-capture/transport delete-block jackknife uncertainties. Hashes are not validated.
-Analyze older schema 8/9 data using the code revision that produced it.
+disable trajectory diagnostics. No jobs are launched by the generator. Copy the
+Capture Slurm log and reduced Transport directory to the local DaMaSCUS-SUN
+analysis workspace after the server jobs finish.
 
 Local transport (`production_mode = false`) also supports the legacy products below.
 Enable `trajectory_summary_enabled`, `trajectory_events_enabled`, and

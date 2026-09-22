@@ -30,7 +30,7 @@ def main() -> None:
         root=Path(tmp)
 
         def run(name: str, **changes: str) -> tuple[subprocess.CompletedProcess,Path,Path]:
-            """Write an external cfg and launch it, preserving stdout for the analyzer."""
+            """Write an external cfg and launch it for output-contract checks."""
             output=root/name
             settings={'run_mode':'"Capture"','sample_size':'128','max_trajectories':'0',
                       'DM_cross_section_nucleon':'1.0e-32','fixed_seed':'20260921',

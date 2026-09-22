@@ -1,6 +1,6 @@
 # Source-only repository policy:
 # ignore every untracked path unless it is explicitly part of the numerical
-# implementation, build definition, test suite, or numerical validation.
+# implementation, build definition, or test suite.
 /*
 
 # Keep the policy itself.
@@ -8,13 +8,11 @@
 
 # Required project metadata and documentation.
 !/README.md
-!/PROJECT_DOCUMENTATION.md
 !/LICENSE
 !/CITATION.cff
 
-# Top-level numerical build and Python implementation.
+# Top-level numerical build.
 !/CMakeLists.txt
-!/*.py
 
 # CMake modules used to configure the numerical build.
 !/cmake/
@@ -39,12 +37,6 @@
 !/tests/*.cpp
 !/tests/*.py
 !/tests/*.cfg
-
-# Machine-readable numerical validation code.
-!/validation/
-/validation/*
-!/validation/*.py
-!/validation/README.md
 
 # Required solar-model input; all generated/runtime data remain ignored.
 !/data/

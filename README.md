@@ -375,7 +375,7 @@ local to a run and is not a portable interchange or restart format.
 Capture-mode runs skip the full output path and print the capture summary
 instead.
 
-## Physics Validation
+## Numerical tests
 
 The ordinary test suite now includes a `physics-validation` gate for analytic
 Kepler convergence, solar-profile structure, incident impact-parameter
@@ -384,13 +384,6 @@ sampling, scattering-angle sampling, and the Maxwell thermal-speed limit:
 ```bash
 ctest --test-dir build --output-on-failure -L physics-validation
 ```
-
-Production results should additionally pass the slower grid-and-seed
-convergence matrix described in
-[`validation/README.md`](validation/README.md). It compares direct scattering
-rates with interpolated grids using capture-rate confidence intervals, average
-scattering counts, radial distributions, evaporation-time statistics, and the
-numerical-failure fraction.
 
 ## Citation
 

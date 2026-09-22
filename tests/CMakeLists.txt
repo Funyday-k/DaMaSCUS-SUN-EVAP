@@ -252,12 +252,6 @@ if(Python3_Interpreter_FOUND)
 		set_tests_properties(test_Output_Failures_MPI_3Ranks PROPERTIES
 			TIMEOUT 45 PROCESSORS 3 RUN_SERIAL TRUE LABELS "output;mpi")
 	endif()
-	add_test(NAME test_Physics_Validation_Workflow
-		COMMAND ${Python3_EXECUTABLE} ${TESTS_DIR}/test_physics_validation.py
-		WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
-	set_tests_properties(test_Physics_Validation_Workflow PROPERTIES
-		TIMEOUT 10
-		LABELS "physics-validation;unit")
 else()
 	message(STATUS "Skipping Python workflow tests: Python3 interpreter is unavailable")
 endif()

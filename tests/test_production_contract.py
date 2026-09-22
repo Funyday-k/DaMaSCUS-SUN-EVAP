@@ -59,11 +59,13 @@ def main() -> None:
         assert result.returncode == 0, result.stderr
         assert capture_record(result)['N_inj'] == 128
         assert not output.exists()
-        result, output, _ = run('failed_capture', max_trajectory_wall_time_sec='1e-12')
-        assert result.returncode == 0, result.stderr
+        result, output, _ = run('failed_capture', max_trajectories='128',
+                                max_trajectory_wall_time_sec='1e-12')
+        assert result.returncode == 2, result.stderr
         failed = capture_record(result)
-        assert failed['target_reached'] is True and failed['N_computational_failures'] == 128
-        assert failed['N_inj'] == 128 and not output.exists()
+        assert failed['target_reached'] is False and failed['N_computational_failures'] == 128
+        assert failed['N_attempted'] == 128 and failed['N_inj'] == 0
+        assert failed['N_unclassified'] == 128 and not output.exists()
 
         for name, snapshot_enabled in (('transport', 'true'), ('no_snapshot', 'false')):
             result, output, _ = run(name, run_mode='"Parameter point"', sample_size='64', snapshot_enabled=snapshot_enabled)

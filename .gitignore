@@ -54,7 +54,3 @@
 !/examples/
 /examples/*
 !/examples/*.cfg
-
-!/scripts/
-/scripts/*
-!/scripts/prepare_transport_runs.py

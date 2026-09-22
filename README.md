@@ -260,18 +260,9 @@ repository under `../DaMaSCUS-SUN/scripts/`. This EVAP
 repository only produces the server-side Capture stdout record and reduced
 Transport products described above.
 
-Generate server configurations with:
-
-```bash
-python scripts/prepare_transport_runs.py campaign --phase pilot
-```
-
-The generator writes `configs/POINT/seedN/{capture,transport}.cfg` and a manifest
-with log paths under `logs/` and transport destinations under `results/`.
-Capture disables snapshots; transport enables them. Both production configurations
-disable trajectory diagnostics. No jobs are launched by the generator. Copy the
-Capture Slurm log and reduced Transport directory to the local DaMaSCUS-SUN
-analysis workspace after the server jobs finish.
+Keep campaign configurations, scheduler scripts and manifests outside this
+repository. After the server jobs finish, copy the Capture Slurm log and reduced
+Transport directory to the local DaMaSCUS-SUN analysis workspace.
 
 Local transport (`production_mode = false`) also supports the legacy products below.
 Enable `trajectory_summary_enabled`, `trajectory_events_enabled`, and

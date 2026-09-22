@@ -79,8 +79,7 @@ file(GLOB DAMASCUS_HASH_FILES CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/include/*.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/cmake/*.cmake")
 foreach(relative_file IN ITEMS CMakeLists.txt src/CMakeLists.txt tests/CMakeLists.txt
-    include/version.hpp.in data/model_agss09.dat
-    scripts/prepare_transport_runs.py)
+    include/version.hpp.in data/model_agss09.dat)
   list(APPEND DAMASCUS_HASH_FILES "${CMAKE_CURRENT_SOURCE_DIR}/${relative_file}")
 endforeach()
 list(SORT DAMASCUS_HASH_FILES)

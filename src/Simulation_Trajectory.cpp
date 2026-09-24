@@ -2292,13 +2292,35 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 		}
 
 		if(v_after > v_max)
-			{
-				std::cerr << "\nWarning in Propagate_Freely(): DM speed exceeds the maximum of v_max = " << v_max << std::endl
-						  << "\tAbort simulation." << std::endl;
-				current_event = to_absolute_event(particle_propagator.Event_In_3D());
-				return TrajectoryTerminationReason::SpeedLimit;
-			}
+		{
+				// v_max = 0.75 c is a numerical safety guard.
+				// A trajectory exceeding this limit is non-physical and
+				// is excluded from valid survival and residence statistics.
+				std::cerr
+					<< "\nWarning in Propagate_Freely(): "
+					<< "DM speed exceeds numerical guard v_max = "
+					<< v_max
+					<< " (rank=" << current_mpi_rank
+					<< ", traj=" << current_trajectory_id
+					<< ", r_km=" << In_Units(r_after, km)
+					<< ", v_km_s=" << In_Units(v_after, km / sec)
+					<< ", dt_s=" << In_Units(actual_dt, sec)
+					<< "). Marking this trajectory as a "
+					<< "speed-limit numerical failure."
+					<< std::endl;
 
+				current_event = to_absolute_event(
+					particle_propagator.Event_In_3D()
+				);
+
+				current_bincount.failure_attempted_step_s =
+					In_Units(propagator_state_before.time_step, sec);
+
+				current_bincount.failure_accepted_step_s =
+					In_Units(actual_dt, sec);
+
+				return TrajectoryTerminationReason::SpeedLimit;
+		}
 		if(abort_if_wall_time_exceeded("after_rk45_step"))
 		{
 			commit_accepted_event(event_after);

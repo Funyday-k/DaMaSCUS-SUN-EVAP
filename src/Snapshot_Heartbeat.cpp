@@ -26,7 +26,8 @@ SnapshotHeartbeat::SnapshotHeartbeat(
 	const std::string& rank_snapshot_dir,
 	double snapshot_interval,
 	double mass_gev,
-	double sigma_cm2)
+	double sigma_cm2,
+	double output_radius_rsun)
 : shared_state_(shared_state),
   mpi_rank_(mpi_rank),
   mpi_processes_(mpi_processes),
@@ -36,10 +37,13 @@ SnapshotHeartbeat::SnapshotHeartbeat(
   snapshot_interval_(snapshot_interval),
   mass_gev_(mass_gev),
   sigma_cm2_(sigma_cm2),
+  output_radius_rsun_(output_radius_rsun),
   missed_tolerance_sec_(std::max(1.0, 0.1 * snapshot_interval))
 {
 	if(!IsValidSnapshotIntervalSeconds(snapshot_interval_))
 		throw std::invalid_argument("SnapshotHeartbeat: snapshot interval must be a positive integer number of seconds.");
+	if(!std::isfinite(output_radius_rsun_) || output_radius_rsun_ <= BIN_MAX_KM / R_SUN_KM)
+		throw std::invalid_argument("SnapshotHeartbeat: output radius must be finite and exceed 1.1 R_sun.");
 }
 
 SnapshotHeartbeat::~SnapshotHeartbeat()
@@ -61,7 +65,6 @@ bool SnapshotHeartbeat::Start(const std::chrono::steady_clock::time_point& epoch
 	merge_caches_.clear();
 	highest_snapshot_index_seen_ = 0;
 	last_retry_merge_index_ = 0;
-	first_uncommitted_evaporation_entry_ = 0;
 	last_rank_snapshot_written_ = 0;
 	try
 	{
@@ -92,7 +95,7 @@ void SnapshotHeartbeat::MarkDoneAndWriteFinal(double computing_time_sec)
 	Stop();
 	try
 	{
-		SnapshotRankState final_state = shared_state_.CopyFinal(computing_time_sec, first_uncommitted_evaporation_entry_);
+		SnapshotRankState final_state = shared_state_.CopyFinal(computing_time_sec);
 		final_state.snapshot_index = last_rank_snapshot_written_;
 		if(!WriteSnapshotRankState(SnapshotRankFinalPath(rank_snapshot_dir_, mpi_rank_), final_state))
 		{
@@ -288,18 +291,7 @@ bool SnapshotHeartbeat::WriteRankCheckpoint(
 	bool& deadline_missed)
 {
 	deadline_missed = false;
-	size_t evaporation_entry_end = first_uncommitted_evaporation_entry_;
-	// Publish at most one budget worth of completed events per checkpoint. The
-	// remainder is published by a later checkpoint, whose window filter admits
-	// earlier completion times, so a backlog drains instead of ratcheting up
-	// until every write exceeds the size the reader accepts.
-	SnapshotRankState state = shared_state_.CopyForSnapshot(
-		snapshot_index,
-		actual_elapsed_sec,
-		target_wall_sec,
-		first_uncommitted_evaporation_entry_,
-		evaporation_entry_end,
-		SnapshotEvaporationEventsPerCheckpoint());
+	SnapshotRankState state = shared_state_.CopyForSnapshot(snapshot_index, actual_elapsed_sec);
 	state.snapshot_index = snapshot_index;
 	state.rank_elapsed_wall_sec = ElapsedSinceStart();
 	if(state.rank_elapsed_wall_sec > target_wall_sec + missed_tolerance_sec_)
@@ -311,7 +303,6 @@ bool SnapshotHeartbeat::WriteRankCheckpoint(
 	const std::string checkpoint_path = SnapshotRankCheckpointPath(rank_snapshot_dir_, mpi_rank_, snapshot_index, snapshot_interval_);
 	if(WriteSnapshotRankState(checkpoint_path, state))
 	{
-		first_uncommitted_evaporation_entry_ = evaporation_entry_end;
 		last_rank_snapshot_written_ = snapshot_index;
 		return true;
 	}
@@ -350,7 +341,8 @@ SnapshotMergeResult SnapshotHeartbeat::TryMergeIndex(int snapshot_index, bool al
 		mass_gev_,
 		sigma_cm2_,
 		AcquireMergeCache(snapshot_index),
-		allow_partial);
+		allow_partial,
+		output_radius_rsun_);
 	if(result.status == SnapshotMergeStatus::Merged)
 		merge_caches_.erase(snapshot_index);
 	return result;

@@ -62,19 +62,7 @@ std::string ReadAll(const std::string& path)
 	return contents.str();
 }
 
-size_t CountOccurrences(const std::string& contents, const std::string& needle)
-{
-	size_t count = 0;
-	size_t position = 0;
-	while((position = contents.find(needle, position)) != std::string::npos)
-	{
-		count++;
-		position += needle.size();
-	}
-	return count;
-}
-
-bool ReadHistogramBin(const std::string& path, int requested_bin, std::array<double, 4>& values)
+bool ReadHistogramBin(const std::string& path, int requested_bin, std::array<double, 8>& values)
 {
 	std::ifstream file(path);
 	std::string line;
@@ -91,7 +79,10 @@ bool ReadHistogramBin(const std::string& path, int requested_bin, std::array<dou
 		for(double& value : values)
 			row >> value;
 		if(bin == requested_bin)
-			return static_cast<bool>(row);
+		{
+			std::string extra;
+			return static_cast<bool>(row) && !(row >> extra);
+		}
 	}
 	return false;
 }
@@ -116,11 +107,14 @@ SnapshotRankState MakeMergeState(uint64_t run_id, int rank)
 		state.captured_dt_sq_hist[0] = value * value;
 		state.captured_v2dt_sq_hist[0] = 100.0 * value * value;
 	}
-	SnapshotEvaporationProgressEntry event;
-	event.trajectory_id = static_cast<uint64_t>(100 + rank);
-	event.completion_wall_time_sec = value;
-	event.lifetime_unbinding_sec = static_cast<double>(4 - rank);
-	state.new_evaporation_events.push_back(event);
+	else
+	{
+		state.bincount_never_captured_samples = 1;
+		state.never_captured_path_dt_hist[0] = value;
+		state.never_captured_path_v2dt_hist[0] = 10.0 * value;
+		state.never_captured_path_dt_sq_hist[0] = value * value;
+		state.never_captured_path_v2dt_sq_hist[0] = 100.0 * value * value;
+	}
 	return state;
 }
 
@@ -149,16 +143,11 @@ SnapshotRankState MakeRoundTripState(uint64_t run_id)
 	state.captured_dt_sq_hist[1] = 4.0;
 	state.captured_v2dt_sq_hist[1] = 400.0;
 
-	SnapshotEvaporationProgressEntry first;
-	first.trajectory_id = 41;
-	first.completion_wall_time_sec = 5.0;
-	first.lifetime_unbinding_sec = 9.0;
-	state.new_evaporation_events.push_back(first);
-	SnapshotEvaporationProgressEntry second;
-	second.trajectory_id = 42;
-	second.completion_wall_time_sec = 7.5;
-	second.lifetime_unbinding_sec = 8.0;
-	state.new_evaporation_events.push_back(second);
+	state.bincount_never_captured_samples = 1;
+	state.never_captured_path_dt_hist[2] = 3.0;
+	state.never_captured_path_v2dt_hist[2] = 30.0;
+	state.never_captured_path_dt_sq_hist[2] = 9.0;
+	state.never_captured_path_v2dt_sq_hist[2] = 900.0;
 	return state;
 }
 
@@ -186,16 +175,11 @@ void ExpectStatesEqual(const SnapshotRankState& expected, const SnapshotRankStat
 	EXPECT_EQ(expected.captured_v2dt_hist, actual.captured_v2dt_hist);
 	EXPECT_EQ(expected.captured_dt_sq_hist, actual.captured_dt_sq_hist);
 	EXPECT_EQ(expected.captured_v2dt_sq_hist, actual.captured_v2dt_sq_hist);
-	ASSERT_EQ(expected.new_evaporation_events.size(), actual.new_evaporation_events.size());
-	for(size_t index = 0; index < expected.new_evaporation_events.size(); index++)
-	{
-		EXPECT_EQ(expected.new_evaporation_events[index].trajectory_id, actual.new_evaporation_events[index].trajectory_id);
-		EXPECT_DOUBLE_EQ(expected.new_evaporation_events[index].completion_wall_time_sec, actual.new_evaporation_events[index].completion_wall_time_sec);
-		EXPECT_DOUBLE_EQ(expected.new_evaporation_events[index].lifetime_unbinding_sec, actual.new_evaporation_events[index].lifetime_unbinding_sec);
-		EXPECT_DOUBLE_EQ(expected.new_evaporation_events[index].r_capture_rsun, actual.new_evaporation_events[index].r_capture_rsun);
-		EXPECT_DOUBLE_EQ(expected.new_evaporation_events[index].E_capture_eV, actual.new_evaporation_events[index].E_capture_eV);
-		EXPECT_DOUBLE_EQ(expected.new_evaporation_events[index].dE_capture_eV, actual.new_evaporation_events[index].dE_capture_eV);
-	}
+	EXPECT_EQ(expected.bincount_never_captured_samples, actual.bincount_never_captured_samples);
+	EXPECT_EQ(expected.never_captured_path_dt_hist, actual.never_captured_path_dt_hist);
+	EXPECT_EQ(expected.never_captured_path_v2dt_hist, actual.never_captured_path_v2dt_hist);
+	EXPECT_EQ(expected.never_captured_path_dt_sq_hist, actual.never_captured_path_dt_sq_hist);
+	EXPECT_EQ(expected.never_captured_path_v2dt_sq_hist, actual.never_captured_path_v2dt_sq_hist);
 }
 
 class SnapshotIOTest : public ::testing::Test
@@ -238,7 +222,6 @@ TEST_F(SnapshotIOTest, AcceptsOnlyPositiveIntegerSnapshotIntervals)
 
 	EXPECT_EQ(20, SnapshotTimeLabelSeconds(2, 10.0));
 	EXPECT_EQ(snapshot_root + "snapshot_10s.txt", SnapshotTextFilePath(snapshot_root, 1, 10.0));
-	EXPECT_EQ(snapshot_root + "snapshot_10s_evaporation_times.txt", SnapshotEvaporationTimeFilePath(snapshot_root, 1, 10.0));
 	EXPECT_EQ(rank_snapshot_dir + "snapshot_10s_rank3.bin", SnapshotRankCheckpointPath(rank_snapshot_dir, 3, 1, 10.0));
 	EXPECT_THROW(SnapshotTimeLabelSeconds(1, 10.25), std::invalid_argument);
 
@@ -272,6 +255,16 @@ TEST_F(SnapshotIOTest, BinaryRankStateRoundTripsAndRejectsCorruption)
 
 	ASSERT_TRUE(WriteSnapshotRankState(path, expected));
 	{
+		std::fstream file(path, std::ios::binary | std::ios::in | std::ios::out);
+		ASSERT_TRUE(file.is_open());
+		file.seekp(sizeof(uint64_t));
+		const uint32_t obsolete_version = 9;
+		file.write(reinterpret_cast<const char*>(&obsolete_version), sizeof(obsolete_version));
+	}
+	EXPECT_FALSE(ReadSnapshotRankState(path, run_id, actual));
+
+	ASSERT_TRUE(WriteSnapshotRankState(path, expected));
+	{
 		std::ofstream file(path, std::ios::binary | std::ios::app);
 		ASSERT_TRUE(file.is_open());
 		const char trailing_byte = 1;
@@ -285,6 +278,24 @@ TEST_F(SnapshotIOTest, BinaryRankStateRoundTripsAndRejectsCorruption)
 	ASSERT_GT(info.st_size, 1);
 	ASSERT_EQ(0, truncate(path.c_str(), info.st_size - 1));
 	EXPECT_FALSE(ReadSnapshotRankState(path, run_id, actual));
+}
+
+TEST_F(SnapshotIOTest, BinaryRankStateRejectsInvalidNeverCapturedPopulation)
+{
+	const auto valid = MakeRoundTripState(500);
+	const std::string path = rank_snapshot_dir + "invalid_never.bin";
+	SnapshotRankState invalid = valid;
+	invalid.bincount_never_captured_samples = 2;
+	EXPECT_FALSE(WriteSnapshotRankState(path, invalid));
+	invalid = valid;
+	invalid.never_captured_path_dt_hist[0] = -1.0;
+	EXPECT_FALSE(WriteSnapshotRankState(path, invalid));
+	invalid = valid;
+	invalid.never_captured_path_v2dt_sq_hist[0] = std::numeric_limits<double>::infinity();
+	EXPECT_FALSE(WriteSnapshotRankState(path, invalid));
+	invalid = valid;
+	invalid.never_captured_path_dt_sq_hist[0] = std::numeric_limits<double>::quiet_NaN();
+	EXPECT_FALSE(WriteSnapshotRankState(path, invalid));
 }
 
 TEST_F(SnapshotIOTest, SharedStatePublishesCurrentTrajectoryProgress)
@@ -302,8 +313,7 @@ TEST_F(SnapshotIOTest, SharedStatePublishesCurrentTrajectoryProgress)
 	shared_state.UpdateCurrentScatterings(9);
 	shared_state.MarkCurrentCaptured(true);
 
-	size_t evaporation_end = 0;
-	const SnapshotRankState running = shared_state.CopyForSnapshot(1, 10.0, 10.0, 0, evaporation_end);
+	const SnapshotRankState running = shared_state.CopyForSnapshot(1, 10.0);
 	EXPECT_EQ(1, running.trajectory_in_progress);
 	EXPECT_EQ(77U, running.current_trajectory_id);
 	EXPECT_EQ(1, running.current_trajectory_captured);
@@ -320,12 +330,12 @@ TEST_F(SnapshotIOTest, SharedStatePublishesCurrentTrajectoryProgress)
 	completed.termination_reason = TrajectoryTerminationReason::OutwardEscape;
 	completed.dt_hist = dt_hist;
 	completed.v2dt_hist = v2dt_hist;
-	shared_state.RecordCompletedTrajectory(completed, true, false, {});
+	shared_state.RecordCompletedTrajectory(completed, true, false);
 	TrajectoryBincount failed;
 	failed.termination_reason = TrajectoryTerminationReason::NumericalFailure;
 	shared_state.BeginTrajectory(78, 103.0);
-	shared_state.RecordCompletedTrajectory(failed, false, false, {});
-	const SnapshotRankState idle = shared_state.CopyForSnapshot(2, 20.0, 20.0, 0, evaporation_end);
+	shared_state.RecordCompletedTrajectory(failed, false, false);
+	const SnapshotRankState idle = shared_state.CopyForSnapshot(2, 20.0);
 	EXPECT_EQ(0, idle.trajectory_in_progress);
 	EXPECT_EQ(0U, idle.current_trajectory_id);
 	EXPECT_DOUBLE_EQ(0.0, idle.current_trajectory_wall_sec);
@@ -353,10 +363,16 @@ TEST_F(SnapshotIOTest, WideHistogramRoundTripPadsShorterCompletedState)
 	SnapshotRankState actual;
 	ASSERT_TRUE(ReadSnapshotRankState(path, run_id, actual));
 	GrowRadialHistograms(outer_bin + 1, state.captured_dt_hist, state.captured_v2dt_hist,
-	                     state.captured_dt_sq_hist, state.captured_v2dt_sq_hist);
+	                     state.captured_dt_sq_hist, state.captured_v2dt_sq_hist,
+	                     state.never_captured_path_dt_hist, state.never_captured_path_v2dt_hist,
+	                     state.never_captured_path_dt_sq_hist, state.never_captured_path_v2dt_sq_hist);
 	ExpectStatesEqual(state, actual);
 	EXPECT_DOUBLE_EQ(actual.captured_dt_hist[outer_bin], 0.0);
+	EXPECT_DOUBLE_EQ(actual.never_captured_path_dt_hist[outer_bin], 0.0);
 
+	state.never_captured_path_v2dt_hist.pop_back();
+	EXPECT_FALSE(WriteSnapshotRankState(path, state));
+	state.never_captured_path_v2dt_hist.push_back(0.0);
 	state.captured_v2dt_hist.pop_back();
 	EXPECT_FALSE(WriteSnapshotRankState(path, state));
 }
@@ -412,7 +428,7 @@ TEST_F(SnapshotIOTest, TextReportListsEachMpiRankActivity)
 	ASSERT_TRUE(WriteSnapshotRankState(SnapshotRankFinalPath(rank_snapshot_dir, 3), done));
 
 	const SnapshotMergeResult merged = TryWriteSnapshot(
-		snapshot_root, rank_snapshot_dir, 1, interval, 4, run_id, 0.5, 1.0e-40, false);
+		snapshot_root, rank_snapshot_dir, 1, interval, 4, run_id, 0.5, 1.0e-40, false, 2200.0);
 	ASSERT_EQ(SnapshotMergeStatus::Merged, merged.status);
 	const std::string report = ReadAll(SnapshotTextFilePath(snapshot_root, 1, interval));
 	// The completed counters remain unchanged, while the already captured
@@ -424,6 +440,7 @@ TEST_F(SnapshotIOTest, TextReportListsEachMpiRankActivity)
 	EXPECT_NE(std::string::npos, report.find("# in_progress_bincount_captured_samples = 1"));
 	EXPECT_NE(std::string::npos, report.find("# in_progress_bincount_is_provisional = 1"));
 	EXPECT_NE(std::string::npos, report.find("# residence_bincount_samples = 1"));
+	EXPECT_NE(std::string::npos, report.find("# never_captured_bincount_samples = 0"));
 	EXPECT_NE(std::string::npos, report.find("\t4.2000000000e+01\t8.4000000000e+01\t"));
 	EXPECT_NE(std::string::npos, report.find("# [MPI rank status]"));
 	EXPECT_NE(std::string::npos, report.find(
@@ -436,7 +453,7 @@ TEST_F(SnapshotIOTest, TextReportListsEachMpiRankActivity)
 		"# 2\tidle_or_waiting\t0\t0.0000000000e+00\t0.0000000000e+00\t0\t1.0000000000e+01"));
 	EXPECT_NE(std::string::npos, report.find(
 		"# 3\tdone\t0\t0.0000000000e+00\t0.0000000000e+00\t0\t5.0000000000e+00"));
-	std::array<double, 4> values{};
+	std::array<double, 8> values{};
 	ASSERT_TRUE(ReadHistogramBin(SnapshotTextFilePath(snapshot_root, 1, interval), outer_bin, values));
 	EXPECT_DOUBLE_EQ(values[0], 42.0);
 	EXPECT_DOUBLE_EQ(values[1], 84.0);
@@ -458,12 +475,11 @@ TEST_F(SnapshotIOTest, CompletedWideOrbitRetainsExteriorResidence)
 	removed.dt_hist[outer_bin] = 12.5;
 	removed.v2dt_hist[outer_bin] = 25.0;
 	shared_state.RecordCompletedTrajectory(
-	    removed, true, false, {});
+	    removed, true, false);
 
-	size_t evaporation_end = 0;
 	const SnapshotRankState checkpoint =
 	    shared_state.CopyForSnapshot(
-	        1, interval, interval, 0, evaporation_end);
+	        1, interval);
 	ASSERT_TRUE(WriteSnapshotRankState(
 	    SnapshotRankCheckpointPath(
 	        rank_snapshot_dir, 0, 1, interval),
@@ -478,7 +494,8 @@ TEST_F(SnapshotIOTest, CompletedWideOrbitRetainsExteriorResidence)
 	    run_id,
 	    0.5,
 	    1.0e-40,
-	    false);
+	    false,
+	    2200.0);
 	ASSERT_EQ(SnapshotMergeStatus::Merged, merged.status);
 	const std::string report =
 	    ReadAll(SnapshotTextFilePath(snapshot_root, 1, interval));
@@ -506,7 +523,7 @@ TEST_F(SnapshotIOTest, IncompleteCapturedHistoriesAreExcluded)
 	censored.v2dt_hist[7] = 12.0;
 	shared_state.BeginTrajectory(9101, 0.0);
 	shared_state.RecordCompletedTrajectory(
-	    censored, true, false, {});
+	    censored, true, false);
 
 	TrajectoryBincount failed;
 	failed.is_captured = true;
@@ -517,12 +534,11 @@ TEST_F(SnapshotIOTest, IncompleteCapturedHistoriesAreExcluded)
 	shared_state.BeginTrajectory(9102, 0.0);
 	// Even an erroneous true from a caller must not admit numerical data.
 	shared_state.RecordCompletedTrajectory(
-	    failed, true, false, {});
+	    failed, true, false);
 
-	size_t evaporation_end = 0;
 	const SnapshotRankState checkpoint =
 	    shared_state.CopyForSnapshot(
-	        1, 10.0, 10.0, 0, evaporation_end);
+	        1, 10.0);
 	EXPECT_EQ(2U, checkpoint.local_captured);
 	EXPECT_EQ(2U, checkpoint.local_numerical_failures);
 	EXPECT_EQ(0U, checkpoint.bincount_captured_samples);
@@ -541,15 +557,15 @@ TEST_F(SnapshotIOTest, FourLogicalRanksProgressFromPartialToMergedWithoutDowngra
 			MakeMergeState(run_id, rank)));
 	}
 
-	const SnapshotMergeResult partial = TryWriteSnapshot(
-		snapshot_root, rank_snapshot_dir, 1, interval, 4, run_id, 0.5, 1.0e-40, true);
+	SnapshotMergeCache cache;
+	const SnapshotMergeResult partial = TryWriteSnapshotCached(
+		snapshot_root, rank_snapshot_dir, 1, interval, 4, run_id, 0.5, 1.0e-40, cache, true);
 	EXPECT_EQ(SnapshotMergeStatus::Partial, partial.status);
 	EXPECT_TRUE(partial.cleanup_succeeded);
 	EXPECT_EQ((std::vector<int>{0, 1, 2}), partial.ready_ranks);
 	EXPECT_EQ((std::vector<int>{3}), partial.missing_ranks);
 
 	const std::string report_path = SnapshotTextFilePath(snapshot_root, 1, interval);
-	const std::string evaporation_path = SnapshotEvaporationTimeFilePath(snapshot_root, 1, interval);
 	const std::string partial_report = ReadAll(report_path);
 	EXPECT_NE(std::string::npos, partial_report.find("# snapshot_status = partial"));
 	EXPECT_NE(std::string::npos, partial_report.find("# ready_ranks = 0,1,2"));
@@ -560,43 +576,45 @@ TEST_F(SnapshotIOTest, FourLogicalRanksProgressFromPartialToMergedWithoutDowngra
 	for(int rank = 0; rank < 3; rank++)
 		EXPECT_TRUE(PathExists(SnapshotRankCheckpointPath(rank_snapshot_dir, rank, 1, interval)));
 
+	const auto retried_partial = TryWriteSnapshotCached(
+		snapshot_root, rank_snapshot_dir, 1, interval, 4, run_id, 0.5, 1.0e-40, cache, true);
+	EXPECT_EQ(SnapshotMergeStatus::Partial, retried_partial.status);
+	EXPECT_EQ(partial_report, ReadAll(report_path));
+	EXPECT_EQ(1U, cache.report.snapshot_bincount_never_captured_samples);
+	EXPECT_DOUBLE_EQ(2.0, cache.report.never_captured_path_dt_hist[0]);
+
 	ASSERT_TRUE(WriteSnapshotRankState(
 		SnapshotRankCheckpointPath(rank_snapshot_dir, 3, 1, interval),
 		MakeMergeState(run_id, 3)));
-	const SnapshotMergeResult merged = TryWriteSnapshot(
-		snapshot_root, rank_snapshot_dir, 1, interval, 4, run_id, 0.5, 1.0e-40, false);
+	const SnapshotMergeResult merged = TryWriteSnapshotCached(
+		snapshot_root, rank_snapshot_dir, 1, interval, 4, run_id, 0.5, 1.0e-40, cache, false);
 	EXPECT_EQ(SnapshotMergeStatus::Merged, merged.status);
 	EXPECT_TRUE(merged.cleanup_succeeded);
 	EXPECT_EQ((std::vector<int>{0, 1, 2, 3}), merged.ready_ranks);
 	EXPECT_TRUE(merged.missing_ranks.empty());
 
 	const std::string merged_report = ReadAll(report_path);
-	const std::string merged_evaporation = ReadAll(evaporation_path);
 	EXPECT_NE(std::string::npos, merged_report.find("# snapshot_status = merged"));
 	EXPECT_NE(std::string::npos, merged_report.find("# ready_ranks = 0,1,2,3"));
 	EXPECT_NE(std::string::npos, merged_report.find("# missing_ranks = \n"));
 	EXPECT_NE(std::string::npos, merged_report.find("# total_trajectories = 4"));
 	EXPECT_NE(std::string::npos, merged_report.find("# captured_particles = 2"));
 	EXPECT_NE(std::string::npos, merged_report.find("# capture_rate_raw = 0.50000000"));
+	EXPECT_NE(std::string::npos, merged_report.find("# residence_bincount_samples = 2"));
+	EXPECT_NE(std::string::npos, merged_report.find("# never_captured_bincount_samples = 2"));
 
-	std::array<double, 4> histogram{};
+	std::array<double, 8> histogram{};
 	ASSERT_TRUE(ReadHistogramBin(report_path, 0, histogram));
 	EXPECT_DOUBLE_EQ(4.0, histogram[0]);
 	EXPECT_DOUBLE_EQ(40.0, histogram[1]);
 	EXPECT_NEAR(std::sqrt(2.0), histogram[2], 1.0e-9);
 	EXPECT_NEAR(std::sqrt(200.0), histogram[3], 1.0e-8);
 
-	const size_t rank3_event = merged_evaporation.find("3\t103\t1.0000000000e+00");
-	const size_t rank2_event = merged_evaporation.find("2\t102\t2.0000000000e+00");
-	const size_t rank1_event = merged_evaporation.find("1\t101\t3.0000000000e+00");
-	const size_t rank0_event = merged_evaporation.find("0\t100\t4.0000000000e+00");
-	ASSERT_NE(std::string::npos, rank3_event);
-	ASSERT_NE(std::string::npos, rank2_event);
-	ASSERT_NE(std::string::npos, rank1_event);
-	ASSERT_NE(std::string::npos, rank0_event);
-	EXPECT_LT(rank3_event, rank2_event);
-	EXPECT_LT(rank2_event, rank1_event);
-	EXPECT_LT(rank1_event, rank0_event);
+	EXPECT_DOUBLE_EQ(6.0, histogram[4]);
+	EXPECT_DOUBLE_EQ(60.0, histogram[5]);
+	EXPECT_NEAR(std::sqrt(2.0), histogram[6], 1.0e-9);
+	EXPECT_NEAR(std::sqrt(200.0), histogram[7], 1.0e-8);
+	EXPECT_FALSE(PathExists(snapshot_root + "snapshot_10s_evaporation_times.txt"));
 
 	for(int rank = 0; rank < 4; rank++)
 		EXPECT_FALSE(PathExists(SnapshotRankCheckpointPath(rank_snapshot_dir, rank, 1, interval)));
@@ -604,54 +622,107 @@ TEST_F(SnapshotIOTest, FourLogicalRanksProgressFromPartialToMergedWithoutDowngra
 	ASSERT_TRUE(WriteSnapshotRankState(
 		SnapshotRankCheckpointPath(rank_snapshot_dir, 0, 1, interval),
 		MakeMergeState(run_id, 0)));
-	const SnapshotMergeResult repeat = TryWriteSnapshot(
-		snapshot_root, rank_snapshot_dir, 1, interval, 4, run_id, 0.5, 1.0e-40, true);
+	const SnapshotMergeResult repeat = TryWriteSnapshotCached(
+		snapshot_root, rank_snapshot_dir, 1, interval, 4, run_id, 0.5, 1.0e-40, cache, true);
 	EXPECT_EQ(SnapshotMergeStatus::Merged, repeat.status);
 	EXPECT_TRUE(repeat.cleanup_succeeded);
 	EXPECT_EQ(merged_report, ReadAll(report_path));
-	EXPECT_EQ(merged_evaporation, ReadAll(evaporation_path));
+	EXPECT_FALSE(PathExists(snapshot_root + "snapshot_10s_evaporation_times.txt"));
 	EXPECT_FALSE(PathExists(SnapshotRankCheckpointPath(rank_snapshot_dir, 0, 1, interval)));
 }
 
-TEST_F(SnapshotIOTest, LateBoundaryEventIsPublishedOnceByNextCheckpoint)
+TEST_F(SnapshotIOTest, CompletedNeverCapturedPathIncludesInboundAndOutboundBeforeSquaring)
 {
 	const uint64_t run_id = 88001;
-	const double interval = 10.0;
 	SnapshotSharedState shared_state;
 	shared_state.Initialize(run_id, 0);
+	shared_state.BeginTrajectory(777);
+	TrajectoryBincount path;
+	path.termination_reason = TrajectoryTerminationReason::OutwardEscape;
+	// The incoming branch and outgoing continuation belong to one history.
+	path.transit_dt_hist[7] = 2.0;
+	path.transit_v2dt_hist[7] = 20.0;
+	// Production combines analytic escape and incident prefix in transit_hist.
+	path.transit_dt_hist[7] += 5.0;
+	path.transit_v2dt_hist[7] += 50.0;
+	// Other population components must never be folded in a second time.
+	path.dt_hist[7] = 100.0;
+	path.v2dt_hist[7] = 1000.0;
+	path.post_evap_dt_hist[7] = 200.0;
+	path.post_evap_v2dt_hist[7] = 2000.0;
+	shared_state.PublishCurrentTrajectoryProgress(path.transit_dt_hist, path.transit_v2dt_hist, 2.0);
+	const auto running = shared_state.CopyForSnapshot(1, 10.0);
+	EXPECT_EQ(0U, running.bincount_never_captured_samples);
+	EXPECT_DOUBLE_EQ(0.0, running.never_captured_path_dt_hist[7]);
 
-	size_t first_event_end = 0;
-	const SnapshotRankState first_checkpoint = shared_state.CopyForSnapshot(
-		1, 10.0, 10.0, 0, first_event_end);
-	EXPECT_TRUE(first_checkpoint.new_evaporation_events.empty());
-	EXPECT_EQ(0U, first_event_end);
+	shared_state.RecordCompletedTrajectory(path, false, true);
+	const auto completed = shared_state.CopyForSnapshot(2, 20.0);
+	EXPECT_EQ(1U, completed.bincount_never_captured_samples);
+	EXPECT_EQ(1U, completed.local_classified);
+	EXPECT_DOUBLE_EQ(7.0, completed.never_captured_path_dt_hist[7]);
+	EXPECT_DOUBLE_EQ(70.0, completed.never_captured_path_v2dt_hist[7]);
+	EXPECT_DOUBLE_EQ(49.0, completed.never_captured_path_dt_sq_hist[7]);
+	EXPECT_DOUBLE_EQ(4900.0, completed.never_captured_path_v2dt_sq_hist[7]);
+	const auto final = shared_state.CopyFinal(21.0);
+	EXPECT_EQ(1, final.done);
+	EXPECT_EQ(completed.never_captured_path_dt_hist, final.never_captured_path_dt_hist);
+	EXPECT_EQ(0U, final.bincount_captured_samples);
+	ASSERT_TRUE(WriteSnapshotRankState(SnapshotRankFinalPath(rank_snapshot_dir, 0), final));
+}
 
-	TrajectoryBincount bincount;
-	bincount.is_captured = true;
-	bincount.dt_hist[0] = 1.0;
-	bincount.v2dt_hist[0] = 2.0;
-	SnapshotEvaporationProgressEntry late_event;
-	late_event.trajectory_id = 777;
-	late_event.completion_wall_time_sec = 9.9;
-	late_event.lifetime_unbinding_sec = 3.0;
-	shared_state.RecordCompletedTrajectory(
-		bincount, true, false, std::vector<SnapshotEvaporationProgressEntry>{late_event});
+TEST_F(SnapshotIOTest, UnclassifiedOrInvalidNeverCapturedPathsAreExcluded)
+{
+	SnapshotSharedState shared_state;
+	shared_state.Initialize(88004, 0);
+	TrajectoryBincount path;
+	path.termination_reason = TrajectoryTerminationReason::OutwardEscape;
+	path.transit_dt_hist[7] = 4.0;
+	path.transit_v2dt_hist[7] = 8.0;
+	shared_state.RecordCompletedTrajectory(path, false, false);
+	for(const auto reason : {TrajectoryTerminationReason::NumericalFailure,
+	                         TrajectoryTerminationReason::WallTimeLimit,
+	                         TrajectoryTerminationReason::MaxScatterings,
+	                         TrajectoryTerminationReason::EnergyDriftEscape,
+	                         TrajectoryTerminationReason::Unknown})
+	{
+		path.termination_reason = reason;
+		// Erroneous classification from the caller cannot admit these paths.
+		shared_state.RecordCompletedTrajectory(path, false, true);
+	}
+	path.is_captured = true;
+	path.termination_reason = TrajectoryTerminationReason::OutwardEscape;
+	shared_state.RecordCompletedTrajectory(path, true, true);
+	const auto state = shared_state.CopyForSnapshot(1, 10.0);
+	EXPECT_EQ(7U, state.local_total);
+	EXPECT_EQ(0U, state.bincount_never_captured_samples);
+	EXPECT_EQ(1U, state.bincount_captured_samples);
+	EXPECT_DOUBLE_EQ(0.0, state.never_captured_path_dt_hist[7]);
+	EXPECT_DOUBLE_EQ(0.0, state.never_captured_path_v2dt_hist[7]);
+	EXPECT_DOUBLE_EQ(0.0, state.never_captured_path_dt_sq_hist[7]);
+}
 
-	size_t second_event_end = first_event_end;
-	const SnapshotRankState second_checkpoint = shared_state.CopyForSnapshot(
-		2, 20.0, 20.0, first_event_end, second_event_end);
-	ASSERT_EQ(1U, second_checkpoint.new_evaporation_events.size());
-	EXPECT_EQ(1U, second_event_end);
-	ASSERT_TRUE(WriteSnapshotRankState(
-		SnapshotRankCheckpointPath(rank_snapshot_dir, 0, 2, interval), second_checkpoint));
-
-	const SnapshotMergeResult merged = TryWriteSnapshot(
-		snapshot_root, rank_snapshot_dir, 2, interval, 1, run_id, 0.5, 1.0e-40, false);
-	EXPECT_EQ(SnapshotMergeStatus::Merged, merged.status);
-	const std::string evaporation = ReadAll(
-		SnapshotEvaporationTimeFilePath(snapshot_root, 2, interval));
-	EXPECT_EQ(1U, CountOccurrences(evaporation, "0\t777\t"));
-	EXPECT_NE(std::string::npos, evaporation.find("# completed_evaporation_events_assigned_to_snapshot = 1"));
+TEST_F(SnapshotIOTest, NonFiniteNegativeOrMismatchedNeverCapturedHistogramsAreExcluded)
+{
+	SnapshotSharedState shared_state;
+	shared_state.Initialize(88005, 0);
+	TrajectoryBincount valid;
+	valid.termination_reason = TrajectoryTerminationReason::OutwardEscape;
+	valid.transit_dt_hist[7] = 4.0;
+	valid.transit_v2dt_hist[7] = 8.0;
+	auto path = valid;
+	path.transit_dt_hist[7] = -4.0;
+	shared_state.RecordCompletedTrajectory(path, false, true);
+	path = valid;
+	path.transit_v2dt_hist[7] = std::numeric_limits<double>::quiet_NaN();
+	shared_state.RecordCompletedTrajectory(path, false, true);
+	path = valid;
+	path.transit_v2dt_hist.pop_back();
+	shared_state.RecordCompletedTrajectory(path, false, true);
+	const auto state = shared_state.CopyForSnapshot(1, 10.0);
+	EXPECT_EQ(3U, state.local_total);
+	EXPECT_EQ(0U, state.bincount_never_captured_samples);
+	EXPECT_DOUBLE_EQ(0.0, state.never_captured_path_dt_hist[7]);
+	EXPECT_DOUBLE_EQ(0.0, state.never_captured_path_v2dt_hist[7]);
 }
 
 TEST_F(SnapshotIOTest, ReportsRawAndClassifiedCaptureRatesSeparately)
@@ -687,55 +758,31 @@ TEST_F(SnapshotIOTest, ReportsRawAndClassifiedCaptureRatesSeparately)
 	EXPECT_NE(std::string::npos, report.find("# capture_rate_valid = 1.00000000"));
 }
 
-TEST_F(SnapshotIOTest, FinalStateAssignsEventsToFirstEligibleSnapshotWithoutRepeating)
+TEST_F(SnapshotIOTest, FinalNeverCapturedStateIsUsedOnlyAfterRankCompletion)
 {
 	const uint64_t run_id = 88002;
 	const double interval = 10.0;
-	SnapshotRankState final_state;
-	final_state.run_id = run_id;
+	SnapshotRankState final_state = MakeMergeState(run_id, 1);
 	final_state.rank = 0;
 	final_state.done = 1;
 	final_state.snapshot_index = 0;
 	final_state.rank_elapsed_wall_sec = 15.0;
-	final_state.local_total = 2;
-	final_state.local_classified = 2;
-
-	SnapshotEvaporationProgressEntry first_event;
-	first_event.trajectory_id = 901;
-	first_event.completion_wall_time_sec = 5.0;
-	first_event.lifetime_unbinding_sec = 2.0;
-	SnapshotEvaporationProgressEntry second_event;
-	second_event.trajectory_id = 902;
-	second_event.completion_wall_time_sec = 15.0;
-	second_event.lifetime_unbinding_sec = 1.0;
-	final_state.new_evaporation_events = {first_event, second_event};
-	ASSERT_TRUE(WriteSnapshotRankState(
-		SnapshotRankFinalPath(rank_snapshot_dir, 0), final_state));
-
-	const SnapshotMergeResult too_early = TryWriteSnapshot(
-		snapshot_root, rank_snapshot_dir, 1, interval, 1, run_id, 0.5, 1.0e-40, false);
+	ASSERT_TRUE(WriteSnapshotRankState(SnapshotRankFinalPath(rank_snapshot_dir, 0), final_state));
+	const auto too_early = TryWriteSnapshot(
+		snapshot_root, rank_snapshot_dir, 1, interval, 1, run_id, 0.5, 1e-40, false);
 	EXPECT_EQ(SnapshotMergeStatus::NoRanksReady, too_early.status);
-	EXPECT_FALSE(PathExists(SnapshotEvaporationTimeFilePath(snapshot_root, 1, interval)));
-
-	const SnapshotMergeResult first_eligible = TryWriteSnapshot(
-		snapshot_root, rank_snapshot_dir, 2, interval, 1, run_id, 0.5, 1.0e-40, false);
-	EXPECT_EQ(SnapshotMergeStatus::Merged, first_eligible.status);
-	const std::string second_report = ReadAll(
-		SnapshotEvaporationTimeFilePath(snapshot_root, 2, interval));
-	EXPECT_EQ(1U, CountOccurrences(second_report, "0\t901\t"));
-	EXPECT_EQ(1U, CountOccurrences(second_report, "0\t902\t"));
-
-	const SnapshotMergeResult later = TryWriteSnapshot(
-		snapshot_root, rank_snapshot_dir, 3, interval, 1, run_id, 0.5, 1.0e-40, false);
-	EXPECT_EQ(SnapshotMergeStatus::Merged, later.status);
-	const std::string third_report = ReadAll(
-		SnapshotEvaporationTimeFilePath(snapshot_root, 3, interval));
-	EXPECT_EQ(0U, CountOccurrences(third_report, "0\t901\t"));
-	EXPECT_EQ(0U, CountOccurrences(third_report, "0\t902\t"));
-
-	SnapshotRankState invalid_final = final_state;
-	invalid_final.rank_elapsed_wall_sec = 14.0;
-	EXPECT_FALSE(WriteSnapshotRankState(rank_snapshot_dir + "invalid_final.bin", invalid_final));
+	EXPECT_FALSE(PathExists(SnapshotTextFilePath(snapshot_root, 1, interval)));
+	for(int index : {2, 3})
+	{
+		const auto merged = TryWriteSnapshot(
+			snapshot_root, rank_snapshot_dir, index, interval, 1, run_id, 0.5, 1e-40, false);
+		EXPECT_EQ(SnapshotMergeStatus::Merged, merged.status);
+		std::array<double, 8> histogram{};
+		ASSERT_TRUE(ReadHistogramBin(SnapshotTextFilePath(snapshot_root, index, interval), 0, histogram));
+		EXPECT_DOUBLE_EQ(2.0, histogram[4]);
+		EXPECT_DOUBLE_EQ(20.0, histogram[5]);
+		EXPECT_FALSE(PathExists(snapshot_root + "snapshot_" + std::to_string(10 * index) + "s_evaporation_times.txt"));
+	}
 }
 
 TEST_F(SnapshotIOTest, IncompleteFinalizationPreservesRecoverableFinalStates)
@@ -811,4 +858,61 @@ TEST_F(SnapshotIOTest, FinalizationRetriesMergedCheckpointCleanup)
 	ASSERT_FALSE(PathExists(checkpoint_path));
 	EXPECT_TRUE(heartbeat.FinalizeAfterAllRanksDone(interval));
 	EXPECT_FALSE(PathExists(rank_snapshot_dir));
+}
+
+TEST_F(SnapshotIOTest, FiniteOutputWindowClipsLastSnapshotShellExactly)
+{
+    const uint64_t run_id = 99004;
+    const double interval = 10.0, output_radius = 2.05;
+    const auto edges = BuildRadialGrid(output_radius * R_SUN_KM);
+    const std::size_t last_bin = edges.size() - 2;
+    ASSERT_LT(edges[last_bin], output_radius * R_SUN_KM);
+    ASSERT_GT(BincountBinUpperKm(last_bin), output_radius * R_SUN_KM);
+    SnapshotRankState state = MakeMergeState(run_id, 0);
+    GrowRadialHistograms(last_bin + 2, state.captured_dt_hist,
+        state.captured_v2dt_hist, state.captured_dt_sq_hist, state.captured_v2dt_sq_hist,
+        state.never_captured_path_dt_hist, state.never_captured_path_v2dt_hist,
+        state.never_captured_path_dt_sq_hist, state.never_captured_path_v2dt_sq_hist);
+    state.captured_dt_hist[last_bin] = 2.5;
+    state.captured_v2dt_hist[last_bin] = 5.0;
+    state.captured_dt_sq_hist[last_bin] = 6.25;
+    state.captured_v2dt_sq_hist[last_bin] = 25.0;
+    state.local_total = 2;
+    state.local_classified = 2;
+    state.bincount_never_captured_samples = 1;
+    state.never_captured_path_dt_hist[last_bin] = 7.5;
+    state.never_captured_path_v2dt_hist[last_bin] = 15.0;
+    state.never_captured_path_dt_sq_hist[last_bin] = 56.25;
+    state.never_captured_path_v2dt_sq_hist[last_bin] = 225.0;
+    state.never_captured_path_dt_hist[last_bin + 1] = 999.0;
+    ASSERT_TRUE(WriteSnapshotRankState(
+        SnapshotRankCheckpointPath(rank_snapshot_dir, 0, 1, interval), state));
+    const SnapshotMergeResult merged = TryWriteSnapshot(
+        snapshot_root, rank_snapshot_dir, 1, interval, 1, run_id,
+        0.5, 1e-40, false, output_radius);
+    ASSERT_EQ(SnapshotMergeStatus::Merged, merged.status);
+    const std::string path = SnapshotTextFilePath(snapshot_root, 1, interval);
+    std::ifstream file(path);
+    std::string line;
+    std::size_t rows = 0;
+    double last_low = 0.0, last_high = 0.0, dt = 0.0, v2dt = 0.0;
+    while(std::getline(file, line))
+    {
+        if(line.empty() || line[0] == '#') continue;
+        std::istringstream row(line);
+        std::size_t bin = 0;
+        ASSERT_TRUE(static_cast<bool>(row >> bin >> last_low >> last_high >> dt >> v2dt));
+        EXPECT_EQ(bin, rows++);
+        EXPECT_LE(last_high, output_radius);
+    }
+    EXPECT_EQ(rows, edges.size() - 1);
+    EXPECT_NEAR(last_low, edges[last_bin] / R_SUN_KM, 1e-10);
+    EXPECT_DOUBLE_EQ(last_high, output_radius);
+    EXPECT_DOUBLE_EQ(dt, 2.5);
+    EXPECT_DOUBLE_EQ(v2dt, 5.0);
+    std::array<double, 8> moments{};
+    ASSERT_TRUE(ReadHistogramBin(path, last_bin, moments));
+    EXPECT_DOUBLE_EQ(moments[4], 7.5);
+    EXPECT_DOUBLE_EQ(moments[5], 15.0);
+    EXPECT_NE(ReadAll(path).find("# residence_time_scope = within_output_radius_only"), std::string::npos);
 }

@@ -3,7 +3,7 @@
 Dark Matter Simulation Code for the Sun, with capture- and evaporation-focused
 extensions.
 
-The format-4 `bincount.tsv` transport contract, configuration and validation scope are documented below.
+The format-5 `bincount.tsv` transport contract, configuration and validation scope are documented below.
 
 ## Overview
 
@@ -21,8 +21,8 @@ The current code path is centered on two practical modes:
   histogram output path.
 - **Parameter-point simulation**: the main evaporation workflow for one mass and
   cross section. It accumulates time-weighted radial histograms, records complete
-  captured histories ending in escape or outer-orbit removal, and can emit wall-clock snapshot progress files for
-  long MPI runs.
+  captured histories ending in validated physical escape, and can emit wall-clock
+  snapshot progress files for long MPI runs.
 
 The older parameter-scan machinery is still present, but the most actively
 maintained outputs in this branch are the capture summary and the single
@@ -153,11 +153,14 @@ To build and run the test suite, configure separately with
 
 Incident particles are sampled on a fixed 1100 AU reference sphere, mapped
 analytically through 2 R_sun to the 1 R_sun solar matching surface, and then
-propagated through the Sun. Bound exterior orbits are removed on their first
-outward crossing of the independently configured 1100 R_sun cutoff. Incoming
+propagated through the Sun. Every bound exterior orbit completes its analytic
+Kepler return to the solar matching surface, even when its apoapsis exceeds the
+configured output radius. The finite `output_radius_rsun` (default 1100 R_sun)
+clips recorded radial statistics only; it never terminates an orbit. Incoming
 shell moments are recorded from the diagnostic reference (up to 1100 R_sun)
 to the solar surface; capture-conditioned residence starts only after capture.
-Snapshot files are progress products.
+Time spent outside the recording window remains part of the full simulated
+history and physical evaporation lifetime. Snapshot files are progress products.
 
 ## Configuration
 
@@ -166,8 +169,9 @@ Configuration files use libconfig syntax. The most important controls are:
 | Setting | Meaning |
 | --- | --- |
 | `run_mode` | `"Parameter point"` for the main evaporation workflow, `"Capture"` for capture-rate runs, or `"Parameter scan"` for detector-limit scans. |
-| `sample_size` | In Parameter point mode, the exact number of complete captured histories (escape or outer removal). In Capture mode, the exact number of physically classified incident histories. Numerical/computationally failed histories are discarded and replaced by fresh draws until the target or the explicit attempt budget is reached. |
-| `outer_removal_radius_rsun` | Bound-orbit removal radius in R_sun, default 1100; must exceed the native 1.1 R_sun grid. The obsolete `outer_boundary_radius_au` key is rejected. |
+| `sample_size` | In Parameter point and Parameter scan modes, the exact number of complete captured histories ending in validated physical evaporation. In Capture mode, the exact number of physically classified incident histories. Numerical/computationally failed histories are discarded and replaced by fresh draws until the target or the explicit attempt budget is reached. |
+| `output_radius_rsun` | Finite radial statistics window in R_sun, default 1100; must be finite and exceed the native 1.1 R_sun grid. It clips histogram recording without removing bound orbits, in every run mode. |
+| `outer_removal_radius_rsun` | Deprecated compatibility alias for `output_radius_rsun`; emits a warning and no longer terminates trajectories. Specifying both keys is rejected, even if their values match. The obsolete `outer_boundary_radius_au` key is rejected; migrate it to `output_radius_rsun` with units converted to R_sun. |
 | `fixed_seed` | Optional non-negative PRNG seed. `0` or an omitted setting uses nondeterministic seeding; a nonzero value is expanded independently by MPI rank. |
 | `max_trajectories` | Optional hard cap on generated trajectories. `0` or unset means no trajectory-count cap. |
 | `interpolation_points` | Legacy square scattering-rate grid size. It remains supported; the three `rate_*` settings below override its corresponding defaults. `0` disables interpolation when no rectangular-grid settings are supplied. |
@@ -208,8 +212,8 @@ record numerical failures and computational truncations and continue issuing
 work. Initial-shift failures also continue; no failure-fraction threshold stops
 the simulation. A failed history contributes neither residence nor complete-path moments and is
 replaced by a fresh independent draw. Transport finishes after `sample_size`
-complete captured histories; Capture finishes after `sample_size` physically
-classified incident histories. Raw attempts, including discarded numerical or
+complete captured histories ending in validated physical evaporation; Capture
+finishes after `sample_size` physically classified incident histories. Raw attempts, including discarded numerical or
 computational failures, are tracked separately. `max_trajectories` remains an
 explicit total-attempt budget. Without that budget, both workflows continue
 drawing until their target is reached.
@@ -233,7 +237,7 @@ repeated bound Kepler returns to stall its MPI batch.
 ## Outputs
 
 Capture (`run_mode = "Capture"`) is a fixed **valid incident-count** normalization run.
-Stdout contains exactly one `CAPTURE_RESULT_JSON={...}` line (capture schema 2);
+Stdout contains exactly one `CAPTURE_RESULT_JSON={...}` line (capture schema 3);
 human-readable logs go to stderr. No result directory, snapshot, copied cfg or
 diagnostic file is created, including on a failed run. The record retains
 target completion, physics/numerics, seed, MPI ranks, failure counts,
@@ -275,7 +279,7 @@ The same file contains exactly 64 comment records:
 # block_count = 0 3041 157 2883 156
 ```
 
-Format 4 writes **one row per radial bin**, with 31 named columns. Statistical
+Format 5 writes **one row per radial bin**, with 31 named columns. Statistical
 values, standard errors and covariances use **at most four significant digits**.
 All calculations use the existing internal precision and are rounded only when
 written. Counts are exact integers. Fixed parameters and radial boundaries use
@@ -295,7 +299,7 @@ This denotes 10^-36 cm². A non-unit coefficient preserves points such as
 2.5 × 10^-36 cm²; a zero cross section uses coefficient 0 and exponent 0.
 The old `sigma_p_cm2`, `sigma_neutron_cm2` and `sigma_e_cm2` header keys are
 replaced by the corresponding `sigma_{p,neutron,e}_{coefficient,exponent}` keys.
-Readers must recognize version 4 and reconstruct `coefficient * 10**(-exponent)`.
+Readers must recognize version 5 and reconstruct `coefficient * 10**(-exponent)`.
 
 The precision fields are `output_significant_digits = 4` and
 `parameter_significant_digits = 12`. Derived estimates and SE are computed
@@ -323,7 +327,7 @@ second moment and derived observables:
 
 Rows include zero bins. The unchanged grid has 0.001 R_sun shells through
 1.1 R_sun, followed by widths growing by 2%, capped at 10 R_sun and clipped at
-the removal boundary. The default 1100 R_sun cutoff gives **1626 rows**, versus
+the output radius. The default 1100 R_sun recording window gives **1626 rows**, versus
 104064 in format 2. Ordinary Transport publishes no per-block radial profiles.
 Read column names from `# columns = ...`, rather than assuming a column count.
 
@@ -360,12 +364,12 @@ The header also contains 24 `integrated_stat_I` records: the same four quadratic
 components integrated over each of six fixed windows/kernels:
 
 - Annihilation rate coefficients inside the Sun, within 10 R_sun, within 30 R_sun,
-  outside the Sun, and throughout the simulated radial domain [s²/cm³].
+  outside the Sun, and throughout the recorded radial domain [s²/cm³].
 - Gamma annihilation **event-flux** coefficients from 1–30 R_sun, at a detector
   distance of 1 AU [s²/cm⁵]. No photon yield, spectrum, attenuation or detector
   response is assumed.
 
-The recorded effective windows are clipped to the simulated domain. Assume
+The recorded effective windows are clipped to the output statistics window. Assume
 constant density within each bin of volume V. Rate weights are overlap volume
 / V². Gamma weights are `integral_overlap(r²*<1/d²>_Omega dr)/V²`; the angular
 average uses the exact spherical geometry, including isotropic 1/(4πd²)
@@ -396,12 +400,16 @@ the selected observables' production uncertainties; arbitrary new radial
 kernels, cross-bin temperature covariance, spectra and velocity-dependent
 annihilation cannot be reconstructed from this compact contract.
 
-Captured residence ends at validated escape on the solar matching surface or
-outer removal. Ever-captured paths include inbound, pre-capture, residence and
-outgoing components; these are added **before squaring each history's bin time**.
+Captured residence ends at validated physical escape on the solar matching
+surface. Ever-captured paths include inbound, pre-capture, residence and outgoing
+components; these are added **before squaring each history's bin time**.
 Never-captured paths include scattered and unscattered completed escapes.
-Incoming/outgoing paths are recorded within `R_path_reference_rsun`; captured
-bound paths extend to `R_remove_rsun`. This preserves the existing boundaries.
+Incoming/outgoing paths are recorded within `R_path_reference_rsun`, the smaller
+of `R_output_rsun` and the 1100 R_sun transit reference. Captured bound paths are
+recorded within `R_output_rsun`. Complete Kepler round trips advance the simulated
+clock, while only their intersections with recorded shells contribute moments.
+A finite-window residence sum therefore does not equal the complete evaporation
+lifetime when the orbit leaves that window.
 
 Counts distinguish all ever-captured histories from complete captured histories:
 `N_ever_captured` includes captures that later failed, while `N_residence_samples`
@@ -416,8 +424,12 @@ injected count minus its two complete-history counts. `N_unclassified` records
 failed histories that were never classified as captured. Captured histories that
 later failed are the difference `N_ever_captured - N_residence_samples`.
 When there are no failures, these reduce to the original two-population closure.
-Format 4 retains the format-2 counts and completion semantics while replacing
-the block-by-bin matrix with totals and per-bin standard errors.
+Format 5 retains the format-4 totals, per-bin standard errors and four-digit
+statistical precision. It records `R_output_rsun` in place of `R_remove_rsun` and
+omits `N_outer_removed`: captured completion now requires validated physical
+escape, with no outer-boundary removal category. Historical files produced with
+orbit removal describe a different ensemble and must not be pooled with these
+complete-evaporation statistics.
 
 A run that reaches its target writes `target_reached = true` even when failure
 counts are nonzero. Exhausting an explicit attempt budget writes
@@ -435,8 +447,8 @@ The derived columns and selected integrals supply its jackknife uncertainty.
 Per-history cross-bin second moments and full velocity distributions are not provided.
 
 Analysis and plotting live in the sibling DaMaSCUS-SUN repository. Readers of
-old `metadata.json`/`radial_blocks.tsv` products and format-2/3 `bincount.tsv`
-must migrate to format 4;
+old `metadata.json`/`radial_blocks.tsv` products and format-2/3/4 `bincount.tsv`
+must migrate to format 5;
 there is no dual-write compatibility mode. Keep cfg files and scheduler logs
 outside the result directory.
 
@@ -473,23 +485,28 @@ replay data is collected by ordinary scientific runs.
 
 When snapshots are enabled, intermediate files are written under `snapshot/`:
 
-- `snapshot_{time}s.txt`: cumulative progress report at the snapshot wall time.
-  Its commented `[MPI rank status]` table reports each rank's activity, local
-  trajectory ID, trajectory wall time, simulated elapsed time, scattering
-  count, and the rank-local observation time. An in-progress trajectory that
-  has already captured contributes its accumulated residence prefix
-  provisionally. After each bound exterior arc returns, a forced publication
-  includes the complete round-trip residence integral, extending the histogram
-  to the orbit's apoapsis. Status rows remain comments so data readers see only
-  bincount bins.
-- `snapshot_{time}s_evaporation_times.txt`: complete valid evaporation events
-  first published by that checkpoint, sorted by `lifetime_unbinding_sec`.
-  An event committed concurrently with a snapshot boundary is assigned once to
-  the next checkpoint rather than being dropped.
+- `snapshot_{time}s.txt`: cumulative progress report labelled by its target
+  wall-clock time. The label is not a simulated physical time. Its commented
+  `[MPI rank status]` table reports each rank's activity, local trajectory ID,
+  trajectory wall time, simulated elapsed time, scattering count, and the
+  rank-local observation time. The data table has 11 columns: bin and radial
+  bounds; captured-residence `dt` and `v2dt` with their standard errors; and
+  complete valid never-captured-path `dt` and `v2dt` with their standard
+  errors. Each population's errors use that population's own sample count:
+  captured-residence samples for residence moments, and completed
+  never-captured histories for never-captured path moments. A running
+  never-captured trajectory is not yet classified and is excluded from that
+  population. An in-progress trajectory that has already captured contributes
+  its accumulated residence prefix provisionally. Bound exterior arcs are
+  published after each complete round trip, including the full residence
+  integral inside `R_output_rsun` and the simulated clock advanced through the
+  orbit. Status rows remain comments so data readers see only histogram bins.
 
 Snapshot files are progress diagnostics. They do not replace the final
 post-reduction `bincount.tsv`, and they are
-not restart checkpoints. A report can temporarily have `snapshot_status =
+not restart checkpoints. No `snapshot_{time}s_evaporation_times.txt` files are
+generated. Evaporation times remain available through the separate diagnostic
+CLI's `evaporation_times.txt` output. A report can temporarily have `snapshot_status =
 partial` while ranks publish their state. If a rank misses the deadline, the
 report remains incomplete rather than reconstructing state that was not
 captured. Final rank states are retained when the last merge is incomplete.

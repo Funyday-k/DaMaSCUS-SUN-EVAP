@@ -1259,8 +1259,10 @@ std::vector<double> BuildRadialGrid(double outer_radius_km)
 
 bool Compute_Bound_Kepler_Exterior_Arc(
 	const Event& outward_event,
-	BoundKeplerExteriorArc& arc, double removal_radius_km)
+	BoundKeplerExteriorArc& arc, double recording_radius_km)
 {
+	if(std::isnan(recording_radius_km) || recording_radius_km <= 0.0)
+		return false;
 	Event inbound_event;
 	double return_time = 0.0;
 	double apoapsis_radius = 0.0;
@@ -1302,9 +1304,10 @@ bool Compute_Bound_Kepler_Exterior_Arc(
 	arc.elapsed_time_sec = In_Units(return_time, sec);
 	arc.kepler_period_sec = 2.0 * M_PI / mean_motion_s_inv;
 	arc.apoapsis_km = apoapsis_km;
-	if(!(removal_radius_km > radius_km)) return false;
-	arc.outer_removed = apoapsis_km >= removal_radius_km;
-	const double end_radius_km = std::min(apoapsis_km, removal_radius_km);
+	if(!std::isfinite(arc.elapsed_time_sec) || arc.elapsed_time_sec <= 0.0
+	   || !std::isfinite(arc.kepler_period_sec) || arc.kepler_period_sec <= 0.0)
+		return false;
+	const double end_radius_km = std::min(apoapsis_km, recording_radius_km);
     // Compute periapsis without subtracting 1-e, then use half-angle
     // anomalies. This retains accuracy even when r/a is extremely small.
     const long double p_km=angular_momentum_km2_s*angular_momentum_km2_s/mu_km3_s2;
@@ -1318,20 +1321,15 @@ bool Compute_Bound_Kepler_Exterior_Arc(
             (one_minus_e*E+eccentricity*Anomaly_Minus_Sine(E))/mean_motion_s_inv,
             mu_km3_s2/(semi_major_axis_km*mean_motion_s_inv)*(E+eccentricity*sinE)}};
     };
-    if(arc.outer_removed)
-    {
-        const auto h = outward_event.position.Cross(outward_event.velocity);
-        const auto evec = outward_event.velocity.Cross(h) / (G_Newton * mSun)
-            - outward_event.position / outward_event.Radius();
-        const auto axis_x = evec.Normalized();
-        const auto axis_y = h.Normalized().Cross(axis_x).Normalized();
-        const double cosine=Clamp_Cosine((static_cast<double>(p_km)/end_radius_km-1)/eccentricity);
-        const double sine=sqrt(std::max(0.0,1-cosine*cosine));
-        arc.elapsed_time_sec=static_cast<double>(primitives(end_radius_km)[0]-primitives(radius_km)[0]);
-        arc.terminal_event = Event(outward_event.time + arc.elapsed_time_sec*sec,
-            end_radius_km*km*(cosine*axis_x+sine*axis_y),
-            mu_km3_s2/angular_momentum_km2_s*km/sec*(-sine*axis_x+(eccentricity+cosine)*axis_y));
-    }
+	// Use the complete two-branch integral for the physical clock, independently
+	// of the recording limit. This also avoids acos cancellation near apsides.
+	arc.elapsed_time_sec = 2.0 * static_cast<double>(
+	    primitives(apoapsis_km)[0] - primitives(radius_km)[0]);
+	if(!std::isfinite(arc.elapsed_time_sec) || arc.elapsed_time_sec <= 0.0)
+		return false;
+	arc.terminal_event.time = outward_event.time + arc.elapsed_time_sec * sec;
+	if(end_radius_km <= shell_start_km)
+		return true;
 	const int last_bin_index = BincountBinIndexKm(std::nextafter(end_radius_km, 0.0));
 	if(last_bin_index < BincountBinIndexKm(R_SUN_KM))
 		return false;
@@ -1351,17 +1349,13 @@ bool Compute_Bound_Kepler_Exterior_Arc(
 			break;
 
         const auto lower=primitives(lower_radius_km), upper=primitives(upper_radius_km);
-        const double multiplicity=arc.outer_removed ? 1.0 : 2.0;
-        arc.dt_hist[bin]=multiplicity*static_cast<double>(upper[0]-lower[0]);
-        arc.v2dt_hist[bin]=multiplicity*static_cast<double>(upper[1]-lower[1]);
+        arc.dt_hist[bin]=2.0*static_cast<double>(upper[0]-lower[0]);
+        arc.v2dt_hist[bin]=2.0*static_cast<double>(upper[1]-lower[1]);
 		if(!std::isfinite(arc.dt_hist[bin]) || arc.dt_hist[bin] < 0.0
 		   || !std::isfinite(arc.v2dt_hist[bin]) || arc.v2dt_hist[bin] < 0.0)
 			return false;
 	}
-	arc.elapsed_time_sec = std::accumulate(arc.dt_hist.begin(), arc.dt_hist.end(), 0.0);
-	arc.terminal_event.time = outward_event.time + arc.elapsed_time_sec * sec;
-	return std::isfinite(arc.elapsed_time_sec) && arc.elapsed_time_sec > 0.0
-	    && std::isfinite(arc.kepler_period_sec) && arc.kepler_period_sec > 0.0;
+	return true;
 }
 
 bool Compute_Unbound_Kepler_Exterior_Arc(const Event& outward, double end_km, BoundKeplerExteriorArc& arc)
@@ -1489,7 +1483,6 @@ bool TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason reason
 		case TrajectoryTerminationReason::SpeedLimit:
 		case TrajectoryTerminationReason::MaxFreeSteps:
 		case TrajectoryTerminationReason::MaxScatterings:
-		case TrajectoryTerminationReason::OuterDomainRemoval:
 		case TrajectoryTerminationReason::Unknown:
 			return true;
 		default:
@@ -1499,8 +1492,7 @@ bool TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason reason
 
 bool TrajectoryTerminationInvalidatesResidenceBincount(TrajectoryTerminationReason reason)
 {
-    return reason != TrajectoryTerminationReason::OutwardEscape
-        && reason != TrajectoryTerminationReason::OuterDomainRemoval;
+    return reason != TrajectoryTerminationReason::OutwardEscape;
 }
 
 Trajectory_Result::Trajectory_Result(const Event& event_ini, const Event& event_final, unsigned long int nScat,
@@ -2474,7 +2466,7 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 					return TrajectoryTerminationReason::NumericalFailure;
 
 				BoundKeplerExteriorArc kepler_arc;
-				if(Compute_Bound_Kepler_Exterior_Arc(boundary_event, kepler_arc, outer_removal_radius_km))
+					if(Compute_Bound_Kepler_Exterior_Arc(boundary_event, kepler_arc, recording_radius_km))
 				{
 					time_steps++;
 					optical_depth_retries = 0;
@@ -2522,7 +2514,7 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 					current_event = to_absolute_event(kepler_arc.terminal_event);
 					if(current_bincount.is_captured)
 					{
-						const double apoapsis_km = std::min(kepler_arc.apoapsis_km, outer_removal_radius_km);
+							const double apoapsis_km = kepler_arc.apoapsis_km;
 						if(!std::isfinite(current_bincount.max_radius_after_capture_km)
 						   || apoapsis_km > current_bincount.max_radius_after_capture_km)
 							current_bincount.max_radius_after_capture_km = apoapsis_km;
@@ -2532,8 +2524,6 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 					// Synchronize the in-progress state after the large analytic
 					// jump. Snapshot files themselves remain on fixed wall cadence.
 					Maybe_Publish_Snapshot_Progress(In_Units(current_event.time, sec), true);
-					if(kepler_arc.outer_removed)
-						return TrajectoryTerminationReason::OuterDomainRemoval;
 					reset_propagator_at_absolute_event(current_event);
 					continue;
 				}
@@ -2909,8 +2899,6 @@ Trajectory_Result Trajectory_Simulator::Simulate(const Event& initial_condition,
 			   && TrajectoryTerminationInvalidatesSurvival(termination_reason))
 				current_bincount.survival_valid = false;
 		}
-		current_bincount.outer_domain_removed =
-		    termination_reason == TrajectoryTerminationReason::OuterDomainRemoval;
 	}
 
     if(!terminate_on_capture && termination_reason == TrajectoryTerminationReason::OutwardEscape)

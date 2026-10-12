@@ -25,11 +25,15 @@ void SnapshotSharedState::Initialize(uint64_t run_id, int rank)
 	classified_trajectories_ = 0;
 	numerical_failures_ = 0;
 	bincount_captured_samples_ = 0;
+	bincount_never_captured_samples_ = 0;
 	captured_dt_hist_.assign(NUM_BINS, 0.0);
 	captured_v2dt_hist_.assign(NUM_BINS, 0.0);
 	captured_dt_sq_hist_.assign(NUM_BINS, 0.0);
 	captured_v2dt_sq_hist_.assign(NUM_BINS, 0.0);
-	evaporation_events_.clear();
+	never_captured_path_dt_hist_.assign(NUM_BINS, 0.0);
+	never_captured_path_v2dt_hist_.assign(NUM_BINS, 0.0);
+	never_captured_path_dt_sq_hist_.assign(NUM_BINS, 0.0);
+	never_captured_path_v2dt_sq_hist_.assign(NUM_BINS, 0.0);
 }
 
 void SnapshotSharedState::BeginTrajectory(uint64_t trajectory_id, double initial_simulated_time_sec)
@@ -122,8 +126,7 @@ void SnapshotSharedState::PublishCurrentTrajectoryProgress(
 void SnapshotSharedState::RecordCompletedTrajectory(
 	const TrajectoryBincount& bincount,
 	bool count_as_residence_sample,
-	bool physically_classified_uncaptured,
-	const std::vector<SnapshotEvaporationProgressEntry>& new_evaporation_events)
+	bool physically_classified_uncaptured)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 	completed_trajectories_++;
@@ -137,8 +140,8 @@ void SnapshotSharedState::RecordCompletedTrajectory(
 
 	// Keep completed snapshot statistics aligned with the final bincount. The
 	// caller selects normal-mode samples, while this guard prevents a numerical
-	// failure from being admitted accidentally. Computational censoring
-	// retains its accepted path.
+	// failure from being admitted accidentally. In-progress paths remain
+	// provisional; only completed physical escapes enter final residence.
 	if(count_as_residence_sample
 	   && bincount.is_captured
 	   && !TrajectoryTerminationInvalidatesResidenceBincount(
@@ -156,36 +159,50 @@ void SnapshotSharedState::RecordCompletedTrajectory(
 		}
 	}
 
-	evaporation_events_.insert(evaporation_events_.end(), new_evaporation_events.begin(), new_evaporation_events.end());
+	// A running uncaptured prefix is not a never-captured sample: it can still
+	// capture later. Admit only complete, physically classified escape paths.
+	const auto valid_path_histogram = [](const RadialHistogram& histogram)
+	{
+		return histogram.size() >= NUM_BINS
+		    && std::all_of(histogram.begin(), histogram.end(), [](double value)
+		    { return std::isfinite(value) && value >= 0.0; });
+	};
+	if(physically_classified_uncaptured && !bincount.is_captured
+	   && bincount.termination_reason == TrajectoryTerminationReason::OutwardEscape
+	   && bincount.transit_dt_hist.size() == bincount.transit_v2dt_hist.size()
+	   && valid_path_histogram(bincount.transit_dt_hist)
+	   && valid_path_histogram(bincount.transit_v2dt_hist))
+	{
+		bincount_never_captured_samples_++;
+		GrowRadialHistograms(bincount.transit_dt_hist.size(),
+		    never_captured_path_dt_hist_, never_captured_path_v2dt_hist_,
+		    never_captured_path_dt_sq_hist_, never_captured_path_v2dt_sq_hist_);
+		for(std::size_t bin = 0; bin < bincount.transit_dt_hist.size(); bin++)
+		{
+			const double dt = bincount.transit_dt_hist[bin];
+			const double v2dt = bincount.transit_v2dt_hist[bin];
+			never_captured_path_dt_hist_[bin] += dt;
+			never_captured_path_v2dt_hist_[bin] += v2dt;
+			never_captured_path_dt_sq_hist_[bin] += dt * dt;
+			never_captured_path_v2dt_sq_hist_[bin] += v2dt * v2dt;
+		}
+	}
 	ClearCurrentTrajectoryLocked();
 }
 
 SnapshotRankState SnapshotSharedState::CopyForSnapshot(
-	int snapshot_index,
-	double rank_elapsed_wall_sec,
-	double target_wall_sec,
-	size_t evaporation_begin,
-	size_t& evaporation_end,
-	size_t max_new_evaporation_events) const
+	int snapshot_index, double rank_elapsed_wall_sec) const
 {
 	std::lock_guard<std::mutex> lock(mutex_);
-	evaporation_begin = std::min(evaporation_begin, evaporation_events_.size());
-	evaporation_end = evaporation_begin;
-	while(evaporation_end < evaporation_events_.size()
-	      && evaporation_events_[evaporation_end].completion_wall_time_sec <= target_wall_sec)
-		evaporation_end++;
-	// Events are appended in completion order, so a prefix is also a
-	// wall-time-ordered prefix. Whatever is left over is picked up by a later
-	// checkpoint, whose window filter admits earlier completion times as well.
-	if(evaporation_end - evaporation_begin > max_new_evaporation_events)
-		evaporation_end = evaporation_begin + max_new_evaporation_events;
-	return CopyLocked(snapshot_index, false, rank_elapsed_wall_sec, evaporation_begin, evaporation_end);
+	return CopyLocked(snapshot_index, false, rank_elapsed_wall_sec);
 }
 
-SnapshotRankState SnapshotSharedState::CopyFinal(double computing_time_sec, size_t evaporation_begin) const
+SnapshotRankState SnapshotSharedState::CopyFinal(double computing_time_sec) const
 {
 	std::lock_guard<std::mutex> lock(mutex_);
-	return CopyLocked(-1, true, computing_time_sec, evaporation_begin, evaporation_events_.size());
+	// Zero is the valid unscheduled final-state index. The heartbeat replaces
+	// it with the last published checkpoint index before writing its final file.
+	return CopyLocked(0, true, computing_time_sec);
 }
 
 void SnapshotSharedState::ClearCurrentTrajectoryLocked()
@@ -204,9 +221,7 @@ void SnapshotSharedState::ClearCurrentTrajectoryLocked()
 SnapshotRankState SnapshotSharedState::CopyLocked(
 	int snapshot_index,
 	bool done,
-	double rank_elapsed_wall_sec,
-	size_t evaporation_begin,
-	size_t evaporation_end) const
+	double rank_elapsed_wall_sec) const
 {
 	SnapshotRankState state;
 	state.run_id = run_id_;
@@ -219,6 +234,7 @@ SnapshotRankState SnapshotSharedState::CopyLocked(
 	state.local_classified = classified_trajectories_;
 	state.local_numerical_failures = numerical_failures_;
 	state.bincount_captured_samples = bincount_captured_samples_;
+	state.bincount_never_captured_samples = bincount_never_captured_samples_;
 	state.current_trajectory_id = state.trajectory_in_progress ? current_trajectory_id_ : 0;
 	state.rank_elapsed_wall_sec = rank_elapsed_wall_sec;
 	state.current_trajectory_captured = (state.trajectory_in_progress && current_trajectory_captured_) ? 1 : 0;
@@ -236,11 +252,10 @@ SnapshotRankState SnapshotSharedState::CopyLocked(
 	state.captured_dt_sq_hist = captured_dt_sq_hist_;
 	state.captured_v2dt_sq_hist = captured_v2dt_sq_hist_;
 
-	evaporation_begin = std::min(evaporation_begin, evaporation_events_.size());
-	evaporation_end = std::min(evaporation_end, evaporation_events_.size());
-	state.new_evaporation_events.reserve(evaporation_end - evaporation_begin);
-	for(size_t index = evaporation_begin; index < evaporation_end; index++)
-		state.new_evaporation_events.push_back(evaporation_events_[index]);
+	state.never_captured_path_dt_hist = never_captured_path_dt_hist_;
+	state.never_captured_path_v2dt_hist = never_captured_path_v2dt_hist_;
+	state.never_captured_path_dt_sq_hist = never_captured_path_dt_sq_hist_;
+	state.never_captured_path_v2dt_sq_hist = never_captured_path_v2dt_sq_hist_;
 	return state;
 }
 

@@ -2,7 +2,6 @@
 #define __Snapshot_Shared_State_hpp_
 
 #include <chrono>
-#include <limits>
 #include <mutex>
 #include <vector>
 
@@ -36,25 +35,14 @@ class SnapshotSharedState
 	void RecordCompletedTrajectory(
 		const TrajectoryBincount& bincount,
 		bool count_as_residence_sample,
-		bool physically_classified_uncaptured,
-		const std::vector<SnapshotEvaporationProgressEntry>& new_evaporation_events);
+		bool physically_classified_uncaptured);
 
-	// max_new_evaporation_events bounds how many completed events a single
-	// checkpoint publishes. Committing a bounded prefix keeps an oversized
-	// backlog from making every later checkpoint fail permanently.
-	SnapshotRankState CopyForSnapshot(
-		int snapshot_index,
-		double rank_elapsed_wall_sec,
-		double target_wall_sec,
-		size_t evaporation_begin,
-		size_t& evaporation_end,
-		size_t max_new_evaporation_events = std::numeric_limits<size_t>::max()) const;
-
-	SnapshotRankState CopyFinal(double computing_time_sec, size_t evaporation_begin) const;
+	SnapshotRankState CopyForSnapshot(int snapshot_index, double rank_elapsed_wall_sec) const;
+	SnapshotRankState CopyFinal(double computing_time_sec) const;
 
   private:
 	void ClearCurrentTrajectoryLocked();
-	SnapshotRankState CopyLocked(int snapshot_index, bool done, double rank_elapsed_wall_sec, size_t evaporation_begin, size_t evaporation_end) const;
+	SnapshotRankState CopyLocked(int snapshot_index, bool done, double rank_elapsed_wall_sec) const;
 
 	mutable std::mutex mutex_;
 	uint64_t run_id_ = 0;
@@ -75,13 +63,17 @@ class SnapshotSharedState
 	uint64_t classified_trajectories_ = 0;
 	uint64_t numerical_failures_ = 0;
 	uint64_t bincount_captured_samples_ = 0;
+	uint64_t bincount_never_captured_samples_ = 0;
 
 	RadialHistogram captured_dt_hist_ = RadialHistogram(NUM_BINS, 0.0);
 	RadialHistogram captured_v2dt_hist_ = RadialHistogram(NUM_BINS, 0.0);
 	RadialHistogram captured_dt_sq_hist_ = RadialHistogram(NUM_BINS, 0.0);
 	RadialHistogram captured_v2dt_sq_hist_ = RadialHistogram(NUM_BINS, 0.0);
 
-	std::vector<SnapshotEvaporationProgressEntry> evaporation_events_;
+	RadialHistogram never_captured_path_dt_hist_ = RadialHistogram(NUM_BINS, 0.0);
+	RadialHistogram never_captured_path_v2dt_hist_ = RadialHistogram(NUM_BINS, 0.0);
+	RadialHistogram never_captured_path_dt_sq_hist_ = RadialHistogram(NUM_BINS, 0.0);
+	RadialHistogram never_captured_path_v2dt_sq_hist_ = RadialHistogram(NUM_BINS, 0.0);
 };
 
 class SnapshotRecorder

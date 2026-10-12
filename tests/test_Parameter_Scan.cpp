@@ -36,6 +36,7 @@ TEST(TestParameterScan, TestConfiguration)
 	EXPECT_TRUE(cfg.compute_halo_constraints);
 	EXPECT_EQ(cfg.sample_size, 50);
 	EXPECT_EQ(cfg.fixed_seed, 20260710u);
+	EXPECT_DOUBLE_EQ(cfg.output_radius_rsun, DEFAULT_OUTPUT_RADIUS_RSUN);
 	EXPECT_DOUBLE_EQ(cfg.cross_section_min, 1.0e-35 * cm * cm);
 	EXPECT_DOUBLE_EQ(cfg.cross_section_max, 1.0e-32 * cm * cm);
 	EXPECT_EQ(cfg.cross_sections, 5);
@@ -231,20 +232,74 @@ TEST(TestParameterScan, TestCriticalProbabilityDoesNotStallSquareTrace)
 	rmdir(root.c_str());
 }
 
-TEST(TestParameterScan, TransportControlsAreTypedAndNeverSilentlyIgnored)
+TEST(TestParameterScan, OutputRadiusAcceptsNumericTypesAndLegacyAlias)
 {
-    std::ifstream source(PROJECT_DIR "tests/config_capture_minimal.cfg");
-    const std::string text((std::istreambuf_iterator<char>(source)),std::istreambuf_iterator<char>());
-    const std::string path="/tmp/damascus_transport_config_"+std::to_string(getpid())+".cfg";
-    for(const auto& literal : {"3000", "3000.0", "3000L"}) {
-        { std::ofstream out(path); out << text << "\nouter_removal_radius_rsun = " << literal << ";\n"; }
-        Configuration cfg(path,1);
-        EXPECT_DOUBLE_EQ(cfg.outer_removal_radius_rsun,3000.0);
-        EXPECT_FALSE(cfg.diagnostic_mode);
-    }
-    for(const auto& invalid : {"outer_removal_radius_rsun = \"3000\";", "outer_removal_radius_rsun = 0.005;", "outer_boundary_radius_au = 1100;", "production_mode = true;", "production_mode = false;", "production_mode = 1;", "trajectory_events_enabled = false;", "thermal_validation_mode = \"false\";"}) {
-        { std::ofstream out(path); out << text << "\n" << invalid << "\n"; }
-        EXPECT_THROW(Configuration cfg(path,1),std::invalid_argument);
-    }
-    std::remove(path.c_str());
+	std::ifstream source(PROJECT_DIR "tests/config_capture_minimal.cfg");
+	ASSERT_TRUE(source.good());
+	const std::string text((std::istreambuf_iterator<char>(source)), std::istreambuf_iterator<char>());
+	const std::string path = "/tmp/damascus_output_radius_config_" + std::to_string(getpid()) + ".cfg";
+	for(const auto& key : {"output_radius_rsun", "outer_removal_radius_rsun"})
+		for(const auto& literal : {"3000", "3000.0", "3000L"})
+		{
+			{ std::ofstream out(path); out << text << '\n' << key << " = " << literal << ";\n"; }
+			Configuration cfg(path, 1);
+			EXPECT_DOUBLE_EQ(cfg.output_radius_rsun, 3000.0);
+			EXPECT_FALSE(cfg.diagnostic_mode);
+		}
+	std::remove(path.c_str());
+}
+
+TEST(TestParameterScan, LegacyOutputRadiusWarnsAboutChangedSemantics)
+{
+	const std::string path = "/tmp/damascus_legacy_output_radius_" + std::to_string(getpid()) + ".cfg";
+	{
+		std::ifstream source(PROJECT_DIR "tests/config_capture_minimal.cfg");
+		ASSERT_TRUE(source.good());
+		std::ofstream out(path);
+		out << source.rdbuf() << "\nouter_removal_radius_rsun = 3000;\n";
+	}
+	testing::internal::CaptureStderr();
+	Configuration cfg(path, 0);
+	const std::string warning = testing::internal::GetCapturedStderr();
+	EXPECT_DOUBLE_EQ(cfg.output_radius_rsun, 3000.0);
+	EXPECT_NE(warning.find("deprecated alias for output_radius_rsun"), std::string::npos);
+	EXPECT_NE(warning.find("no longer removes bound orbits"), std::string::npos);
+	std::remove(path.c_str());
+}
+
+TEST(TestParameterScan, OutputRadiusRejectsInvalidAndAmbiguousSettings)
+{
+	std::ifstream source(PROJECT_DIR "tests/config_capture_minimal.cfg");
+	ASSERT_TRUE(source.good());
+	const std::string text((std::istreambuf_iterator<char>(source)), std::istreambuf_iterator<char>());
+	const std::string path = "/tmp/damascus_invalid_output_radius_" + std::to_string(getpid()) + ".cfg";
+	for(const auto& invalid : {
+	        "output_radius_rsun = \"3000\";", "output_radius_rsun = true;",
+	        "output_radius_rsun = 0.0;", "output_radius_rsun = -1;", "output_radius_rsun = 1.0;",
+	        "outer_removal_radius_rsun = \"3000\";", "outer_removal_radius_rsun = 0.005;",
+	        "output_radius_rsun = 3000; outer_removal_radius_rsun = 3000;",
+	        "output_radius_rsun = 3000; outer_removal_radius_rsun = 4000;",
+	        "outer_boundary_radius_au = 1100;", "production_mode = true;", "production_mode = false;",
+	        "production_mode = 1;", "trajectory_events_enabled = false;", "thermal_validation_mode = \"false\";"})
+	{
+		{ std::ofstream out(path); out << text << '\n' << invalid << '\n'; }
+		EXPECT_THROW(Configuration cfg(path, 1), std::invalid_argument) << invalid;
+	}
+	std::remove(path.c_str());
+}
+
+TEST(TestParameterScan, ParameterScanAcceptsCustomOutputRadius)
+{
+	const std::string path = "/tmp/damascus_scan_output_radius_" + std::to_string(getpid()) + ".cfg";
+	{
+		std::ifstream source(PROJECT_DIR "tests/config_unittest.cfg");
+		ASSERT_TRUE(source.good());
+		std::ofstream out(path);
+		out << source.rdbuf() << "\noutput_radius_rsun = 3000;\n";
+	}
+	Configuration cfg(path, 1);
+	EXPECT_EQ(cfg.run_mode, "Parameter scan");
+	EXPECT_DOUBLE_EQ(cfg.output_radius_rsun, 3000.0);
+	EXPECT_NO_THROW(Parameter_Scan scan(cfg));
+	std::remove(path.c_str());
 }

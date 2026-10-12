@@ -638,6 +638,8 @@ TEST(TestDataGeneration, TestExplicitLegacyDiagnosticContract)
 		EXPECT_TRUE(FileContains(
 		    output_dir + "residence_jackknife_blocks.tsv",
 		    "# block_count = 64"));
+		EXPECT_TRUE(FileContains(output_dir + "residence_jackknife_blocks.tsv", "# format_version = 2"));
+		EXPECT_FALSE(FileContains(output_dir + "residence_jackknife_blocks.tsv", "outer_removed"));
 		EXPECT_TRUE(FileContains(
 		    output_dir + "residence_jackknife_blocks.tsv",
 		    "block_id\tbin_index\tresidence_dt_s\tresidence_v2dt_km2_s"));
@@ -714,7 +716,9 @@ TEST(TestDataGeneration, TestTrajectoryDiagnosticOutputContract)
 	data_set.Write_Diagnostic_Output(output_dir, DM);
 	if(rank == 0)
 	{
-		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"schema_version\": \"trajectory-diagnostic-v5\""));
+		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"schema_version\": \"trajectory-diagnostic-v6\""));
+		EXPECT_TRUE(FileContains(output_dir + "run_metadata.json", "\"R_output_rsun\":"));
+		EXPECT_FALSE(FileContains(output_dir + "run_metadata.json", "outer_domain_removal"));
 		EXPECT_TRUE(FileContains(
 		    output_dir + "run_metadata.json",
 		    "\"bincount_integration\": \"conservative-hermite-kepler-separate-boundaries-v8\""));

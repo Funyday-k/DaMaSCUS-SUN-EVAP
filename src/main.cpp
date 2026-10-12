@@ -158,7 +158,7 @@ int main(int argc, char* argv[])
 		SSM.Interpolate_Total_DM_Scattering_Rate(
 		    *cfg.DM, cfg.rate_radius_points, cfg.rate_speed_points, cfg.rate_max_speed);
 
-		data_set.outer_removal_radius_rsun = cfg.outer_removal_radius_rsun;
+		data_set.output_radius_rsun = cfg.output_radius_rsun;
 		data_set.interpolation_points = cfg.interpolation_points;
 		data_set.thermal_shape_run = cfg.thermal_validation_mode;
 		data_set.Generate_Data(*cfg.DM, SSM, *cfg.DM_distr, cfg.snapshot_config, cfg.fixed_seed, cfg.capture_mode);

@@ -28,7 +28,8 @@ class SnapshotHeartbeat
 		const std::string& rank_snapshot_dir,
 		double snapshot_interval,
 		double mass_gev,
-		double sigma_cm2);
+		double sigma_cm2,
+			double output_radius_rsun = DEFAULT_OUTPUT_RADIUS_RSUN);
 	~SnapshotHeartbeat();
 
 	bool Start(const std::chrono::steady_clock::time_point& epoch);
@@ -58,6 +59,7 @@ class SnapshotHeartbeat
 	double snapshot_interval_;
 	double mass_gev_;
 	double sigma_cm2_;
+	double output_radius_rsun_;
 	double missed_tolerance_sec_;
 
 	std::thread worker_;
@@ -69,7 +71,6 @@ class SnapshotHeartbeat
 	bool worker_failed_ = false;
 	std::chrono::steady_clock::time_point start_time_;
 
-	size_t first_uncommitted_evaporation_entry_ = 0;
 	int last_rank_snapshot_written_ = 0;
 	int highest_snapshot_index_seen_ = 0;
 	int last_retry_merge_index_ = 0;

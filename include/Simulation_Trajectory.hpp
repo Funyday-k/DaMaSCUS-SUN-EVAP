@@ -26,12 +26,12 @@ namespace DaMaSCUS_SUN
 class SnapshotRecorder;
 
 // Numerical/analytic matching is at the solar surface. The distant incident
-// sampling sphere, transit diagnostic surface, and physical removal cutoff
+// sampling sphere, transit diagnostic surface, and radial recording limit
 // serve different purposes and must remain independent.
 constexpr double TRAJECTORY_BOUNDARY_RSUN = 1.0;
 constexpr double INCIDENT_INJECTION_RSUN = 2.0;
 constexpr double TRANSIT_REFERENCE_RSUN = 1100.0;
-constexpr double DEFAULT_OUTER_REMOVAL_RSUN = 1100.0;
+constexpr double DEFAULT_OUTPUT_RADIUS_RSUN = 1100.0;
 constexpr double R_SUN_KM = 6.957e5;  // km
 constexpr double AU_KM = 1.495978707e8;  // IAU 2012 exact astronomical unit [km]
 constexpr double BIN_WIDTH_KM = R_SUN_KM / 1000.0;  // 0.001 R_sun
@@ -57,7 +57,7 @@ void GrowRadialHistograms(std::size_t bins, Histograms&... histograms)
 
 constexpr unsigned long int DEFAULT_MAXIMUM_FREE_TIME_STEPS = 1000000000000UL;
 constexpr unsigned long int DEFAULT_MAXIMUM_SCATTERINGS = 100000000000000UL;
-constexpr int TRAJECTORY_TERMINATION_REASON_COUNT = 12;
+constexpr int TRAJECTORY_TERMINATION_REASON_COUNT = 11;
 
 struct BincountContribution
 {
@@ -89,16 +89,16 @@ struct BoundKeplerExteriorArc
 	double elapsed_time_sec = 0.0;
 	double kepler_period_sec = 0.0;
 	double apoapsis_km = 0.0;
-	bool outer_removed = false;
 	RadialHistogram dt_hist = RadialHistogram(NUM_BINS, 0.0);
 	RadialHistogram v2dt_hist = RadialHistogram(NUM_BINS, 0.0);
 };
 
 // Analytically propagate a negative-specific-energy outward crossing from the
 // 1 R_sun matching surface through apoapsis and back to the same radius.
-// The returned histograms contain the entire round-trip residence.
+// The state and elapsed time always describe the complete round trip. The
+// recording radius limits only the two-branch histogram contributions.
 bool Compute_Bound_Kepler_Exterior_Arc(const Event& outward_event, BoundKeplerExteriorArc& arc,
-    double removal_radius_km = std::numeric_limits<double>::infinity());
+    double recording_radius_km = std::numeric_limits<double>::infinity());
 // Exact hyperbolic shell moments, between two radii on one outgoing branch.
 bool Compute_Unbound_Kepler_Exterior_Arc(const Event& outward_event, double end_radius_km, BoundKeplerExteriorArc& arc);
 
@@ -114,8 +114,7 @@ enum class TrajectoryTerminationReason
 	SpeedLimit = 7,
 	NumericalFailure = 8,
 	CaptureMode = 9,
-	EnergyDriftEscape = 10,
-	OuterDomainRemoval = 11  // Complete bound history at the outer removal surface.
+	EnergyDriftEscape = 10
 };
 
 enum class TrajectoryNumericalFailureDetail
@@ -255,7 +254,6 @@ struct TrajectoryBincount
 	RadialHistogram transit_v2dt_hist = RadialHistogram(NUM_BINS, 0.0);
 	RadialHistogram post_evap_dt_hist = RadialHistogram(NUM_BINS, 0.0);
 	RadialHistogram post_evap_v2dt_hist = RadialHistogram(NUM_BINS, 0.0);
-	bool outer_domain_removed = false;
 	TrajectoryTerminationReason termination_reason = TrajectoryTerminationReason::Unknown;
 	TrajectoryNumericalFailureDetail numerical_failure_detail =
 	    TrajectoryNumericalFailureDetail::None;
@@ -367,7 +365,7 @@ class Trajectory_Simulator
 	unsigned long int maximum_time_steps;
 	unsigned long int maximum_scatterings;
 	double maximum_distance;  // numerical matching / validated escape surface
-	double outer_removal_radius_km = DEFAULT_OUTER_REMOVAL_RSUN * R_SUN_KM;
+	double recording_radius_km = DEFAULT_OUTPUT_RADIUS_RSUN * R_SUN_KM;
 	double outgoing_recording_radius_km = TRANSIT_REFERENCE_RSUN * R_SUN_KM;
 
 	// 单条轨迹的 wall-clock 时间上限（秒）。超过后 Propagate_Freely 会返回 WallTimeLimit，

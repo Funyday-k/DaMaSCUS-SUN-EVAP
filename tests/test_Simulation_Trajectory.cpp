@@ -196,7 +196,6 @@ TEST(TestSimulationTrajectory, TestTrajectoryBincountSurvivalDefaults)
 	EXPECT_FALSE(bincount.boundary_escape_observed);
 	EXPECT_TRUE(bincount.survival_valid);
 	EXPECT_FALSE(bincount.numerically_invalid_escape);
-	EXPECT_FALSE(bincount.outer_domain_removed);
 	EXPECT_DOUBLE_EQ(bincount.t_capture, -1.0);
 	EXPECT_DOUBLE_EQ(bincount.t_last_bound, -1.0);
 	EXPECT_DOUBLE_EQ(bincount.t_termination, -1.0);
@@ -217,9 +216,8 @@ TEST(TestSimulationTrajectory, TestTrajectoryBincountSurvivalDefaults)
 	EXPECT_TRUE(std::isnan(bincount.last_bound_exit_exterior_time_sec));
 	EXPECT_TRUE(std::isnan(bincount.max_bound_exit_exterior_time_sec));
 	EXPECT_TRUE(std::isnan(bincount.min_energy_after_capture_eV));
-	EXPECT_EQ(TRAJECTORY_TERMINATION_REASON_COUNT, 12);
+	EXPECT_EQ(TRAJECTORY_TERMINATION_REASON_COUNT, 11);
 	EXPECT_EQ(static_cast<int>(TrajectoryTerminationReason::EnergyDriftEscape), 10);
-	EXPECT_EQ(static_cast<int>(TrajectoryTerminationReason::OuterDomainRemoval), 11);
 	EXPECT_EQ(
 	    bincount.numerical_failure_detail,
 	    TrajectoryNumericalFailureDetail::None);
@@ -561,7 +559,6 @@ TEST(TestSimulationTrajectory, TestSurvivalInvalidTerminationReasons)
 	EXPECT_TRUE(TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason::MaxFreeSteps));
 	EXPECT_TRUE(TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason::MaxScatterings));
 	EXPECT_FALSE(TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason::OutwardEscape));
-	EXPECT_TRUE(TrajectoryTerminationInvalidatesSurvival(TrajectoryTerminationReason::OuterDomainRemoval));
 }
 
 TEST(TestSimulationTrajectory, TestResidenceBincountRejectsIncompleteHistories)
@@ -585,8 +582,6 @@ TEST(TestSimulationTrajectory, TestResidenceBincountRejectsIncompleteHistories)
 	    TrajectoryTerminationReason::MaxFreeSteps));
 	EXPECT_TRUE(TrajectoryTerminationInvalidatesResidenceBincount(
 	    TrajectoryTerminationReason::MaxScatterings));
-	EXPECT_FALSE(TrajectoryTerminationInvalidatesResidenceBincount(
-	    TrajectoryTerminationReason::OuterDomainRemoval));
 }
 
 TEST(TestSimulationTrajectory, TestScatter)
@@ -646,7 +641,6 @@ TEST(TestSimulationTrajectory, TestMaxFreeStepsTerminationReason)
 	Trajectory_Result result = simulator.Simulate(IC, DM, 0);
 
 	EXPECT_EQ(result.bincount.termination_reason, TrajectoryTerminationReason::MaxFreeSteps);
-	EXPECT_FALSE(result.bincount.outer_domain_removed);
 	EXPECT_FALSE(result.bincount.survival_valid);
 	EXPECT_FALSE(result.Particle_Free());
 	EXPECT_FALSE(result.Particle_Reflected());
@@ -722,20 +716,18 @@ TEST(TestSimulationTrajectory, TestSimulate)
 			   || reason == TrajectoryTerminationReason::EnergyDriftEscape)
 				EXPECT_NE(result.bincount.numerical_failure_detail,
 				          TrajectoryNumericalFailureDetail::None);
-			if(reason == TrajectoryTerminationReason::CaptureMode
-			   || reason == TrajectoryTerminationReason::OuterDomainRemoval)
+			if(reason == TrajectoryTerminationReason::CaptureMode)
 				EXPECT_TRUE(result.bincount.is_captured);
 		}
 		if(result.bincount.is_captured)
 		{
 			EXPECT_GT(result.number_of_scatterings, 0UL);
-			if(reason == TrajectoryTerminationReason::OutwardEscape
-			   || reason == TrajectoryTerminationReason::OuterDomainRemoval)
+			if(reason == TrajectoryTerminationReason::OutwardEscape)
 			{
 				const double duration = result.bincount.t_termination - result.bincount.t_capture;
 				const double binned = std::accumulate(result.bincount.dt_hist.begin(),
 				    result.bincount.dt_hist.end(), 0.0);
-				EXPECT_NEAR(binned, duration, 1.0e-8 * std::max(1.0, duration));
+				EXPECT_LE(binned, duration + 1.0e-8 * std::max(1.0, duration));
 			}
 		}
 	}

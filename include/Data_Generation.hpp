@@ -58,7 +58,6 @@ struct EvaporationRecord
 	bool survival_valid = true;
 	bool numerically_invalid_escape = false;
 	bool censored = false;
-	bool outer_domain_removed = false;
 	TrajectoryTerminationReason termination_reason = TrajectoryTerminationReason::Unknown;
 	double max_free_energy_drift_eV = 0.0;
 	double max_free_energy_drift_rel = 0.0;
@@ -191,7 +190,6 @@ class Simulation_Data
 	unsigned long int number_of_complete_evaporation_particles;
 	unsigned long int number_of_residence_samples;
 	unsigned long int number_of_censored_captured_particles;
-	unsigned long int number_of_outer_domain_removed_particles;
 	unsigned long int number_of_invalid_survival_captured_particles;
 	unsigned long int number_of_initial_shift_failures;
 	unsigned long int number_of_final_reflection_shift_failures;
@@ -223,7 +221,6 @@ class Simulation_Data
 	std::array<unsigned long int, RESIDENCE_JACKKNIFE_BLOCKS> jackknife_completed_escape_counts{};
 	std::array<unsigned long int, RESIDENCE_JACKKNIFE_BLOCKS> jackknife_residence_sample_counts{};
 	std::array<unsigned long int, RESIDENCE_JACKKNIFE_BLOCKS> jackknife_invalid_counts{};
-	std::array<unsigned long int, RESIDENCE_JACKKNIFE_BLOCKS> jackknife_outer_domain_removed_counts{};
 
 	// Evaporation records
 	std::vector<EvaporationRecord> evaporation_records;
@@ -256,7 +253,7 @@ class Simulation_Data
 
   public:
 	std::vector<std::vector<libphysica::DataPoint>> data;
-	double outer_removal_radius_rsun = DEFAULT_OUTER_REMOVAL_RSUN;
+	double output_radius_rsun = DEFAULT_OUTPUT_RADIUS_RSUN;
 	unsigned int interpolation_points = 0;
 	unsigned int rate_radius_points = 0;
 	unsigned int rate_speed_points = 0;

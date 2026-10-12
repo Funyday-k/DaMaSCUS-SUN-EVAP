@@ -19,7 +19,7 @@ Event ellipse(double e, double r, double peri) {
 double sum(const RadialHistogram& x){return std::accumulate(x.begin(),x.end(),0.0);}
 }
 TEST(TransportContract, GridRetainsNativeGeometryAndClipsFinalShell) {
-    for(double outer:{550.0,DEFAULT_OUTER_REMOVAL_RSUN,2200.0}) {
+    for(double outer:{550.0,DEFAULT_OUTPUT_RADIUS_RSUN,2200.0}) {
         auto edges=BuildRadialGrid(outer*R_SUN_KM);
         EXPECT_DOUBLE_EQ(edges.front(),0.0); EXPECT_DOUBLE_EQ(edges.back(),outer*R_SUN_KM);
         for(std::size_t b=0;b+1<edges.size();++b) {
@@ -44,30 +44,60 @@ TEST(TransportContract, EllipsePeriodAndVelocityMomentClosure) {
         EXPECT_NEAR(sum(arc.dt_hist)/arc.elapsed_time_sec,1.0,2e-8);
     }
 }
-TEST(TransportContract, RemovalIsOneWayAndPreservesEnergyAngularMomentum) {
+TEST(TransportContract, RecordingWindowKeepsCompleteReturnAndClipsBothBranches) {
     const double peri=0.5*rSun, apo=4000*rSun, e=(apo-peri)/(apo+peri);
-    const auto out=ellipse(e,1.2*rSun,peri); BoundKeplerExteriorArc arc;
-    ASSERT_TRUE(Compute_Bound_Kepler_Exterior_Arc(out,arc,1100*R_SUN_KM));
-    ASSERT_TRUE(arc.outer_removed); EXPECT_NEAR(In_Units(arc.terminal_event.Radius(),rSun),1100,1e-7);
-    EXPECT_GT(arc.terminal_event.position.Dot(arc.terminal_event.velocity),0);
-    EXPECT_NEAR(sum(arc.dt_hist)/arc.elapsed_time_sec,1.0,2e-8);
-    EXPECT_NEAR(arc.terminal_event.Angular_Momentum()/out.Angular_Momentum(),1.0,2e-8);
-    EXPECT_NEAR((arc.terminal_event.Speed()*arc.terminal_event.Speed()-2*G_Newton*mSun/arc.terminal_event.Radius()) /
-                (out.Speed()*out.Speed()-2*G_Newton*mSun/out.Radius()),1.0,2e-8);
-    BoundKeplerExteriorArc complete; ASSERT_TRUE(Compute_Bound_Kepler_Exterior_Arc(out,complete));
-    EXPECT_LT(arc.elapsed_time_sec,complete.elapsed_time_sec/2);
-    EXPECT_FALSE(TrajectoryTerminationInvalidatesResidenceBincount(TrajectoryTerminationReason::OuterDomainRemoval));
+    const auto out=ellipse(e,1.2*rSun,peri);
+    BoundKeplerExteriorArc complete;
+    ASSERT_TRUE(Compute_Bound_Kepler_Exterior_Arc(out,complete));
+    const double mu=In_Units(G_Newton*mSun,km*km*km/(sec*sec));
+    const double r0=In_Units(out.Radius(),km), v=In_Units(out.Speed(),km/sec);
+    const double h=In_Units(out.Angular_Momentum(),km*km/sec), energy=v*v/2-mu/r0;
+    for(double window:{550.0,1100.0,2200.0}) {
+        SCOPED_TRACE(window);
+        BoundKeplerExteriorArc arc;
+        ASSERT_TRUE(Compute_Bound_Kepler_Exterior_Arc(out,arc,window*R_SUN_KM));
+        EXPECT_DOUBLE_EQ(arc.elapsed_time_sec,complete.elapsed_time_sec);
+        EXPECT_DOUBLE_EQ(arc.terminal_event.time,complete.terminal_event.time);
+        for(int component=0;component<3;++component) {
+            EXPECT_DOUBLE_EQ(arc.terminal_event.position[component],complete.terminal_event.position[component]);
+            EXPECT_DOUBLE_EQ(arc.terminal_event.velocity[component],complete.terminal_event.velocity[component]);
+        }
+        EXPECT_LT(arc.terminal_event.position.Dot(arc.terminal_event.velocity),0.0);
+        EXPECT_NEAR(arc.terminal_event.Radius()/out.Radius(),1.0,2e-10);
+        EXPECT_LT(sum(arc.dt_hist),arc.elapsed_time_sec);
+        const auto edges=BuildRadialGrid(window*R_SUN_KM);
+        ASSERT_EQ(arc.dt_hist.size()+1,edges.size());
+        // Integrate dr/vr from Cartesian energy and angular momentum. This is
+        // independent of the eccentric-anomaly implementation and counts both
+        // outward and inward passages through every recorded shell.
+        auto quadrature=[&](double low,double high) {
+            double dt=0.0,v2dt=0.0;
+            const int N=100000;
+            const double dy=std::log(high/low)/N;
+            for(int j=0;j<N;++j) {
+                const double r=low*std::exp((j+0.5)*dy),v2=2*(energy+mu/r);
+                const double step=2*r*dy/std::sqrt(v2-h*h/(r*r));
+                dt+=step; v2dt+=v2*step;
+            }
+            return std::make_pair(dt,v2dt);
+        };
+        const auto total=quadrature(r0,window*R_SUN_KM);
+        EXPECT_NEAR(sum(arc.dt_hist)/total.first,1.0,2e-8);
+        EXPECT_NEAR(sum(arc.v2dt_hist)/total.second,1.0,2e-8);
+        const auto final_shell=quadrature(edges[edges.size()-2],edges.back());
+        EXPECT_NEAR(arc.dt_hist.back()/final_shell.first,1.0,2e-8);
+        EXPECT_NEAR(arc.v2dt_hist.back()/final_shell.second,1.0,2e-8);
+    }
 }
-TEST(TransportContract, WideBoundOrbitStopsAtThe1100SolarRadiusCutoff) {
+TEST(TransportContract, WideBoundOrbitReturnsBeyondTheRecordingWindow) {
     const double peri=0.5*rSun, apo=2000*AU;
     const double e=(apo-peri)/(apo+peri);
     const Event out=ellipse(e,1.2*rSun,peri);
     BoundKeplerExteriorArc arc;
-    ASSERT_TRUE(Compute_Bound_Kepler_Exterior_Arc(out,arc,DEFAULT_OUTER_REMOVAL_RSUN*R_SUN_KM));
-    EXPECT_TRUE(arc.outer_removed);
-    EXPECT_NEAR(In_Units(arc.terminal_event.Radius(),rSun),DEFAULT_OUTER_REMOVAL_RSUN,1e-7);
-    EXPECT_GT(arc.terminal_event.position.Dot(arc.terminal_event.velocity),0.0);
-    EXPECT_NEAR(sum(arc.dt_hist)/arc.elapsed_time_sec,1.0,1e-10);
+    ASSERT_TRUE(Compute_Bound_Kepler_Exterior_Arc(out,arc,DEFAULT_OUTPUT_RADIUS_RSUN*R_SUN_KM));
+    EXPECT_NEAR(arc.terminal_event.Radius()/out.Radius(),1.0,1e-7);
+    EXPECT_LT(arc.terminal_event.position.Dot(arc.terminal_event.velocity),0.0);
+    EXPECT_LT(sum(arc.dt_hist),arc.elapsed_time_sec*1e-3);
     EXPECT_GT(arc.dt_hist.back(),0.0);
     EXPECT_GT(sum(arc.v2dt_hist),0.0);
 }
@@ -139,8 +169,7 @@ TEST(TransportContract, SolarSurfaceOneSidedCrossingsRemainFinite) {
     const double peri=.5*rSun, apo=5*rSun, e=(apo-peri)/(apo+peri);
     BoundKeplerExteriorArc bound;
     ASSERT_TRUE(Compute_Bound_Kepler_Exterior_Arc(ellipse(e,rplus,peri),bound,
-                                                  DEFAULT_OUTER_REMOVAL_RSUN*R_SUN_KM));
-    EXPECT_FALSE(bound.outer_removed);
+                                                  DEFAULT_OUTPUT_RADIUS_RSUN*R_SUN_KM));
     EXPECT_NEAR(In_Units(bound.terminal_event.Radius(),rSun),1+eps,1e-9);
     EXPECT_NEAR(sum(bound.dt_hist)/bound.elapsed_time_sec,1.0,1e-8);
 
@@ -152,9 +181,10 @@ TEST(TransportContract, SolarSurfaceOneSidedCrossingsRemainFinite) {
                           libphysica::Vector({vr*km/sec,vt*km/sec,0.0}));
         BoundKeplerExteriorArc arc;
         ASSERT_TRUE(offset<0
-            ? Compute_Bound_Kepler_Exterior_Arc(state,arc,DEFAULT_OUTER_REMOVAL_RSUN*R_SUN_KM)
+            ? Compute_Bound_Kepler_Exterior_Arc(state,arc,DEFAULT_OUTPUT_RADIUS_RSUN*R_SUN_KM)
             : Compute_Unbound_Kepler_Exterior_Arc(state,TRANSIT_REFERENCE_RSUN*R_SUN_KM,arc));
-        EXPECT_NEAR(sum(arc.dt_hist)/arc.elapsed_time_sec,1.0,1e-8);
+        if(offset<0) EXPECT_LT(sum(arc.dt_hist),arc.elapsed_time_sec);
+        else EXPECT_NEAR(sum(arc.dt_hist)/arc.elapsed_time_sec,1.0,1e-8);
     }
 }
 
@@ -186,7 +216,7 @@ TEST(TransportContract, CaptureAndTransportShareFirstCollisionAccuracy) {
             for(std::size_t bin=0;bin<b.bincount.dt_hist.size();++bin)
                 (BincountBinUpperKm(bin)<=R_SUN_KM*(1+1e-12) ? inside : outside) += b.bincount.dt_hist[bin];
             EXPECT_NEAR(b.bincount.time_inside_sun_after_capture_sec,inside,1e-10*std::max(1.0,inside));
-            EXPECT_NEAR(b.bincount.time_outside_sun_after_capture_sec,outside,1e-10*std::max(1.0,outside));
+            EXPECT_GE(b.bincount.time_outside_sun_after_capture_sec,outside-1e-10*std::max(1.0,outside));
         }
         EXPECT_NE(a.bincount.termination_reason,TrajectoryTerminationReason::NumericalFailure);
         EXPECT_EQ(a.bincount.is_captured,b.bincount.is_captured);
@@ -220,9 +250,84 @@ TEST(TransportContract, NearlyParabolicMomentsRemainAccurateAtFiniteCutoff) {
             const double step=r*dy/std::sqrt(v2-h*h/(r*r));
             dt+=step; v2dt+=v2*step;
         }
-        EXPECT_NEAR(sum(arc.dt_hist)/dt,1.0,1e-8);
-        EXPECT_NEAR(sum(arc.v2dt_hist)/v2dt,1.0,1e-8);
-        EXPECT_NEAR(arc.elapsed_time_sec/dt,1.0,1e-8);
-        EXPECT_NEAR(In_Units(arc.terminal_event.Radius(),km)/r1,1.0,1e-8);
+        const double branches=offset<0 ? 2.0 : 1.0;
+        EXPECT_NEAR(sum(arc.dt_hist)/(branches*dt),1.0,1e-8);
+        EXPECT_NEAR(sum(arc.v2dt_hist)/(branches*v2dt),1.0,1e-8);
+        if(offset<0) {
+            EXPECT_GT(arc.elapsed_time_sec,2*dt);
+            EXPECT_NEAR(In_Units(arc.terminal_event.Radius(),km)/r0,1.0,1e-8);
+            EXPECT_LT(arc.terminal_event.position.Dot(arc.terminal_event.velocity),0.0);
+        } else {
+            EXPECT_NEAR(arc.elapsed_time_sec/dt,1.0,1e-8);
+            EXPECT_NEAR(In_Units(arc.terminal_event.Radius(),km)/r1,1.0,1e-8);
+        }
     }
+}
+
+TEST(TransportContract, RecordingRadiusDoesNotChangeSimulatedScatterHistory) {
+    Solar_Model sun;
+    obscura::DM_Particle_SD dm(0.01*GeV);
+    dm.Set_Sigma_Proton(1e-32*cm*cm);
+    Event initial(0.0,
+        libphysica::Vector({-742895.7231921622*km,183547.0308320915*km,-7389.508476071721*km}),
+        libphysica::Vector({115.6738867389554*km/sec,-529.697120864836*km/sec,230.2163702333374*km/sec}));
+    ASSERT_TRUE(Hyperbolic_Kepler_Shift(initial,TRAJECTORY_BOUNDARY_RSUN*rSun));
+    initial.time=0.0;
+    bool returned_then_scattered=false;
+    for(unsigned seed=1;seed<=32;++seed) {
+        SCOPED_TRACE(seed);
+        Trajectory_Simulator reference(sun,100000,128,TRAJECTORY_BOUNDARY_RSUN*rSun);
+        reference.recording_radius_km=2.05*R_SUN_KM;
+        reference.Enable_Diagnostic_Trace(true);
+        reference.Fix_PRNG_Seed(seed);
+        const auto small=reference.Simulate(initial,dm,0);
+        if(small.bincount.is_captured && small.bincount.termination_reason==TrajectoryTerminationReason::OutwardEscape) {
+            const double lifetime=small.bincount.t_termination-small.bincount.t_capture;
+            EXPECT_NEAR(small.bincount.time_inside_sun_after_capture_sec+
+                small.bincount.time_outside_sun_after_capture_sec,lifetime,1e-8*std::max(1.0,lifetime));
+            EXPECT_LE(sum(small.bincount.dt_hist),lifetime+1e-8*std::max(1.0,lifetime));
+            if(small.bincount.max_aphelion_km>2.05*R_SUN_KM)
+                EXPECT_LT(sum(small.bincount.dt_hist),lifetime);
+        }
+        // A bound exterior passage must be followed by another solar scatter.
+        bool bound_exit=false,returned=false;
+        for(const auto& event:small.diagnostic_events) {
+            if(event.event_type==TrajectoryDiagnosticEventType::SunExit && event.is_bound) bound_exit=true;
+            if(bound_exit && event.event_type==TrajectoryDiagnosticEventType::SunEntry) returned=true;
+            if(returned && event.event_type==TrajectoryDiagnosticEventType::ScatterPost
+                && small.bincount.max_aphelion_km>2.05*R_SUN_KM) returned_then_scattered=true;
+        }
+        for(double window:{550.0,1100.0,2200.0}) {
+            SCOPED_TRACE(window);
+            Trajectory_Simulator other(sun,100000,128,TRAJECTORY_BOUNDARY_RSUN*rSun);
+            other.recording_radius_km=window*R_SUN_KM;
+            other.Enable_Diagnostic_Trace(true);
+            other.Fix_PRNG_Seed(seed);
+            const auto large=other.Simulate(initial,dm,0);
+            EXPECT_EQ(reference.Serialize_PRNG_State(),other.Serialize_PRNG_State());
+            EXPECT_EQ(small.number_of_scatterings,large.number_of_scatterings);
+            EXPECT_EQ(small.bincount.termination_reason,large.bincount.termination_reason);
+            EXPECT_DOUBLE_EQ(small.bincount.t_capture,large.bincount.t_capture);
+            EXPECT_DOUBLE_EQ(small.bincount.t_termination,large.bincount.t_termination);
+            EXPECT_DOUBLE_EQ(small.final_event.time,large.final_event.time);
+            EXPECT_DOUBLE_EQ(small.bincount.time_inside_sun_after_capture_sec,large.bincount.time_inside_sun_after_capture_sec);
+            EXPECT_DOUBLE_EQ(small.bincount.time_outside_sun_after_capture_sec,large.bincount.time_outside_sun_after_capture_sec);
+            for(int component=0;component<3;++component) {
+                EXPECT_DOUBLE_EQ(small.final_event.position[component],large.final_event.position[component]);
+                EXPECT_DOUBLE_EQ(small.final_event.velocity[component],large.final_event.velocity[component]);
+            }
+            ASSERT_EQ(small.diagnostic_events.size(),large.diagnostic_events.size());
+            for(std::size_t index=0;index<small.diagnostic_events.size();++index) {
+                const auto& a=small.diagnostic_events[index]; const auto& b=large.diagnostic_events[index];
+                EXPECT_EQ(a.event_type,b.event_type);
+                EXPECT_EQ(a.scatter_index,b.scatter_index);
+                EXPECT_DOUBLE_EQ(a.t_s,b.t_s);
+                EXPECT_DOUBLE_EQ(a.r_km,b.r_km);
+                EXPECT_EQ(a.position_km,b.position_km);
+                EXPECT_EQ(a.velocity_km_s,b.velocity_km_s);
+            }
+            EXPECT_LE(sum(small.bincount.dt_hist),sum(large.bincount.dt_hist)*(1+1e-10)+1e-8);
+        }
+    }
+    EXPECT_TRUE(returned_then_scattered);
 }

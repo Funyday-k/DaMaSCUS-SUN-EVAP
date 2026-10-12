@@ -89,6 +89,11 @@ class SnapshotHeartbeatRetry : public ::testing::Test
 		state.rank_elapsed_wall_sec = 1.0;
 		state.local_total = 1;
 		state.local_classified = 1;
+		state.bincount_never_captured_samples = 1;
+		state.never_captured_path_dt_hist[0] = rank + 1;
+		state.never_captured_path_v2dt_hist[0] = 10.0 * (rank + 1);
+		state.never_captured_path_dt_sq_hist[0] = (rank + 1) * (rank + 1);
+		state.never_captured_path_v2dt_sq_hist[0] = 100.0 * (rank + 1) * (rank + 1);
 		return state;
 	}
 
@@ -140,6 +145,8 @@ TEST_F(SnapshotHeartbeatRetry, DelayedShardMergesDuringRunAfterInitialRetry)
 	const std::string report = ReadAll(report_path);
 	EXPECT_NE(report.find("# ready_ranks = 0,1"), std::string::npos);
 	EXPECT_NE(report.find("# total_trajectories = 1\n"), std::string::npos);
+	EXPECT_NE(report.find("# never_captured_bincount_samples = 1\n"), std::string::npos);
+	EXPECT_FALSE(PathExists(root_ + "snapshot_1s_evaporation_times.txt"));
 	EXPECT_TRUE(WaitUntil([&] {
 		return !PathExists(SnapshotRankCheckpointPath(ranks_, 0, 1, 1.0))
 		       && !PathExists(SnapshotRankCheckpointPath(ranks_, 1, 1, 1.0));
@@ -157,6 +164,8 @@ TEST_F(SnapshotHeartbeatRetry, FailedCleanupIsRetriedWithoutLosingMergedReport)
 	ASSERT_TRUE(initial.cleanup_succeeded);
 	const std::string report_path = SnapshotTextFilePath(root_, 1, 1.0);
 	const std::string merged_report = ReadAll(report_path);
+	EXPECT_NE(merged_report.find("# never_captured_bincount_samples = 2\n"), std::string::npos);
+	EXPECT_FALSE(PathExists(root_ + "snapshot_1s_evaporation_times.txt"));
 
 	// A nonempty directory at a checkpoint path fails remove() even when the
 	// test runs with elevated privileges, unlike permission-based fixtures.

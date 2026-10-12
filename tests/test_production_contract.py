@@ -5,12 +5,84 @@ import argparse
 import csv
 import io
 import json
+import math
 from pathlib import Path
 import re
 import subprocess
 import tempfile
 
 from bincount_contract import read_bincount, validate_completed, validate_moments, validate_against_blocks
+
+
+def validate_snapshots(directory: Path, final_header: dict[str, str], ranks: int) -> None:
+    """Validate cumulative reports and honest missed checkpoints on any ranks."""
+    assert ranks > 0
+    assert not list(directory.rglob('*_evaporation_times.txt'))
+    snapshots = sorted(directory.glob('snapshot_*s.txt'),
+                       key=lambda path: int(re.fullmatch(r'snapshot_(\d+)s\.txt', path.name).group(1)))
+    # A valid run can finish before the first one-second heartbeat.
+    for path in snapshots:
+        header: dict[str, str] = {}
+        rows: list[list[float]] = []
+        for line in path.read_text().splitlines():
+            if line.startswith('#'):
+                key, separator, value = line[1:].partition('=')
+                if separator:
+                    header[key.strip()] = value.strip()
+            elif line.strip():
+                row = [float(value) for value in line.split()]
+                assert len(row) == 11, (path, row)
+                assert all(math.isfinite(value) and value >= 0.0 for value in row)
+                rows.append(row)
+        status = header['snapshot_status']
+        assert status in ('merged', 'partial', 'missed_writer_delay'), (path, header)
+        target = int(header['snapshot_target_wall_time_s'])
+        interval = float(header['snapshot_interval_s'])
+        assert target == int(re.fullmatch(r'snapshot_(\d+)s\.txt', path.name).group(1))
+        assert math.isfinite(interval) and interval > 0.0 and interval.is_integer()
+        assert target > 0 and target % int(interval) == 0
+        assert int(header['snapshot_run_id']) >= 0
+        if status == 'missed_writer_delay':
+            # The writer emits only these fields: no reconstructed populations
+            # or ready/missing rank lists exist for an unwritten checkpoint.
+            assert set(header) == {'snapshot_status', 'snapshot_run_id', 'snapshot_target_wall_time_s',
+                                   'snapshot_interval_s', 'actual_write_wall_time_s', 'note'}, (path, header)
+            actual = float(header['actual_write_wall_time_s'])
+            assert math.isfinite(actual) and actual > target
+            assert header['note'] == 'heartbeat woke too late; no state rewind is available'
+            assert not rows, path
+            continue
+        assert header['format_version'] == '10'
+        ready = [int(value) for value in header['ready_ranks'].split(',')] if header['ready_ranks'] else []
+        missing = [int(value) for value in header['missing_ranks'].split(',')] if header['missing_ranks'] else []
+        assert ready == sorted(set(ready)) and missing == sorted(set(missing))
+        assert set(ready).isdisjoint(missing)
+        assert sorted(ready + missing) == list(range(ranks))
+        if status == 'merged':
+            assert ready == list(range(ranks)) and not missing
+        else:
+            assert ready and missing
+            assert header['WARNING'] == 'partial snapshot; not all ranks reached this checkpoint'
+        assert rows and [row[0] for row in rows] == list(range(len(rows)))
+        total = int(header['total_trajectories'])
+        captured = int(header['captured_particles'])
+        classified = int(header['valid_trajectories'])
+        never = int(header['never_captured_bincount_samples'])
+        assert 0 <= captured <= classified <= total <= int(final_header['N_injected'])
+        assert captured <= int(final_header['N_ever_captured'])
+        assert never == classified - captured
+        assert never <= int(final_header['N_never_captured'])
+        assert int(header['unresolved_not_captured_trajectories']) == total - classified
+        provisional = int(header['in_progress_bincount_captured_samples'])
+        residence = int(header['residence_bincount_samples'])
+        assert 0 <= provisional <= len(ready)
+        assert provisional <= residence <= captured + provisional
+        assert int(header['completed_captured_residence_bincount_samples']) == residence - provisional
+        assert int(header['captured_residence_bincount_samples']) == residence
+        assert header['never_captured_path_population'] == 'completed_physically_classified_never_captured_outward_escape'
+        assert header['in_progress_uncaptured_path_included'] == '0'
+        if not never:
+            assert all(row[7:] == [0.0] * 4 for row in rows), path
 
 
 def main() -> None:
@@ -49,7 +121,7 @@ def main() -> None:
             lines = result.stdout.splitlines()
             assert len(lines) == 1 and lines[0].startswith('CAPTURE_RESULT_JSON='), result.stdout
             record = json.loads(lines[0].split('=', 1)[1])
-            assert record['capture_result_schema'] == 2 and record['mpi_ranks'] == args.ranks
+            assert record['capture_result_schema'] == 3 and record['mpi_ranks'] == args.ranks
             assert len(record['blocks']) == 64
             assert record['N_inj'] == sum(row[0] for row in record['blocks'])
             assert record['N_capt'] == sum(row[1] for row in record['blocks'])
@@ -75,6 +147,7 @@ def main() -> None:
             header = validate_completed(product / 'bincount.tsv')
             assert int(header['N_ever_captured']) == 64
             assert (product / 'snapshot').is_dir()
+            assert not list((product / 'snapshot').rglob('*_evaporation_times.txt'))
             assert 'source_sha256' not in header and 'compiler' not in header
             assert json.loads(header['SHM_vObserver_km_s']) == [11.1, 232.2, 7.3]
             assert json.loads(header['DM_relative_couplings']) == [1, 1]
@@ -96,15 +169,36 @@ def main() -> None:
         assert result.returncode != 0 and 'not empty' in result.stderr
         assert sentinel.read_text() == 'previous snapshot' and (product / 'bincount.tsv').read_bytes() == saved
 
+        # A finite radial window changes statistical coverage, while the same
+        # RNG streams retain capture, completion and exclusion decisions.
+        result, output, _ = run('small_window', run_mode='"Parameter point"', sample_size='64',
+                                output_radius_rsun='2.05', snapshot_enabled='false')
+        assert result.returncode == 0, result.stdout + result.stderr
+        small_path = output / 'results_-2.000000_-32.000000/bincount.tsv'
+        small_header, small_blocks, small_rows = read_bincount(small_path)
+        validate_completed(small_path)
+        full_header, full_blocks, full_rows = read_bincount(root / 'no_snapshot/results_-2.000000_-32.000000/bincount.tsv')
+        assert small_blocks == full_blocks
+        for key in ('N_injected', 'N_ever_captured', 'N_never_captured', 'N_residence_samples',
+                    'N_excluded_trajectories', 'numerical_failures', 'computational_failures', 'stop_reason'):
+            assert small_header[key] == full_header[key], key
+        assert small_rows[-1][2] == 2.05 and len(small_rows) < len(full_rows)
+        # Every unchanged full shell preserves its measured moments exactly;
+        # the final partial shell is covered by the analytic quadrature tests.
+        assert all(a == b or (math.isnan(a) and math.isnan(b))
+                   for small, full in zip(small_rows[:-1], full_rows) for a, b in zip(small, full))
+
         # This fixed stream includes a numerical failure before completing 1000
         # captures. It must continue and retain correct conditional denominators.
         result, output, _ = run('continue_numerical', run_mode='"Parameter point"', sample_size='1000',
                                 max_trajectories='100000', DM_mass='0.1', DM_cross_section_nucleon='1e-36',
                                 fixed_seed='23260931', rate_radius_points='1000', rate_speed_points='256',
-                                rate_max_speed='0.02', snapshot_enabled='false')
+                                rate_max_speed='0.02', snapshot_enabled='true')
         assert result.returncode == 0, result.stdout + result.stderr
         header = validate_completed(output / 'results_-1.000000_-36.000000/bincount.tsv')
         assert int(header['numerical_failures']) > 0
+        assert int(header['N_never_captured']) > 0
+        validate_snapshots(output / 'results_-1.000000_-36.000000/snapshot', header, args.ranks)
 
         # Captured-but-truncated histories cannot enter the residence denominator.
         result, output, _ = run('captured_truncation', run_mode='"Parameter point"', sample_size='64',
@@ -125,6 +219,19 @@ def main() -> None:
                                     local / 'radial_blocks.tsv')
         rows = list(csv.DictReader(io.StringIO((local / 'diagnostic_trajectory_summary.tsv').read_text()), delimiter='\t'))
         assert rows and any(row['rng_state_before_simulation'] for row in rows)
+        complete = [row for row in rows if row['event_observed'] == '1']
+        assert complete and len(complete) == int(full_header['N_residence_samples'])
+        assert all(row['termination_reason'] == 'physical_escape' for row in complete)
+        assert not any(row['termination_reason'] == 'outer_domain_removal' for row in rows)
+        for row in complete:
+            lifetime = float(row['lifetime_validated_escape_s'])
+            physical_time = float(row['time_inside_sun_s']) + float(row['time_outside_sun_s'])
+            assert math.isclose(physical_time, lifetime, rel_tol=1e-8, abs_tol=1e-5)
+        # Recorded radial residence may omit exterior waiting time and is not
+        # an evaporation lifetime. The default window bounds only this sum.
+        recorded = math.fsum(row[3] for row in full_rows)
+        lifetime_total = math.fsum(float(row['lifetime_validated_escape_s']) for row in complete)
+        assert recorded <= lifetime_total * (1 + 2e-3)
         assert len((local / 'trajectory_events.tsv').read_text().splitlines()) > 1
         result, output, config = run('local_invalid', ('--diagnostic',), run_mode='"Parameter point"', sample_size='1',
                                      max_trajectories='1', maximum_number_of_scatterings='1', snapshot_enabled='false')

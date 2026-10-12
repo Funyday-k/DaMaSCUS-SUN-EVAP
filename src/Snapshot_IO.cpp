@@ -20,30 +20,17 @@ namespace DaMaSCUS_SUN
 namespace
 {
 constexpr uint64_t SNAPSHOT_RANK_STATE_MAGIC = 0x4453534e41503031ULL;
-constexpr uint32_t SNAPSHOT_RANK_STATE_VERSION = 9;
+constexpr uint32_t SNAPSHOT_RANK_STATE_VERSION = 10;
 constexpr uint32_t SNAPSHOT_RANK_STATE_HEADER_BYTES = sizeof(uint64_t) + 2 * sizeof(uint32_t);
-constexpr uint64_t SNAPSHOT_EVAPORATION_EVENTS_PER_CHECKPOINT = 10000000ULL;
-// Only an absurd declared event count is rejected here: ReadSnapshotRankState
-// cross-checks the count against the real file size and guards the resize with
-// try/catch, so a small cap would be redundant defense that instead turns an
-// oversized backlog into a permanent write failure.
-constexpr uint64_t MAX_SNAPSHOT_EVAPORATION_EVENTS = 1000000000ULL;
-
 uint64_t SnapshotRankStateFixedBytes()
 {
 	return SNAPSHOT_RANK_STATE_HEADER_BYTES
 	     + sizeof(uint64_t)
 	     + 4 * sizeof(int32_t)
-	     + 7 * sizeof(uint64_t)
+	     + 8 * sizeof(uint64_t)
 	     + 3 * sizeof(double)
 	     + sizeof(int32_t)
-	     + sizeof(uint64_t)  // dynamic radial-bin count
-	     + sizeof(uint64_t);
-}
-
-uint64_t SnapshotEvaporationEntryBytes()
-{
-	return sizeof(uint64_t) + 5 * sizeof(double);
+	     + sizeof(uint64_t);  // dynamic radial-bin count
 }
 
 template<typename T>
@@ -79,26 +66,6 @@ void ReadBinaryArray(std::ifstream& file, RadialHistogram& values)
 	    static_cast<std::streamsize>(values.size() * sizeof(double)));
 }
 
-void WriteSnapshotEvaporationEntryBinary(std::ofstream& file, const SnapshotEvaporationProgressEntry& entry)
-{
-	WriteBinaryValue(file, entry.trajectory_id);
-	WriteBinaryValue(file, entry.completion_wall_time_sec);
-	WriteBinaryValue(file, entry.lifetime_unbinding_sec);
-	WriteBinaryValue(file, entry.r_capture_rsun);
-	WriteBinaryValue(file, entry.E_capture_eV);
-	WriteBinaryValue(file, entry.dE_capture_eV);
-}
-
-void ReadSnapshotEvaporationEntryBinary(std::ifstream& file, SnapshotEvaporationProgressEntry& entry)
-{
-	ReadBinaryValue(file, entry.trajectory_id);
-	ReadBinaryValue(file, entry.completion_wall_time_sec);
-	ReadBinaryValue(file, entry.lifetime_unbinding_sec);
-	ReadBinaryValue(file, entry.r_capture_rsun);
-	ReadBinaryValue(file, entry.E_capture_eV);
-	ReadBinaryValue(file, entry.dE_capture_eV);
-}
-
 bool IsValidHistogram(const RadialHistogram& values)
 {
 	return values.size() >= NUM_BINS && std::all_of(values.begin(), values.end(), [](double value)
@@ -118,7 +85,8 @@ bool IsValidRankState(const SnapshotRankState& state)
 	if(state.local_captured > state.local_classified
 	   || state.local_classified > state.local_total
 	   || state.local_numerical_failures > state.local_total
-	   || state.bincount_captured_samples > state.local_total)
+	   || state.bincount_captured_samples > state.local_captured
+	   || state.bincount_never_captured_samples > state.local_classified - state.local_captured)
 		return false;
 	if(!std::isfinite(state.rank_elapsed_wall_sec) || state.rank_elapsed_wall_sec < 0.0
 	   || !std::isfinite(state.current_trajectory_wall_sec) || state.current_trajectory_wall_sec < 0.0
@@ -127,11 +95,6 @@ bool IsValidRankState(const SnapshotRankState& state)
 		return false;
 	if(state.done && state.trajectory_in_progress)
 		return false;
-	for(const auto& entry : state.new_evaporation_events)
-	{
-		if(entry.completion_wall_time_sec > state.rank_elapsed_wall_sec)
-			return false;
-	}
 	if(state.trajectory_in_progress && state.current_trajectory_id == 0)
 		return false;
 	if(!state.trajectory_in_progress
@@ -151,41 +114,14 @@ bool IsValidRankState(const SnapshotRankState& state)
 	    && IsValidHistogram(state.captured_dt_hist)
 	    && IsValidHistogram(state.captured_v2dt_hist)
 	    && IsValidHistogram(state.captured_dt_sq_hist)
-	    && IsValidHistogram(state.captured_v2dt_sq_hist);
-}
-
-bool IsValidEvaporationEvents(const std::vector<SnapshotEvaporationProgressEntry>& entries)
-{
-	double previous_completion_time = -1.0;
-	for(const auto& entry : entries)
-	{
-		if(entry.trajectory_id == 0
-		   || !std::isfinite(entry.completion_wall_time_sec)
-		   || entry.completion_wall_time_sec < 0.0
-		   || !std::isfinite(entry.lifetime_unbinding_sec)
-		   || entry.lifetime_unbinding_sec < 0.0
-		   || !std::isfinite(entry.r_capture_rsun)
-		   || entry.r_capture_rsun < -1.0
-		   || !std::isfinite(entry.E_capture_eV)
-		   || !std::isfinite(entry.dE_capture_eV)
-		   || entry.completion_wall_time_sec < previous_completion_time)
-			return false;
-		previous_completion_time = entry.completion_wall_time_sec;
-	}
-	return true;
-}
-
-CompactEvaporationEvent MakeLogEvent(int rank, const SnapshotEvaporationProgressEntry& entry)
-{
-	CompactEvaporationEvent event;
-	event.rank = rank;
-	event.trajectory_id = entry.trajectory_id;
-	event.completion_wall_time_sec = entry.completion_wall_time_sec;
-	event.lifetime_unbinding = entry.lifetime_unbinding_sec;
-	event.r_capture_rsun = entry.r_capture_rsun;
-	event.E_capture_eV = entry.E_capture_eV;
-	event.dE_capture_eV = entry.dE_capture_eV;
-	return event;
+	    && IsValidHistogram(state.captured_v2dt_sq_hist)
+	    && state.never_captured_path_dt_hist.size() == state.never_captured_path_v2dt_hist.size()
+	    && state.never_captured_path_dt_hist.size() == state.never_captured_path_dt_sq_hist.size()
+	    && state.never_captured_path_dt_hist.size() == state.never_captured_path_v2dt_sq_hist.size()
+	    && IsValidHistogram(state.never_captured_path_dt_hist)
+	    && IsValidHistogram(state.never_captured_path_v2dt_hist)
+	    && IsValidHistogram(state.never_captured_path_dt_sq_hist)
+	    && IsValidHistogram(state.never_captured_path_v2dt_sq_hist);
 }
 
 double SnapshotBinError(double sum, double sum_sq, double count)
@@ -224,51 +160,6 @@ SnapshotRateEstimate EstimateSnapshotRate(uint64_t trials, uint64_t successes)
 	estimate.ci_lower = std::max(0.0, (center - spread) / denominator);
 	estimate.ci_upper = std::min(1.0, (center + spread) / denominator);
 	return estimate;
-}
-
-bool IsCompletedEvaporationEvent(const CompactEvaporationEvent& event)
-{
-	return std::isfinite(event.lifetime_unbinding) && event.lifetime_unbinding >= 0.0;
-}
-
-bool EvaporationEventOrder(const CompactEvaporationEvent& lhs, const CompactEvaporationEvent& rhs)
-{
-	if(lhs.lifetime_unbinding != rhs.lifetime_unbinding)
-		return lhs.lifetime_unbinding < rhs.lifetime_unbinding;
-	if(lhs.rank != rhs.rank)
-		return lhs.rank < rhs.rank;
-	return lhs.trajectory_id < rhs.trajectory_id;
-}
-
-void WriteEvaporationLogEvent(std::ostream& file, const CompactEvaporationEvent& event)
-{
-	file << event.rank << "\t" << event.trajectory_id << "\t" << std::scientific << std::setprecision(10)
-	     << event.lifetime_unbinding << "\t" << event.r_capture_rsun
-	     << "\t" << event.E_capture_eV << "\t" << event.dE_capture_eV << "\n";
-}
-
-void WriteEvaporationLogFileHeader(std::ofstream& file, double mass_gev, double sigma_cm2)
-{
-	file << "# DaMaSCUS-SUN snapshot evaporation times\n";
-	file << "# format_version = 4\n";
-	file << "# DIAGNOSTIC_ONLY = 1\n";
-	file << "# NOT_FOR_FINAL_SURVIVAL_ANALYSIS = 1\n";
-	file << "# completion_time_selected = 1\n";
-	file << "# DM_mass_GeV = " << std::scientific << std::setprecision(6) << mass_gev << "\n";
-	file << "# DM_sigma_cm2 = " << std::scientific << std::setprecision(6) << sigma_cm2 << "\n";
-	file << "# sorted_by = lifetime_unbinding_sec rank trajectory_id\n";
-	file << "# rank trajectory_id lifetime_unbinding_sec r_capture_Rsun E_capture_eV dE_capture_eV\n";
-}
-
-void WriteEvaporationLogEvents(std::ostream& file, const std::vector<CompactEvaporationEvent>& events)
-{
-	std::vector<CompactEvaporationEvent> sorted_events = events;
-	std::sort(sorted_events.begin(), sorted_events.end(), EvaporationEventOrder);
-	for(const auto& event : sorted_events)
-	{
-		if(IsCompletedEvaporationEvent(event))
-			WriteEvaporationLogEvent(file, event);
-	}
 }
 
 bool WriteTextFileAtomically(const std::string& path, int unique_tag, const std::function<void(std::ofstream&)>& writer)
@@ -367,27 +258,17 @@ void AccumulateSnapshotReportState(SnapshotReportState& report, const SnapshotRa
 	report.numerical_failures += state.local_numerical_failures;
 	report.snapshot_bincount_captured_samples += state.bincount_captured_samples;
 
-	const double lower_wall_time = (report.snapshot_time_label > report.snapshot_interval_seconds) ? (report.snapshot_time_label - report.snapshot_interval_seconds) : 0.0;
-	const double upper_wall_time = static_cast<double>(report.snapshot_time_label);
-	const bool first_final_snapshot = state.done
-	                               && state.snapshot_index < report.snapshot_index
-	                               && (state.snapshot_index + 1 == report.snapshot_index
-	                                   || state.rank_elapsed_wall_sec > lower_wall_time);
-	for(const auto& entry : state.new_evaporation_events)
+	report.snapshot_bincount_never_captured_samples += state.bincount_never_captured_samples;
+
+	GrowRadialHistograms(state.never_captured_path_dt_hist.size(),
+	    report.never_captured_path_dt_hist, report.never_captured_path_v2dt_hist,
+	    report.never_captured_path_dt_sq_hist, report.never_captured_path_v2dt_sq_hist);
+	for(std::size_t bin = 0; bin < state.never_captured_path_dt_hist.size(); bin++)
 	{
-		// Checkpoint entries are already assigned by the recorder cursor. A late
-		// boundary event must remain in that publication instead of being dropped.
-		const bool belongs_to_snapshot = entry.completion_wall_time_sec <= upper_wall_time
-		                               && (!state.done
-		                                   || first_final_snapshot
-		                                   || entry.completion_wall_time_sec > lower_wall_time);
-		if(belongs_to_snapshot)
-		{
-			SnapshotRankedEvaporationEntry ranked_entry;
-			ranked_entry.rank = state.rank;
-			ranked_entry.entry = entry;
-			report.new_evaporation_events.push_back(ranked_entry);
-		}
+		report.never_captured_path_dt_hist[bin] += state.never_captured_path_dt_hist[bin];
+		report.never_captured_path_v2dt_hist[bin] += state.never_captured_path_v2dt_hist[bin];
+		report.never_captured_path_dt_sq_hist[bin] += state.never_captured_path_dt_sq_hist[bin];
+		report.never_captured_path_v2dt_sq_hist[bin] += state.never_captured_path_v2dt_sq_hist[bin];
 	}
 
 	GrowRadialHistograms(std::max(state.captured_dt_hist.size(), state.current_trajectory_dt_hist.size()),
@@ -551,38 +432,6 @@ void WriteReportHeader(
 	file << "# capture_rate_valid_CI_95_upper = " << std::fixed << std::setprecision(8) << valid.ci_upper << "\n";
 }
 
-bool WriteSnapshotEvaporationTimeFile(
-	const std::string& snapshot_root,
-	int snapshot_index,
-	double interval_seconds,
-	uint64_t run_id,
-	double mass_gev,
-	double sigma_cm2,
-	const std::vector<SnapshotRankedEvaporationEntry>& entries,
-	const SnapshotMergeResult& merge_result)
-{
-	std::vector<CompactEvaporationEvent> events;
-	events.reserve(entries.size());
-	for(const auto& entry : entries)
-		events.push_back(MakeLogEvent(entry.rank, entry.entry));
-
-	const std::string status = (merge_result.status == SnapshotMergeStatus::Merged) ? "merged" : "partial";
-	const std::string path = SnapshotEvaporationTimeFilePath(snapshot_root, snapshot_index, interval_seconds);
-	return WriteTextFileAtomically(path, snapshot_index, [&](std::ofstream& file)
-	{
-		file << "# snapshot_status = " << status << "\n";
-		file << "# snapshot_run_id = " << run_id << "\n";
-		file << "# snapshot_target_wall_time_s = " << SnapshotTimeLabelSeconds(snapshot_index, interval_seconds) << "\n";
-		file << "# snapshot_interval_s = " << std::fixed << std::setprecision(3) << interval_seconds << "\n";
-		file << "# ready_ranks = " << JoinInts(merge_result.ready_ranks) << "\n";
-		file << "# missing_ranks = " << JoinInts(merge_result.missing_ranks) << "\n";
-		file << "# completed_evaporation_events_assigned_to_snapshot = 1\n";
-		file << "# event_assignment = first published checkpoint after completion\n";
-		WriteEvaporationLogFileHeader(file, mass_gev, sigma_cm2);
-		WriteEvaporationLogEvents(file, events);
-	});
-}
-
 bool WriteSnapshotReportFile(
 	const std::string& snapshot_root,
 	int snapshot_index,
@@ -591,14 +440,12 @@ bool WriteSnapshotReportFile(
 	double mass_gev,
 	double sigma_cm2,
 	const SnapshotReportState& report,
-	const SnapshotMergeResult& merge_result)
+	const SnapshotMergeResult& merge_result,
+	double output_radius_rsun)
 {
 	if(merge_result.status != SnapshotMergeStatus::Merged
 	   && SnapshotTextFileIsMerged(SnapshotTextFilePath(snapshot_root, snapshot_index, interval_seconds), run_id))
 		return true;
-
-	if(!WriteSnapshotEvaporationTimeFile(snapshot_root, snapshot_index, interval_seconds, run_id, mass_gev, sigma_cm2, report.new_evaporation_events, merge_result))
-		return false;
 
 	const std::string status = (merge_result.status == SnapshotMergeStatus::Merged) ? "merged" : "partial";
 	return WriteTextFileAtomically(SnapshotTextFilePath(snapshot_root, snapshot_index, interval_seconds), snapshot_index, [&](std::ofstream& file)
@@ -606,6 +453,7 @@ bool WriteSnapshotReportFile(
 		file << "# snapshot_status = " << status << "\n";
 		file << "# snapshot_run_id = " << run_id << "\n";
 		file << "# Cumulative snapshot report\n";
+		file << "# format_version = 10\n";
 		file << "# ready_ranks = " << JoinInts(merge_result.ready_ranks) << "\n";
 		file << "# missing_ranks = " << JoinInts(merge_result.missing_ranks) << "\n";
 		if(merge_result.status == SnapshotMergeStatus::Partial)
@@ -636,18 +484,26 @@ bool WriteSnapshotReportFile(
 
 		const double snapshot_residence_samples =
 		    static_cast<double>(report.snapshot_bincount_captured_samples);
+		const auto output_edges = BuildRadialGrid(output_radius_rsun * R_SUN_KM);
+		const std::size_t radial_bins = output_edges.size() - 1;
+		const double never_captured_samples = static_cast<double>(report.snapshot_bincount_never_captured_samples);
+		const auto bin_value = [](const RadialHistogram& histogram, std::size_t bin)
+		{ return bin < histogram.size() ? histogram[bin] : 0.0; };
 		file << "#\n";
 		file << "# [Bincount histogram]\n";
+		file << "# R_output_rsun = " << output_radius_rsun << "\n";
+		file << "# R_path_reference_rsun = " << std::min(output_radius_rsun, TRANSIT_REFERENCE_RSUN) << "\n";
+		file << "# residence_time_scope = within_output_radius_only\n";
 		file << "# base_grid_bins = " << NUM_BINS << "\n";
-		file << "# exterior_bins = " << report.captured_dt_hist.size() - NUM_BINS << "\n";
-		file << "# total_radial_bins = " << report.captured_dt_hist.size() << "\n";
+		file << "# exterior_bins = " << radial_bins - NUM_BINS << "\n";
+		file << "# total_radial_bins = " << radial_bins << "\n";
 		file << "# radial_bin_width_Rsun = " << std::scientific << std::setprecision(10)
 		     << BIN_WIDTH_KM / R_SUN_KM << "\n";
 		file << "# exterior_grid = geometric_width_capped_unbounded\n";
 		file << "# exterior_bin_growth_factor = " << EXTERIOR_BIN_GROWTH_FACTOR << "\n";
 		file << "# exterior_max_bin_width_Rsun = " << EXTERIOR_MAX_BIN_WIDTH_RSUN << "\n";
 		file << "# radial_domain = progress_only_not_a_production_product\n";
-		file << "# radial_extent_Rsun = " << BincountBinLowerKm(report.captured_dt_hist.size()) / R_SUN_KM << "\n";
+		file << "# radial_extent_Rsun = " << output_edges[radial_bins] / R_SUN_KM << "\n";
 		file << "# in_progress_bincount_included = "
 		     << (report.in_progress_bincount_captured_samples > 0 ? 1 : 0)
 		     << "\n";
@@ -658,19 +514,32 @@ bool WriteSnapshotReportFile(
 		     << "\n";
 		file << "# residence_bincount_samples = "
 		     << report.snapshot_bincount_captured_samples << "\n";
-		file << "# bin_index  r_lower_Rsun  r_upper_Rsun  residence_dt[s]  residence_v2dt[km2/s]  residence_err_dt[s]  residence_err_v2dt[km2/s]\n";
-		for(std::size_t bin = 0; bin < report.captured_dt_hist.size(); bin++)
+		file << "# captured_residence_bincount_samples = " << report.snapshot_bincount_captured_samples << "\n";
+		file << "# completed_captured_residence_bincount_samples = "
+		     << report.snapshot_bincount_captured_samples - report.in_progress_bincount_captured_samples << "\n";
+		file << "# never_captured_bincount_samples = " << report.snapshot_bincount_never_captured_samples << "\n";
+		file << "# never_captured_path_population = completed_physically_classified_never_captured_outward_escape\n";
+		file << "# never_captured_path_includes = analytic_incoming_prefix_and_full_incoming_outgoing_transit_within_path_reference_radius\n";
+		file << "# in_progress_uncaptured_path_included = 0\n";
+		file << "# histogram_values = population_sums_not_sample_means\n";
+		file << "# histogram_standard_error = sqrt(N*(sum_sq/N-(sum/N)^2)); zero_for_N_le_1\n";
+		file << "# bin_index  r_lower_Rsun  r_upper_Rsun  captured_residence_dt_s  captured_residence_v2dt_km2_s  captured_residence_dt_se_s  captured_residence_v2dt_se_km2_s  never_captured_path_dt_s  never_captured_path_v2dt_km2_s  never_captured_path_dt_se_s  never_captured_path_v2dt_se_km2_s\n";
+		for(std::size_t bin = 0; bin < radial_bins; bin++)
 		{
 			const double residence_err_dt =
-			    SnapshotBinError(report.captured_dt_hist[bin], report.captured_dt_sq_hist[bin], snapshot_residence_samples);
+			    SnapshotBinError(bin_value(report.captured_dt_hist, bin), bin_value(report.captured_dt_sq_hist, bin), snapshot_residence_samples);
 			const double residence_err_v2dt =
-			    SnapshotBinError(report.captured_v2dt_hist[bin], report.captured_v2dt_sq_hist[bin], snapshot_residence_samples);
+			    SnapshotBinError(bin_value(report.captured_v2dt_hist, bin), bin_value(report.captured_v2dt_sq_hist, bin), snapshot_residence_samples);
 
 			file << bin << "\t" << std::scientific << std::setprecision(10)
 			     << BincountBinLowerKm(bin) / R_SUN_KM << "\t"
-			     << BincountBinUpperKm(bin) / R_SUN_KM << "\t"
-			     << report.captured_dt_hist[bin] << "\t" << report.captured_v2dt_hist[bin]
-			     << "\t" << residence_err_dt << "\t" << residence_err_v2dt << "\n";
+			     << output_edges[bin + 1] / R_SUN_KM << "\t"
+			     << bin_value(report.captured_dt_hist, bin) << "\t" << bin_value(report.captured_v2dt_hist, bin)
+			     << "\t" << residence_err_dt << "\t" << residence_err_v2dt
+			     << "\t" << bin_value(report.never_captured_path_dt_hist, bin)
+			     << "\t" << bin_value(report.never_captured_path_v2dt_hist, bin)
+			     << "\t" << SnapshotBinError(bin_value(report.never_captured_path_dt_hist, bin), bin_value(report.never_captured_path_dt_sq_hist, bin), never_captured_samples)
+			     << "\t" << SnapshotBinError(bin_value(report.never_captured_path_v2dt_hist, bin), bin_value(report.never_captured_path_v2dt_sq_hist, bin), never_captured_samples) << "\n";
 		}
 	});
 }
@@ -702,11 +571,6 @@ std::string SnapshotTextFilePath(const std::string& snapshot_root, int snapshot_
 	return snapshot_root + "snapshot_" + std::to_string(SnapshotTimeLabelSeconds(snapshot_index, interval_seconds)) + "s.txt";
 }
 
-std::string SnapshotEvaporationTimeFilePath(const std::string& snapshot_root, int snapshot_index, double interval_seconds)
-{
-	return snapshot_root + "snapshot_" + std::to_string(SnapshotTimeLabelSeconds(snapshot_index, interval_seconds)) + "s_evaporation_times.txt";
-}
-
 std::string SnapshotRankCheckpointPath(const std::string& rank_snapshot_dir, int rank, int snapshot_index, double interval_seconds)
 {
 	return rank_snapshot_dir + "snapshot_" + std::to_string(SnapshotTimeLabelSeconds(snapshot_index, interval_seconds)) + "s_rank" + std::to_string(rank) + ".bin";
@@ -717,28 +581,9 @@ std::string SnapshotRankFinalPath(const std::string& rank_snapshot_dir, int rank
 	return rank_snapshot_dir + "rank" + std::to_string(rank) + "_final.bin";
 }
 
-SnapshotEvaporationProgressEntry MakeSnapshotEvaporationProgressEntry(const CompactEvaporationEvent& event)
-{
-	SnapshotEvaporationProgressEntry entry;
-	entry.trajectory_id = static_cast<uint64_t>(event.trajectory_id);
-	entry.completion_wall_time_sec = event.completion_wall_time_sec;
-	entry.lifetime_unbinding_sec = event.lifetime_unbinding;
-	entry.r_capture_rsun = event.r_capture_rsun;
-	entry.E_capture_eV = event.E_capture_eV;
-	entry.dE_capture_eV = event.dE_capture_eV;
-	return entry;
-}
-
-size_t SnapshotEvaporationEventsPerCheckpoint()
-{
-	return static_cast<size_t>(SNAPSHOT_EVAPORATION_EVENTS_PER_CHECKPOINT);
-}
-
 bool WriteSnapshotRankState(const std::string& path, const SnapshotRankState& state)
 {
-	if(!IsValidRankState(state)
-	   || state.new_evaporation_events.size() > MAX_SNAPSHOT_EVAPORATION_EVENTS
-	   || !IsValidEvaporationEvents(state.new_evaporation_events))
+	if(!IsValidRankState(state))
 		return false;
 
 	const std::string tmp_path = path + ".tmp." + std::to_string(getpid()) + "." + std::to_string(state.rank);
@@ -759,14 +604,15 @@ bool WriteSnapshotRankState(const std::string& path, const SnapshotRankState& st
 	WriteBinaryValue(file, state.local_classified);
 	WriteBinaryValue(file, state.local_numerical_failures);
 	WriteBinaryValue(file, state.bincount_captured_samples);
+	WriteBinaryValue(file, state.bincount_never_captured_samples);
 	WriteBinaryValue(file, state.current_trajectory_id);
 	WriteBinaryValue(file, state.rank_elapsed_wall_sec);
 	WriteBinaryValue(file, state.current_trajectory_wall_sec);
 	WriteBinaryValue(file, state.current_trajectory_simulated_elapsed_sec);
 	WriteBinaryValue(file, state.current_trajectory_scatterings);
 	WriteBinaryValue(file, state.current_trajectory_captured);
-	const uint64_t radial_bin_count = std::max(
-	    state.current_trajectory_dt_hist.size(), state.captured_dt_hist.size());
+	const uint64_t radial_bin_count = std::max({
+	    state.current_trajectory_dt_hist.size(), state.captured_dt_hist.size(), state.never_captured_path_dt_hist.size()});
 	WriteBinaryValue(file, radial_bin_count);
 	WriteBinaryArray(file, state.current_trajectory_dt_hist, radial_bin_count);
 	WriteBinaryArray(file, state.current_trajectory_v2dt_hist, radial_bin_count);
@@ -774,10 +620,10 @@ bool WriteSnapshotRankState(const std::string& path, const SnapshotRankState& st
 	WriteBinaryArray(file, state.captured_v2dt_hist, radial_bin_count);
 	WriteBinaryArray(file, state.captured_dt_sq_hist, radial_bin_count);
 	WriteBinaryArray(file, state.captured_v2dt_sq_hist, radial_bin_count);
-	const uint64_t event_count = static_cast<uint64_t>(state.new_evaporation_events.size());
-	WriteBinaryValue(file, event_count);
-	for(const auto& entry : state.new_evaporation_events)
-		WriteSnapshotEvaporationEntryBinary(file, entry);
+	WriteBinaryArray(file, state.never_captured_path_dt_hist, radial_bin_count);
+	WriteBinaryArray(file, state.never_captured_path_v2dt_hist, radial_bin_count);
+	WriteBinaryArray(file, state.never_captured_path_dt_sq_hist, radial_bin_count);
+	WriteBinaryArray(file, state.never_captured_path_v2dt_sq_hist, radial_bin_count);
 	file.close();
 
 	if(!file.good())
@@ -802,7 +648,7 @@ bool ReadSnapshotRankState(const std::string& path, uint64_t expected_run_id, Sn
 	file.seekg(0, std::ios::end);
 	const std::streamoff file_size_value = file.tellg();
 	const uint64_t minimum_file_size =
-	    SnapshotRankStateFixedBytes() + 6ULL * NUM_BINS * sizeof(double);
+	    SnapshotRankStateFixedBytes() + 10ULL * NUM_BINS * sizeof(double);
 	if(file_size_value < 0 || static_cast<uint64_t>(file_size_value) < minimum_file_size)
 		return false;
 	const uint64_t file_size = static_cast<uint64_t>(file_size_value);
@@ -833,6 +679,7 @@ bool ReadSnapshotRankState(const std::string& path, uint64_t expected_run_id, Sn
 	ReadBinaryValue(file, state.local_classified);
 	ReadBinaryValue(file, state.local_numerical_failures);
 	ReadBinaryValue(file, state.bincount_captured_samples);
+	ReadBinaryValue(file, state.bincount_never_captured_samples);
 	ReadBinaryValue(file, state.current_trajectory_id);
 	ReadBinaryValue(file, state.rank_elapsed_wall_sec);
 	ReadBinaryValue(file, state.current_trajectory_wall_sec);
@@ -842,14 +689,16 @@ bool ReadSnapshotRankState(const std::string& path, uint64_t expected_run_id, Sn
 	uint64_t radial_bin_count = 0;
 	ReadBinaryValue(file, radial_bin_count);
 	if(!file || radial_bin_count < NUM_BINS
-	   || radial_bin_count > (file_size - SnapshotRankStateFixedBytes()) / (6ULL * sizeof(double)))
+	   || radial_bin_count > (file_size - SnapshotRankStateFixedBytes()) / (10ULL * sizeof(double)))
 		return false;
 	try
 	{
 		GrowRadialHistograms(radial_bin_count,
 		    state.current_trajectory_dt_hist, state.current_trajectory_v2dt_hist,
 		    state.captured_dt_hist, state.captured_v2dt_hist,
-		    state.captured_dt_sq_hist, state.captured_v2dt_sq_hist);
+		    state.captured_dt_sq_hist, state.captured_v2dt_sq_hist,
+		    state.never_captured_path_dt_hist, state.never_captured_path_v2dt_hist,
+		    state.never_captured_path_dt_sq_hist, state.never_captured_path_v2dt_sq_hist);
 	}
 	catch(const std::exception&)
 	{
@@ -862,37 +711,15 @@ bool ReadSnapshotRankState(const std::string& path, uint64_t expected_run_id, Sn
 	ReadBinaryArray(file, state.captured_dt_sq_hist);
 	ReadBinaryArray(file, state.captured_v2dt_sq_hist);
 
-	uint64_t event_count = 0;
-	ReadBinaryValue(file, event_count);
-	if(!file || event_count > MAX_SNAPSHOT_EVAPORATION_EVENTS)
-		return false;
-	const uint64_t entry_bytes = SnapshotEvaporationEntryBytes();
-	const uint64_t histogram_bytes =
-	    6ULL * radial_bin_count * sizeof(double);
-	if(event_count > (std::numeric_limits<uint64_t>::max()
-	                  - SnapshotRankStateFixedBytes() - histogram_bytes) / entry_bytes)
-		return false;
+	ReadBinaryArray(file, state.never_captured_path_dt_hist);
+	ReadBinaryArray(file, state.never_captured_path_v2dt_hist);
+	ReadBinaryArray(file, state.never_captured_path_dt_sq_hist);
+	ReadBinaryArray(file, state.never_captured_path_v2dt_sq_hist);
 	const uint64_t expected_file_size =
-	    SnapshotRankStateFixedBytes() + histogram_bytes + event_count * entry_bytes;
-	if(file_size != expected_file_size)
+	    SnapshotRankStateFixedBytes() + 10ULL * radial_bin_count * sizeof(double);
+	if(!file || file_size != expected_file_size)
 		return false;
-
-	state.new_evaporation_events.clear();
-	try
-	{
-		state.new_evaporation_events.resize(static_cast<size_t>(event_count));
-	}
-	catch(const std::exception&)
-	{
-		state.new_evaporation_events.clear();
-		return false;
-	}
-	for(size_t i = 0; i < state.new_evaporation_events.size(); i++)
-		ReadSnapshotEvaporationEntryBinary(file, state.new_evaporation_events[i]);
-
-	if(!file)
-		return false;
-	return IsValidRankState(state) && IsValidEvaporationEvents(state.new_evaporation_events);
+	return IsValidRankState(state);
 }
 
 bool CleanupSnapshotCheckpoints(const std::string& rank_snapshot_dir, int snapshot_index, double interval_seconds, int mpi_processes)
@@ -944,7 +771,8 @@ SnapshotMergeResult TryWriteSnapshot(
 	uint64_t run_id,
 	double mass_gev,
 	double sigma_cm2,
-	bool allow_partial)
+	bool allow_partial,
+	double output_radius_rsun)
 {
 	SnapshotMergeCache cache;
 	return TryWriteSnapshotCached(
@@ -957,7 +785,8 @@ SnapshotMergeResult TryWriteSnapshot(
 		mass_gev,
 		sigma_cm2,
 		cache,
-		allow_partial);
+		allow_partial,
+		output_radius_rsun);
 }
 
 SnapshotMergeResult TryWriteSnapshotCached(
@@ -970,12 +799,12 @@ SnapshotMergeResult TryWriteSnapshotCached(
 	double mass_gev,
 	double sigma_cm2,
 	SnapshotMergeCache& cache,
-	bool allow_partial)
+	bool allow_partial,
+	double output_radius_rsun)
 {
 	SnapshotMergeResult merged_result;
 	merged_result.status = SnapshotMergeStatus::Merged;
-	if(SnapshotTextFileIsMerged(SnapshotTextFilePath(snapshot_root, snapshot_index, interval_seconds), run_id)
-	   && SnapshotTextFileIsMerged(SnapshotEvaporationTimeFilePath(snapshot_root, snapshot_index, interval_seconds), run_id))
+	if(SnapshotTextFileIsMerged(SnapshotTextFilePath(snapshot_root, snapshot_index, interval_seconds), run_id))
 	{
 		merged_result.cleanup_succeeded = CleanupSnapshotCheckpoints(
 			rank_snapshot_dir, snapshot_index, interval_seconds, mpi_processes);
@@ -988,7 +817,7 @@ SnapshotMergeResult TryWriteSnapshotCached(
 	if(result.status == SnapshotMergeStatus::Partial && !allow_partial)
 		return result;
 
-	if(!WriteSnapshotReportFile(snapshot_root, snapshot_index, interval_seconds, run_id, mass_gev, sigma_cm2, cache.report, result))
+	if(!WriteSnapshotReportFile(snapshot_root, snapshot_index, interval_seconds, run_id, mass_gev, sigma_cm2, cache.report, result, output_radius_rsun))
 	{
 		result.status = SnapshotMergeStatus::NoRanksReady;
 		return result;

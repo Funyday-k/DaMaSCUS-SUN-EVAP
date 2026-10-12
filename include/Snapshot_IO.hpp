@@ -12,22 +12,6 @@
 namespace DaMaSCUS_SUN
 {
 
-struct SnapshotEvaporationProgressEntry
-{
-	uint64_t trajectory_id = 0;
-	double completion_wall_time_sec = 0.0;
-	double lifetime_unbinding_sec = -1.0;
-	double r_capture_rsun = -1.0;
-	double E_capture_eV = 0.0;
-	double dE_capture_eV = 0.0;
-};
-
-struct SnapshotRankedEvaporationEntry
-{
-	int rank = -1;
-	SnapshotEvaporationProgressEntry entry;
-};
-
 struct SnapshotRankState
 {
 	uint64_t run_id = 0;
@@ -40,6 +24,7 @@ struct SnapshotRankState
 	uint64_t local_classified = 0;
 	uint64_t local_numerical_failures = 0;
 	uint64_t bincount_captured_samples = 0;
+	uint64_t bincount_never_captured_samples = 0;
 	uint64_t current_trajectory_id = 0;
 	double rank_elapsed_wall_sec = 0.0;
 	double current_trajectory_wall_sec = 0.0;
@@ -52,7 +37,10 @@ struct SnapshotRankState
 	RadialHistogram captured_v2dt_hist = RadialHistogram(NUM_BINS, 0.0);
 	RadialHistogram captured_dt_sq_hist = RadialHistogram(NUM_BINS, 0.0);
 	RadialHistogram captured_v2dt_sq_hist = RadialHistogram(NUM_BINS, 0.0);
-	std::vector<SnapshotEvaporationProgressEntry> new_evaporation_events;
+	RadialHistogram never_captured_path_dt_hist = RadialHistogram(NUM_BINS, 0.0);
+	RadialHistogram never_captured_path_v2dt_hist = RadialHistogram(NUM_BINS, 0.0);
+	RadialHistogram never_captured_path_dt_sq_hist = RadialHistogram(NUM_BINS, 0.0);
+	RadialHistogram never_captured_path_v2dt_sq_hist = RadialHistogram(NUM_BINS, 0.0);
 };
 
 enum class SnapshotMergeStatus
@@ -93,12 +81,16 @@ struct SnapshotReportState
 	uint64_t classified_trajectories = 0;
 	uint64_t numerical_failures = 0;
 	uint64_t snapshot_bincount_captured_samples = 0;
+	uint64_t snapshot_bincount_never_captured_samples = 0;
 	uint64_t in_progress_bincount_captured_samples = 0;
 	RadialHistogram captured_dt_hist = RadialHistogram(NUM_BINS, 0.0);
 	RadialHistogram captured_v2dt_hist = RadialHistogram(NUM_BINS, 0.0);
 	RadialHistogram captured_dt_sq_hist = RadialHistogram(NUM_BINS, 0.0);
 	RadialHistogram captured_v2dt_sq_hist = RadialHistogram(NUM_BINS, 0.0);
-	std::vector<SnapshotRankedEvaporationEntry> new_evaporation_events;
+	RadialHistogram never_captured_path_dt_hist = RadialHistogram(NUM_BINS, 0.0);
+	RadialHistogram never_captured_path_v2dt_hist = RadialHistogram(NUM_BINS, 0.0);
+	RadialHistogram never_captured_path_dt_sq_hist = RadialHistogram(NUM_BINS, 0.0);
+	RadialHistogram never_captured_path_v2dt_sq_hist = RadialHistogram(NUM_BINS, 0.0);
 	std::vector<RankProgress> rank_progress;
 };
 
@@ -114,15 +106,8 @@ struct SnapshotMergeCache
 
 long long SnapshotTimeLabelSeconds(int snapshot_index, double interval_seconds);
 std::string SnapshotTextFilePath(const std::string& snapshot_root, int snapshot_index, double interval_seconds);
-std::string SnapshotEvaporationTimeFilePath(const std::string& snapshot_root, int snapshot_index, double interval_seconds);
 std::string SnapshotRankCheckpointPath(const std::string& rank_snapshot_dir, int rank, int snapshot_index, double interval_seconds);
 std::string SnapshotRankFinalPath(const std::string& rank_snapshot_dir, int rank);
-
-SnapshotEvaporationProgressEntry MakeSnapshotEvaporationProgressEntry(const CompactEvaporationEvent& event);
-
-// Upper bound on the completed evaporation events a single rank checkpoint may
-// publish. A larger backlog is drained over consecutive checkpoints.
-size_t SnapshotEvaporationEventsPerCheckpoint();
 
 bool WriteSnapshotRankState(const std::string& path, const SnapshotRankState& state);
 bool ReadSnapshotRankState(const std::string& path, uint64_t expected_run_id, SnapshotRankState& state);
@@ -138,7 +123,8 @@ SnapshotMergeResult TryWriteSnapshot(
 	uint64_t run_id,
 	double mass_gev,
 	double sigma_cm2,
-	bool allow_partial);
+	bool allow_partial,
+	double output_radius_rsun = DEFAULT_OUTPUT_RADIUS_RSUN);
 
 SnapshotMergeResult TryWriteSnapshotCached(
 	const std::string& snapshot_root,
@@ -150,7 +136,8 @@ SnapshotMergeResult TryWriteSnapshotCached(
 	double mass_gev,
 	double sigma_cm2,
 	SnapshotMergeCache& cache,
-	bool allow_partial);
+	bool allow_partial,
+	double output_radius_rsun = DEFAULT_OUTPUT_RADIUS_RSUN);
 
 bool WriteMissedSnapshotMarker(
 	const std::string& snapshot_root,

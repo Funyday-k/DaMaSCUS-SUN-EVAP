@@ -245,6 +245,8 @@ Configuration::Configuration(std::string cfg_filename, int MPI_rank, bool diagno
 
 	// 7. DaMaSCUS specific parameters
 	Import_Parameter_Scan_Parameter();
+	if(MPI_rank == 0 && config.exists("outer_removal_radius_rsun"))
+		std::cerr << "Warning: outer_removal_radius_rsun is a deprecated alias for output_radius_rsun; it only limits recorded statistics and no longer removes bound orbits." << std::endl;
 
 	// The legacy results/<ID> directory is used only by parameter scans.
 	if(run_mode == "Parameter scan")
@@ -366,32 +368,34 @@ void Configuration::Import_Parameter_Scan_Parameter()
 		std::exit(EXIT_FAILURE);
 	}
 	capture_mode = (run_mode == "Capture");
-    if(config.exists("outer_boundary_radius_au")) {
-        throw std::invalid_argument("outer_boundary_radius_au is obsolete; use outer_removal_radius_rsun (in R_sun)");
-    }
-    if(config.exists("outer_removal_radius_rsun")) {
-        const auto& radius = config.lookup("outer_removal_radius_rsun");
-        switch(radius.getType()) {
-            case Setting::TypeInt: outer_removal_radius_rsun = static_cast<int>(radius); break;
-            case Setting::TypeInt64: outer_removal_radius_rsun = static_cast<long long>(radius); break;
-            case Setting::TypeFloat: outer_removal_radius_rsun = static_cast<double>(radius); break;
-            default: throw std::invalid_argument("outer_removal_radius_rsun must be a number");
-        }
-    }
+	if(config.exists("outer_boundary_radius_au"))
+		throw std::invalid_argument("outer_boundary_radius_au is obsolete; use output_radius_rsun (in R_sun)");
+	const bool has_output_radius = config.exists("output_radius_rsun");
+	const bool has_legacy_radius = config.exists("outer_removal_radius_rsun");
+	if(has_output_radius && has_legacy_radius)
+		throw std::invalid_argument("output_radius_rsun and outer_removal_radius_rsun cannot both be specified");
+	if(has_output_radius || has_legacy_radius)
+	{
+		const char* key = has_output_radius ? "output_radius_rsun" : "outer_removal_radius_rsun";
+		const auto& radius = config.lookup(key);
+		switch(radius.getType())
+		{
+			case Setting::TypeInt: output_radius_rsun = static_cast<int>(radius); break;
+			case Setting::TypeInt64: output_radius_rsun = static_cast<long long>(radius); break;
+			case Setting::TypeFloat: output_radius_rsun = static_cast<double>(radius); break;
+			default: throw std::invalid_argument(std::string(key) + " must be a number");
+		}
+	}
 	for(const char* key : {"production_mode", "thermal_validation_mode", "trajectory_summary_enabled",
 	                       "trajectory_events_enabled", "trajectory_trace_rate", "trajectory_trace_seed"})
 		if(config.exists(key))
 			throw std::invalid_argument(std::string(key) + " is no longer a cfg setting; remove it. Use --diagnostic or --thermal-validation only for local testing.");
 	if(diagnostic_mode && run_mode != "Parameter point")
 		throw std::invalid_argument("local diagnostic/thermal workflows require Parameter point mode");
-	if(!std::isfinite(outer_removal_radius_rsun)
-	   || outer_removal_radius_rsun <= NUM_BINS * BIN_WIDTH_KM / R_SUN_KM)
-		throw std::invalid_argument("outer_removal_radius_rsun must exceed the native 1.1-solar-radius grid");
+	if(!std::isfinite(output_radius_rsun)
+	   || output_radius_rsun <= NUM_BINS * BIN_WIDTH_KM / R_SUN_KM)
+		throw std::invalid_argument("output_radius_rsun must be finite and exceed the native 1.1-solar-radius grid");
 	const bool parameter_scan_mode = (run_mode == "Parameter scan");
-    if(parameter_scan_mode && (outer_removal_radius_rsun != DEFAULT_OUTER_REMOVAL_RSUN))
-    {
-        throw std::invalid_argument("transport production and custom outer boundaries require individual Parameter point/Capture runs");
-    }
 	try
 	{
 		const int configured_rings = config.lookup("isoreflection_rings");
@@ -831,6 +835,7 @@ void Configuration::Print_Summary(int mpi_rank)
 				  << "\tFixed PRNG seed:\t\t" << (fixed_seed == 0 ? "random" : std::to_string(fixed_seed)) << std::endl
 				  << "\tMax scatterings/traj:\t\t" << maximum_number_of_scatterings << std::endl
 				  << "\tTrajectory boundary [Rsun]:\t" << TRAJECTORY_BOUNDARY_RSUN << std::endl
+				  << "\tOutput radius [Rsun]:\t\t" << output_radius_rsun << std::endl
 				  << "\tSc. rate interpolation:\t\t"
 				  << ((rate_radius_points >= 2 && rate_speed_points >= 2)
 				          ? "[x] (Grid: " + std::to_string(rate_radius_points) + "×"
@@ -848,13 +853,14 @@ void Configuration::Print_Summary(int mpi_rank)
 	}
 }
 
-double Compute_p_Value_With_Rate_Grid(unsigned int sample_size, obscura::DM_Particle& DM, obscura::DM_Detector& detector, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, unsigned int rate_radius_points, unsigned int rate_speed_points, double rate_max_speed, int mpi_rank, unsigned long int max_scatterings, SnapshotConfig snapshot_config, unsigned int fixed_seed)
+double Compute_p_Value_With_Rate_Grid(unsigned int sample_size, obscura::DM_Particle& DM, obscura::DM_Detector& detector, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, unsigned int rate_radius_points, unsigned int rate_speed_points, double rate_max_speed, int mpi_rank, unsigned long int max_scatterings, SnapshotConfig snapshot_config, unsigned int fixed_seed, double output_radius_rsun)
 {
 	double u_min = detector.Minimum_DM_Speed(DM);
 
 	solar_model.Interpolate_Total_DM_Scattering_Rate(DM, rate_radius_points, rate_speed_points, rate_max_speed);
 	Simulation_Data data_set(sample_size, g_max_trajectories, u_min);
 	data_set.Configure(TRAJECTORY_BOUNDARY_RSUN * rSun, 1, max_scatterings);
+	data_set.output_radius_rsun = output_radius_rsun;
 	data_set.Generate_Data(DM, solar_model, halo_model, snapshot_config, fixed_seed, false);
 	data_set.Print_Summary(mpi_rank);
 	Reflection_Spectrum spectrum(data_set, solar_model, halo_model, DM.mass);
@@ -863,12 +869,12 @@ double Compute_p_Value_With_Rate_Grid(unsigned int sample_size, obscura::DM_Part
 	return (p < 1.0e-100) ? 0.0 : p;
 }
 
-double Compute_p_Value(unsigned int sample_size, obscura::DM_Particle& DM, obscura::DM_Detector& detector, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, unsigned int rate_interpolation_points, int mpi_rank, unsigned long int max_scatterings, SnapshotConfig snapshot_config, unsigned int fixed_seed)
+double Compute_p_Value(unsigned int sample_size, obscura::DM_Particle& DM, obscura::DM_Detector& detector, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, unsigned int rate_interpolation_points, int mpi_rank, unsigned long int max_scatterings, SnapshotConfig snapshot_config, unsigned int fixed_seed, double output_radius_rsun)
 {
 	return Compute_p_Value_With_Rate_Grid(
 	    sample_size, DM, detector, solar_model, halo_model,
 	    rate_interpolation_points, rate_interpolation_points, 0.75,
-	    mpi_rank, max_scatterings, snapshot_config, fixed_seed);
+	    mpi_rank, max_scatterings, snapshot_config, fixed_seed, output_radius_rsun);
 }
 
 // 2. 	Class to perform parameter scans in the (m_DM, sigma)-plane to search for equal-p-value contours.
@@ -909,6 +915,7 @@ Parameter_Scan::Parameter_Scan(Configuration& config)
 	scattering_rate_max_speed = config.rate_max_speed;
 	snapshot_config = config.snapshot_config;
 	fixed_seed = config.fixed_seed;
+	output_radius_rsun = config.output_radius_rsun;
 }
 
 void Parameter_Scan::Import_P_Values()
@@ -1161,7 +1168,7 @@ void Parameter_Scan::Perform_STA_Scan(obscura::DM_Particle& DM, obscura::DM_Dete
 			p = Compute_p_Value_With_Rate_Grid(sample_size, DM, detector, solar_model, halo_model,
 			                    scattering_rate_radius_points, scattering_rate_speed_points,
 			                    scattering_rate_max_speed, mpi_rank, maximum_number_of_scatterings,
-			                    snapshot_config, fixed_seed);
+			                    snapshot_config, fixed_seed, output_radius_rsun);
 
 			p_value_grid[row][column] = p;
 			if(mpi_rank == 0)
@@ -1236,7 +1243,7 @@ void Parameter_Scan::Perform_Full_Scan(obscura::DM_Particle& DM, obscura::DM_Det
 				p = Compute_p_Value_With_Rate_Grid(sample_size, DM, detector, solar_model, halo_model,
 				                    scattering_rate_radius_points, scattering_rate_speed_points,
 				                    scattering_rate_max_speed, mpi_rank, maximum_number_of_scatterings,
-				                    snapshot_config, fixed_seed);
+				                    snapshot_config, fixed_seed, output_radius_rsun);
 
 				p_value_grid[row][column] = p;
 				if(mpi_rank == 0)

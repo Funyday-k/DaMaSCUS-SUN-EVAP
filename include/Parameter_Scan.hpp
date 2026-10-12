@@ -32,7 +32,7 @@ class Configuration : public obscura::Configuration
 
   public:
 	std::string run_mode;
-	double outer_removal_radius_rsun = DEFAULT_OUTER_REMOVAL_RSUN;
+	double output_radius_rsun = DEFAULT_OUTPUT_RADIUS_RSUN;
 	bool diagnostic_mode = false;
 	bool thermal_validation_mode = false;
 	unsigned int isoreflection_rings, interpolation_points;
@@ -59,9 +59,9 @@ class Configuration : public obscura::Configuration
 // 2. 	Class to perform parameter scans in the (m_DM, sigma)-plane to search for equal-p-value contours.
 //		Either a full scan, or more efficiently and targeted via the square tracing algorithm (STA).
 
-double Compute_p_Value(unsigned int sample_size, obscura::DM_Particle& DM, obscura::DM_Detector& detector, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, unsigned int rate_interpolation_points = 1000, int mpi_rank = 0, unsigned long int max_scatterings = DEFAULT_MAXIMUM_SCATTERINGS, SnapshotConfig snapshot_config = SnapshotConfig(), unsigned int fixed_seed = 0);
+double Compute_p_Value(unsigned int sample_size, obscura::DM_Particle& DM, obscura::DM_Detector& detector, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, unsigned int rate_interpolation_points = 1000, int mpi_rank = 0, unsigned long int max_scatterings = DEFAULT_MAXIMUM_SCATTERINGS, SnapshotConfig snapshot_config = SnapshotConfig(), unsigned int fixed_seed = 0, double output_radius_rsun = DEFAULT_OUTPUT_RADIUS_RSUN);
 
-double Compute_p_Value_With_Rate_Grid(unsigned int sample_size, obscura::DM_Particle& DM, obscura::DM_Detector& detector, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, unsigned int rate_radius_points, unsigned int rate_speed_points, double rate_max_speed, int mpi_rank = 0, unsigned long int max_scatterings = DEFAULT_MAXIMUM_SCATTERINGS, SnapshotConfig snapshot_config = SnapshotConfig(), unsigned int fixed_seed = 0);
+double Compute_p_Value_With_Rate_Grid(unsigned int sample_size, obscura::DM_Particle& DM, obscura::DM_Detector& detector, Solar_Model& solar_model, obscura::DM_Distribution& halo_model, unsigned int rate_radius_points, unsigned int rate_speed_points, double rate_max_speed, int mpi_rank = 0, unsigned long int max_scatterings = DEFAULT_MAXIMUM_SCATTERINGS, SnapshotConfig snapshot_config = SnapshotConfig(), unsigned int fixed_seed = 0, double output_radius_rsun = DEFAULT_OUTPUT_RADIUS_RSUN);
 
 class Parameter_Scan
 {
@@ -71,6 +71,7 @@ class Parameter_Scan
 	std::vector<double> couplings;
 	unsigned int sample_size, scattering_rate_radius_points, scattering_rate_speed_points;
 	double scattering_rate_max_speed;
+	double output_radius_rsun = DEFAULT_OUTPUT_RADIUS_RSUN;
 	unsigned long int maximum_number_of_scatterings;
 	SnapshotConfig snapshot_config;
 	unsigned int fixed_seed;

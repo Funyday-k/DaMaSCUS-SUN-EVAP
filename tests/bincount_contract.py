@@ -46,7 +46,7 @@ def read_table(path: Path) -> tuple[dict[str, str], dict[int, tuple[int, ...]], 
 
 def read_bincount(path: Path) -> tuple[dict[str, str], dict[int, tuple[int, ...]], list[list[float]]]:
     header, blocks, rows = read_table(path)
-    assert header['bincount_format_version'] == '4'
+    assert header['bincount_format_version'] == '5'
     assert header['derived_observables_version'] == '1'
     assert header['columns'].split() == COLUMNS
     assert header['output_significant_digits'] == '4'
@@ -64,6 +64,7 @@ def read_bincount(path: Path) -> tuple[dict[str, str], dict[int, tuple[int, ...]
     if len(rows) >= 11:
         assert rows[2][2] == 0.003 and rows[9][2] == 0.01
     assert header['failed_history_policy'] == 'discard_and_replace'
+    assert header['completed_residence_history_policy'] == 'validated_outward_escape'
     assert header['radial_covariance_available'] == 'selected_observables_and_integrals'
     assert header['capture_normalization_uncertainty_included'] == 'false'
     assert len(rows) == int(header['radial_bins'])
@@ -71,8 +72,11 @@ def read_bincount(path: Path) -> tuple[dict[str, str], dict[int, tuple[int, ...]
     assert path.stat().st_size < 1_500_000
     for index, key in enumerate(('N_injected', 'N_ever_captured', 'N_never_captured', 'N_residence_samples')):
         assert sum(counts[index] for counts in blocks.values()) == int(header[key])
+    assert int(header['N_complete_evaporation']) == int(header['N_residence_samples'])
     assert int(header['integrated_stat_count']) == 24
-    outer = float(header['R_remove_rsun'])
+    assert 'R_remove_rsun' not in header and 'N_outer_removed' not in header
+    assert 'recorded portions within R_output_rsun' in header['captured_residence']
+    outer = float(header['R_output_rsun'])
     expected_windows = [('solar_interior', 0, 1, 'rate'), ('within_10_rsun', 0, 10, 'rate'),
                         ('within_30_rsun', 0, 30, 'rate'), ('solar_exterior', 1, outer, 'rate'),
                         ('full_domain', 0, outer, 'rate'), ('gamma_1_30_rsun_1au', 1, 30, 'gamma_flux')]
@@ -177,7 +181,7 @@ def validate_moments(path: Path) -> dict[str, str]:
         for i, number in enumerate(expected):
             close(row[15 + 2*i], number, scale=scales[i], rounded_inputs=True)
         assert not any(math.isinf(value) for value in row)
-    assert math.isclose(previous_high, float(header['R_remove_rsun']), rel_tol=1e-12)
+    assert math.isclose(previous_high, float(header['R_output_rsun']), rel_tol=1e-12)
     return header
 
 

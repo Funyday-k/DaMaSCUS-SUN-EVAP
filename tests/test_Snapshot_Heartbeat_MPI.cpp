@@ -1,5 +1,7 @@
 #include <mpi.h>
 
+#include <array>
+#include <cmath>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -107,21 +109,42 @@ bool BroadcastString(std::string& value, int rank)
 void SeedSyntheticState(SnapshotSharedState& shared_state, uint64_t run_id, int rank)
 {
 	shared_state.Initialize(run_id, rank);
-	TrajectoryBincount bincount;
-	bincount.is_captured = (rank % 2 == 0);
 	const double value = static_cast<double>(rank + 1);
-	bincount.dt_hist[0] = value;
-	bincount.v2dt_hist[0] = 10.0 * value;
+	TrajectoryBincount captured;
+	captured.is_captured = true;
+	captured.termination_reason = TrajectoryTerminationReason::OutwardEscape;
+	captured.dt_hist[0] = value;
+	captured.v2dt_hist[0] = 10.0 * value;
+	shared_state.RecordCompletedTrajectory(captured, true, false);
+	TrajectoryBincount never;
+	never.termination_reason = TrajectoryTerminationReason::OutwardEscape;
+	never.transit_dt_hist[0] = 2.0 * value;
+	never.transit_v2dt_hist[0] = 20.0 * value;
+	// A unique shell makes each MPI rank's contribution observable.
+	never.transit_dt_hist[rank + 1] = value;
+	never.transit_v2dt_hist[rank + 1] = 10.0 * value;
+	shared_state.RecordCompletedTrajectory(never, false, true);
+}
 
-	SnapshotEvaporationProgressEntry event;
-	event.trajectory_id = static_cast<uint64_t>(1000 + rank);
-	event.completion_wall_time_sec = value;
-	event.lifetime_unbinding_sec = static_cast<double>(4 - rank);
-	shared_state.RecordCompletedTrajectory(
-		bincount,
-		bincount.is_captured,
-		!bincount.is_captured,
-		std::vector<SnapshotEvaporationProgressEntry>{event});
+bool ReadHistogramBin(const std::string& path, int requested_bin, std::array<double, 8>& values)
+{
+	std::ifstream file(path);
+	std::string line;
+	while(std::getline(file, line))
+	{
+		if(line.empty() || line[0] == '#') continue;
+		std::istringstream row(line);
+		int bin = -1;
+		double lower = 0.0, upper = 0.0;
+		row >> bin >> lower >> upper;
+		for(double& value : values) row >> value;
+		if(bin == requested_bin)
+		{
+			std::string extra;
+			return static_cast<bool>(row) && !(row >> extra);
+		}
+	}
+	return false;
 }
 }
 
@@ -230,22 +253,33 @@ int main(int argc, char* argv[])
 	if(rank == 0)
 	{
 		const std::string report_path = SnapshotTextFilePath(snapshot_root, 1, interval_seconds);
-		const std::string evaporation_path = SnapshotEvaporationTimeFilePath(snapshot_root, 1, interval_seconds);
 		const std::string report = ReadAll(report_path);
-		const std::string evaporation = ReadAll(evaporation_path);
 		Check(finalized, "finalization did not merge every due snapshot", rank, failures);
 		Check(PathExists(report_path), "merged snapshot_10s.txt is missing", rank, failures);
-		Check(PathExists(evaporation_path), "merged snapshot evaporation file is missing", rank, failures);
+		Check(!PathExists(snapshot_root + "snapshot_10s_evaporation_times.txt"), "obsolete snapshot evaporation file was written", rank, failures);
 		Check(report.find("# snapshot_status = merged") != std::string::npos, "snapshot report is not merged", rank, failures);
 		Check(report.find("# snapshot_run_id = 2026071001") != std::string::npos, "snapshot report has the wrong run id", rank, failures);
 		Check(report.find("# ready_ranks = 0,1,2,3") != std::string::npos, "snapshot report does not list all four ready ranks", rank, failures);
 		Check(report.find("# missing_ranks = \n") != std::string::npos, "snapshot report still lists a missing rank", rank, failures);
-		Check(report.find("# total_trajectories = 4") != std::string::npos, "snapshot report has the wrong trajectory total", rank, failures);
-		Check(report.find("# captured_particles = 2") != std::string::npos, "snapshot report has the wrong capture total", rank, failures);
-		Check(report.find("# valid_trajectories = 4") != std::string::npos, "snapshot report has the wrong classified total", rank, failures);
+		Check(report.find("# total_trajectories = 8") != std::string::npos, "snapshot report has the wrong trajectory total", rank, failures);
+		Check(report.find("# captured_particles = 4") != std::string::npos, "snapshot report has the wrong capture total", rank, failures);
+		Check(report.find("# valid_trajectories = 8") != std::string::npos, "snapshot report has the wrong classified total", rank, failures);
 		Check(report.find("# capture_rate_raw = 0.50000000") != std::string::npos, "snapshot report has the wrong raw capture rate", rank, failures);
 		Check(report.find("# capture_rate_valid = 0.50000000") != std::string::npos, "snapshot report has the wrong valid capture rate", rank, failures);
-		Check(evaporation.find("# snapshot_status = merged") != std::string::npos, "evaporation report is not merged", rank, failures);
+		Check(report.find("# never_captured_bincount_samples = 4") != std::string::npos, "never-captured denominator omitted an MPI rank", rank, failures);
+		Check(report.find("# residence_bincount_samples = 4") != std::string::npos, "captured denominator omitted an MPI rank", rank, failures);
+		std::array<double, 8> moments{};
+		Check(ReadHistogramBin(report_path, 0, moments), "snapshot histogram must contain exactly 11 columns", rank, failures);
+		Check(moments[0] == 10.0 && moments[1] == 100.0, "captured moments were merged incorrectly", rank, failures);
+		Check(moments[4] == 20.0 && moments[5] == 200.0, "never-captured moments were merged incorrectly", rank, failures);
+		Check(std::abs(moments[6] - std::sqrt(20.0)) < 1e-8 && std::abs(moments[7] - std::sqrt(2000.0)) < 1e-8,
+		      "never-captured standard errors use the wrong population", rank, failures);
+		for(int check_rank = 0; check_rank < 4; ++check_rank)
+		{
+			Check(ReadHistogramBin(report_path, check_rank + 1, moments), "rank-specific histogram shell is missing", rank, failures);
+			Check(moments[4] == check_rank + 1 && moments[5] == 10.0 * (check_rank + 1),
+			      "rank-specific never-captured contribution is missing or duplicated", rank, failures);
+		}
 
 		for(int check_rank = 0; check_rank < 4; check_rank++)
 		{

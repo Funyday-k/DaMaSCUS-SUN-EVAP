@@ -111,7 +111,7 @@ TEST(KeplerReturn, WideOrbitsReturnWithoutARadialCutoff)
 {
 	const libphysica::Vector axis_x({1.0, 0.0, 0.0});
 	const libphysica::Vector axis_y({0.0, 1.0, 0.0});
-	for(double apoapsis_au : {1.0, 5.2, 10.0, 100.0})
+	for(double apoapsis_au : {1.0, 5.2, 10.0, 100.0, 2000.0})
 	{
 		SCOPED_TRACE(apoapsis_au);
 		CheckEllipticReturn(0.5 * rSun, apoapsis_au * AU, axis_x, axis_y);

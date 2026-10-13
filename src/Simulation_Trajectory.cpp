@@ -1710,6 +1710,11 @@ Trajectory_Simulator::Trajectory_Simulator(
 	bincount_contribution_cache.reserve(256);
 }
 
+void Trajectory_Simulator::Set_Progress_Callback(std::function<void()> callback)
+{
+    progress_callback = std::move(callback);
+}
+
 void Trajectory_Simulator::Set_Snapshot_Recorder(SnapshotRecorder* recorder)
 {
 	snapshot_recorder = recorder;
@@ -2205,6 +2210,7 @@ TrajectoryTerminationReason Trajectory_Simulator::Propagate_Freely(Event& curren
 
 	while(time_steps < maximum_time_steps && outcome == TrajectoryTerminationReason::MaxFreeSteps)
 	{
+		if(progress_callback) progress_callback();
 		step_attempts++;
 		if(abort_if_wall_time_exceeded("before_step"))
 			return TrajectoryTerminationReason::WallTimeLimit;

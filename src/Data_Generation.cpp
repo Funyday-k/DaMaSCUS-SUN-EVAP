@@ -1304,6 +1304,9 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Celestial_Model& s
 	    maximum_trajectories,
 	    INITIAL_SHIFT_FAILURE_ABORT_FRACTION,
 	    MPI_COMM_WORLD);
+	// Rank 0 must drive passive-target RMA progress from the main thread.
+	if(mpi_rank == 0 && mpi_processes > 1)
+	    simulator.Set_Progress_Callback([&work_queue]() { work_queue.Progress(); });
 	while(true)
 	{
 		MPIWorkQueueState observed;
@@ -1332,6 +1335,7 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Celestial_Model& s
 		print_progress_update(global_target_samples, false);
 	}
 
+	simulator.Set_Progress_Callback(nullptr);
 	const MPIWorkQueueState final_work_state =
 	    work_queue.Finalize();
 	global_target_samples =

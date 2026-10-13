@@ -246,7 +246,7 @@ Configuration::Configuration(std::string cfg_filename, int MPI_rank, bool diagno
 	// 7. DaMaSCUS specific parameters
 	Import_Parameter_Scan_Parameter();
 	if(MPI_rank == 0 && config.exists("outer_removal_radius_rsun"))
-		std::cerr << "Warning: outer_removal_radius_rsun is a deprecated alias for output_radius_rsun; it only limits recorded statistics and no longer removes bound orbits." << std::endl;
+		std::cerr << "Warning: outer_removal_radius_rsun is a deprecated alias for output_radius_rsun; it sets the initial output extent and no longer removes bound orbits or limits recorded statistics." << std::endl;
 
 	// The legacy results/<ID> directory is used only by parameter scans.
 	if(run_mode == "Parameter scan")
@@ -394,7 +394,7 @@ void Configuration::Import_Parameter_Scan_Parameter()
 		throw std::invalid_argument("local diagnostic/thermal workflows require Parameter point mode");
 	if(!std::isfinite(output_radius_rsun)
 	   || output_radius_rsun <= NUM_BINS * BIN_WIDTH_KM / R_SUN_KM)
-		throw std::invalid_argument("output_radius_rsun must be finite and exceed the native 1.1-solar-radius grid");
+		throw std::invalid_argument("output_radius_rsun must be finite and exceed the native 1.1-solar-radius grid; it sets only the initial output extent");
 	const bool parameter_scan_mode = (run_mode == "Parameter scan");
 	try
 	{

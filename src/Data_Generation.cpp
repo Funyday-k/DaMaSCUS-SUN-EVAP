@@ -770,10 +770,12 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 
 	// Configure the simulator
 	Trajectory_Simulator simulator(solar_model, maximum_free_time_steps, maximum_number_of_scatterings, initial_and_final_radius);
-	simulator.recording_radius_km = output_radius_rsun * R_SUN_KM;
-	// Keep diagnostic paths inside the finite recorded radial grid.
-	simulator.outgoing_recording_radius_km =
-	    std::min(output_radius_rsun, TRANSIT_REFERENCE_RSUN) * R_SUN_KM;
+	simulator.recording_radius_km = std::numeric_limits<double>::infinity();
+	// Record whole initial shells. Compact orbital invariants below allow all
+	// completed paths to be extended to the eventual common outer boundary.
+	const auto initial_edges = BuildDynamicRadialGrid(NUM_BINS, output_radius_rsun * R_SUN_KM);
+	simulator.outgoing_recording_radius_km = initial_edges.back();
+	const std::size_t first_extension_bin = initial_edges.size() - 1;
 	simulator.max_trajectory_wall_time_sec = snapshot_cfg.max_trajectory_wall_time_sec;
 	simulator.Enable_Capture_Mode(capture_mode);
 	if(fixed_seed != 0)
@@ -1110,6 +1112,11 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 				uncaptured_numerical_failure_detail_counts[
 				    static_cast<size_t>(failure_detail_index)]++;
 			const bool completed_outward_escape = Completed_Outward_Escape(trajectory.bincount.termination_reason);
+            // Save the matching-surface invariants before reflection diagnostics
+            // move final_event to 1 AU. Backfill must use the original orbit.
+            UnboundKeplerOrbit outgoing_orbit;
+            const bool outgoing_orbit_valid = !capture_mode && completed_outward_escape
+                && Make_Unbound_Kepler_Orbit(trajectory.final_event,outgoing_orbit);
 			if(initial_shift_ok && Is_Numerical_Termination(trajectory.bincount.termination_reason))
 				number_of_numerical_failures++;
 			if(Is_Computational_Truncation(trajectory.bincount.termination_reason))
@@ -1282,6 +1289,25 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 					    never_captured_path_block_dt, never_captured_path_block_dt_sq);
 				}
 			}
+
+            if(initial_shift_ok && !capture_mode
+               && (accepted_evaporation_sample || (completed_outward_escape && !trajectory.bincount.is_captured)))
+            {
+                CompletedPathExtension extension;
+                extension.block = jackknife_block;
+                extension.captured = trajectory.bincount.is_captured;
+                extension.path.first_bin = first_extension_bin;
+                extension.path.outgoing = outgoing_orbit;
+                if(!Make_Unbound_Kepler_Orbit(Event(0.0,IC.position,(-1.0)*IC.velocity),extension.path.incoming)
+                   || !outgoing_orbit_valid)
+                    throw std::runtime_error("invalid completed unbound path invariants");
+                if(extension.captured && trajectory.bincount.dt_hist.size() > first_extension_bin)
+                    extension.residence_tail.assign(trajectory.bincount.dt_hist.begin()+first_extension_bin,
+                                                    trajectory.bincount.dt_hist.end());
+                trajectory.bincount.unbound_path_extension_available = true;
+                trajectory.bincount.unbound_path_extension = extension.path;
+                completed_path_extensions.push_back(std::move(extension));
+            }
 
 			if(snapshot_state)
 			{
@@ -1456,6 +1482,7 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Solar_Model& solar
 	rate_fallback_count = simulator.Scattering_Rate_Fallback_Count();
 	rate_max_speed_seen = simulator.Maximum_Scattering_Rate_Query_Speed();
 	MPI_Barrier(MPI_COMM_WORLD);
+	if(!capture_mode) Extend_Unbound_Paths_To_Common_Range();
 	Perform_MPI_Reductions(capture_mode);
 	uint64_t rate_counts[2] = {rate_query_count, rate_fallback_count};
 	MPI_Allreduce(MPI_IN_PLACE, rate_counts, 2, MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
@@ -2110,17 +2137,16 @@ void Simulation_Data::Write_Diagnostic_Output(const std::string& output_dir, obs
 		f << "# base_grid_bins = " << NUM_BINS << "\n";
 		f << "# exterior_bins = " << captured_dt_hist.size() - NUM_BINS << "\n";
 		f << "# total_radial_bins = " << captured_dt_hist.size() << "\n";
-		f << "# radial_grid = uniform_inner_geometric_width_capped_v5\n";
+		f << "# radial_grid = uniform_inner_geometric_width_unbounded_v7\n";
 		f << "# radial_bin_width_Rsun = " << std::scientific << std::setprecision(10)
 		  << BIN_WIDTH_KM / R_SUN_KM << "\n";
 		f << "# exterior_initial_bin_width_Rsun = " << BIN_WIDTH_KM / R_SUN_KM << "\n";
 		f << "# exterior_bin_growth_factor = " << EXTERIOR_BIN_GROWTH_FACTOR << "\n";
-		f << "# exterior_max_bin_width_Rsun = " << EXTERIOR_MAX_BIN_WIDTH_RSUN << "\n";
 		f << "# radial_inner_extent_Rsun = " << BIN_MAX_KM / R_SUN_KM << "\n";
-		f << "# R_output_rsun = " << output_radius_rsun << "\n";
-		f << "# radial_domain_max_Rsun = " << output_radius_rsun << "\n";
-		f << "# residence_time_definition = recorded time within R_output_rsun; complete bound exterior returns also include time beyond the recording radius\n";
-		f << "# radial_extent_Rsun = " << std::min(output_radius_rsun, BincountBinLowerKm(captured_dt_hist.size()) / R_SUN_KM) << "\n";
+		f << "# R_output_rsun = " << BincountBinLowerKm(captured_dt_hist.size()) / R_SUN_KM << "\n";
+		f << "# radial_domain_max_Rsun = " << BincountBinLowerKm(captured_dt_hist.size()) / R_SUN_KM << "\n";
+		f << "# residence_time_definition = complete capture-to-escape residence; all bound exterior arcs recorded\n";
+		f << "# radial_extent_Rsun = " << BincountBinLowerKm(captured_dt_hist.size()) / R_SUN_KM << "\n";
 		f << "# bin_index  r_lower_Rsun  r_upper_Rsun  residence_dt[s]  residence_v2dt[km2/s]  residence_err_dt[s]  residence_err_v2dt[km2/s]\n";
 		const double residence_samples = static_cast<double>(number_of_residence_samples);
 		for(std::size_t b = 0; b < captured_dt_hist.size(); b++)
@@ -2132,7 +2158,7 @@ void Simulation_Data::Write_Diagnostic_Output(const std::string& output_dir, obs
 
 			f << b << "\t" << std::scientific << std::setprecision(10)
 			  << BincountBinLowerKm(b) / R_SUN_KM << "\t"
-			  << std::min(output_radius_rsun, BincountBinUpperKm(b) / R_SUN_KM) << "\t"
+			  << BincountBinUpperKm(b) / R_SUN_KM << "\t"
 			  << captured_dt_hist[b] << "\t" << captured_v2dt_hist[b]
 			  << "\t" << residence_err_dt << "\t" << residence_err_v2dt << "\n";
 		}
@@ -2445,13 +2471,12 @@ void Simulation_Data::Write_Diagnostic_Output(const std::string& output_dir, obs
 			         << "  \"rk_absolute_max_step_s\": " << RK45AbsoluteMaxStepSec() << ",\n"
 			         << "  \"bincount_integration\": \"" << BincountIntegrationScheme() << "\",\n"
 			         << "  \"bincount_dense_position_tolerance_km\": " << BincountDensePositionToleranceKm() << ",\n"
-			         << "  \"radial_grid\": \"uniform_inner_geometric_width_capped_v5\",\n"
+			         << "  \"radial_grid\": \"uniform_inner_geometric_width_unbounded_v7\",\n"
 			         << "  \"radial_inner_extent_Rsun\": " << BIN_MAX_KM / R_SUN_KM << ",\n"
 			         << "  \"radial_exterior_bins\": " << captured_dt_hist.size() - NUM_BINS << ",\n"
 			         << "  \"radial_exterior_initial_bin_width_Rsun\": " << BIN_WIDTH_KM / R_SUN_KM << ",\n"
 			         << "  \"radial_exterior_bin_growth_factor\": " << EXTERIOR_BIN_GROWTH_FACTOR << ",\n"
-			         << "  \"radial_exterior_max_bin_width_Rsun\": " << EXTERIOR_MAX_BIN_WIDTH_RSUN << ",\n"
-			         << "  \"R_output_rsun\": " << output_radius_rsun << ",\n"
+			         << "  \"R_output_rsun\": " << Radial_Output_Grid().back() / R_SUN_KM << ",\n"
 			         << "  \"interpolation_points\": " << trajectory_diagnostic_config.interpolation_points << ",\n"
 			         << "  \"rate_radius_points\": " << rate_radius_points << ",\n"
 			         << "  \"rate_speed_points\": " << rate_speed_points << ",\n"
@@ -2469,8 +2494,8 @@ void Simulation_Data::Write_Diagnostic_Output(const std::string& output_dir, obs
 			         << "  \"angular_momentum_unit\": \"km^2/s\",\n"
 			         << "  \"bound_exit_period_definition\": \"point-mass osculating Kepler period at a negative-energy outward crossing of 1 Rsun\",\n"
 			         << "  \"bound_exit_exterior_time_definition\": \"complete analytic round-trip return to the solar matching surface, independent of the recording radius\",\n"
-			         << "  \"residence_time_definition\": \"inside plus outside time is the complete physical capture-to-escape duration, including bound motion beyond R_output_rsun\",\n"
-			         << "  \"residence_histogram_definition\": \"time recorded only at radii up to R_output_rsun; its sum may be smaller than the complete physical duration\",\n"
+			         << "  \"residence_time_definition\": \"inside plus outside time is the complete physical capture-to-escape duration\",\n"
+			         << "  \"residence_histogram_definition\": \"complete residence at all radii; histogram sum equals the physical capture-to-escape duration\",\n"
 			         << "  \"n_scatter_total_definition\": \"all trajectory scatters, including scatters before first capture\",\n"
 			         << "  \"stop_conditions\": {\"max_free_steps\": " << maximum_free_time_steps
 			         << ", \"max_scatterings\": " << maximum_number_of_scatterings << "},\n"
@@ -3100,8 +3125,9 @@ std::string Simulation_Data::Run_Metadata_JSON(obscura::DM_Particle& DM, obscura
          << ",\n\"R_inj_rsun\":" << INCIDENT_INJECTION_RSUN
          << ",\n\"R_match_rsun\":" << In_Units(initial_and_final_radius,rSun)
          << ",\n\"R_incident_au\":" << INCIDENT_SAMPLING_RADIUS_AU
-         << ",\n\"R_transit_reference_rsun\":" << std::min(output_radius_rsun, TRANSIT_REFERENCE_RSUN)
-		 << ",\n\"R_output_rsun\":" << output_radius_rsun
+         << ",\n\"R_path_reference_rsun\":" << Radial_Output_Grid().back() / R_SUN_KM
+		 << ",\n\"R_output_min_rsun\":" << output_radius_rsun
+		 << ",\n\"R_output_rsun\":" << Radial_Output_Grid().back() / R_SUN_KM
 		 << ",\n\"interpolation_points\":" << interpolation_points
 		 << ",\n\"rate_radius_points\":" << rate_radius_points
 		 << ",\n\"rate_speed_points\":" << rate_speed_points
@@ -3159,12 +3185,51 @@ void Simulation_Data::Print_Capture_Result_JSON(obscura::DM_Particle& DM, obscur
     if(!std::cout) throw std::runtime_error("Cannot write capture result to stdout");
 }
 
+void Simulation_Data::Extend_Unbound_Paths_To_Common_Range()
+{
+    uint64_t bins = Radial_Output_Grid().size() - 1;
+    MPI_Allreduce(MPI_IN_PLACE,&bins,1,MPI_UINT64_T,MPI_MAX,MPI_COMM_WORLD);
+    GrowRadialHistograms(bins*RESIDENCE_JACKKNIFE_BLOCKS,
+        ever_captured_path_block_dt,ever_captured_path_block_dt_sq,
+        never_captured_path_block_dt,never_captured_path_block_dt_sq);
+    for(const auto& extension : completed_path_extensions)
+        for(std::size_t bin=extension.path.first_bin; bin<bins; ++bin)
+        {
+            const auto moments = Unbound_Path_Shell_Moments(extension.path,bin);
+            const double dt = moments[0];
+            if(!std::isfinite(dt) || dt<0)
+                throw std::runtime_error("nonfinite extended unbound residence");
+            const std::size_t index = bin*RESIDENCE_JACKKNIFE_BLOCKS+extension.block;
+            if(extension.captured)
+            {
+                const std::size_t offset = bin-extension.path.first_bin;
+                const double residence = offset<extension.residence_tail.size() ? extension.residence_tail[offset] : 0.0;
+                ever_captured_path_block_dt[index] += dt;
+                ever_captured_path_block_dt_sq[index] += dt*(dt+2*residence);
+            }
+            else
+            {
+                never_captured_path_block_dt[index] += dt;
+                never_captured_path_block_dt_sq[index] += dt*dt;
+            }
+        }
+}
+
+std::vector<double> Simulation_Data::Radial_Output_Grid() const
+{
+    const std::size_t bins = std::max({captured_dt_hist.size(),
+        captured_residence_block_dt.size() / RESIDENCE_JACKKNIFE_BLOCKS,
+        ever_captured_path_block_dt.size() / RESIDENCE_JACKKNIFE_BLOCKS,
+        never_captured_path_block_dt.size() / RESIDENCE_JACKKNIFE_BLOCKS});
+    return BuildDynamicRadialGrid(bins, output_radius_rsun * R_SUN_KM);
+}
+
 void Simulation_Data::Write_Diagnostic_Radial_Blocks(const std::string& dir) const
 {
 	if(mpi_rank != 0) return;
 	if(!diagnostic_output_enabled || thermal_shape_run || fixed_injection_capture_run)
 		throw std::logic_error("radial_blocks.tsv requires a complete-history diagnostic run");
-	const auto edges = BuildRadialGrid(output_radius_rsun * R_SUN_KM);
+	const auto edges = Radial_Output_Grid();
 	const std::string path = dir + "/radial_blocks.tsv", temporary = path + ".tmp";
 	try
 	{
@@ -3218,7 +3283,7 @@ void Simulation_Data::Write_Bincount(const std::string& dir, obscura::DM_Particl
 		throw std::logic_error("bincount.tsv requires a scientific Transport run");
 	if(!Ensure_Directory_Exists(dir) || !Ensure_Directory_Exists(dir + "/snapshot"))
 		throw std::runtime_error("cannot create transport output directory");
-	const auto edges = BuildRadialGrid(output_radius_rsun * R_SUN_KM);
+	const auto edges = Radial_Output_Grid();
 	const bool target_reached = Target_Reached();
 	auto sum_counts = [](const auto& counts) {
 		return std::accumulate(counts.begin(), counts.end(), 0UL);
@@ -3262,7 +3327,7 @@ void Simulation_Data::Write_Bincount(const std::string& dir, obscura::DM_Particl
 		std::ofstream file(temporary);
 		if(!file) throw std::runtime_error("cannot open temporary bincount.tsv");
 		file << std::defaultfloat << std::setprecision(OUTPUT_PARAMETER_DIGITS);
-		file << "# bincount_format_version = 5\n"
+		file << "# bincount_format_version = 7\n"
 		     << "# run_mode = Parameter point\n"
 		     << "# m_chi_GeV = " << In_Units(DM.mass, GeV) << '\n'
 		     << "# cross_section_definition = sigma_cm2 = coefficient * 10^(-exponent); coefficient=0 denotes zero\n";
@@ -3293,8 +3358,10 @@ void Simulation_Data::Write_Bincount(const std::string& dir, obscura::DM_Particl
 		     << "# R_incident_au = " << INCIDENT_SAMPLING_RADIUS_AU << '\n'
 		     << "# R_injection_rsun = " << INCIDENT_INJECTION_RSUN << '\n'
 		     << "# R_match_rsun = " << In_Units(initial_and_final_radius, rSun) << '\n'
-		     << "# R_output_rsun = " << output_radius_rsun << '\n'
-		     << "# R_path_reference_rsun = " << std::min(output_radius_rsun, TRANSIT_REFERENCE_RSUN) << '\n'
+		     << "# radial_range = dynamic_complete_shells\n"
+		     << "# R_output_min_rsun = " << output_radius_rsun << '\n'
+		     << "# R_output_rsun = " << edges.back() / R_SUN_KM << '\n'
+		     << "# R_path_reference_rsun = " << edges.back() / R_SUN_KM << '\n'
 		     << "# rate_radius_points = " << rate_radius_points << '\n'
 		     << "# rate_speed_points = " << rate_speed_points << '\n'
 		     << "# rate_max_speed = " << rate_max_speed << '\n'
@@ -3311,10 +3378,9 @@ void Simulation_Data::Write_Bincount(const std::string& dir, obscura::DM_Particl
 		     << "# maximum_free_time_steps = " << maximum_free_time_steps << '\n'
 		     << "# max_trajectory_wall_time_sec = " << max_trajectory_wall_time_sec << '\n'
 		     << "# runtime_seconds = " << computing_time << '\n'
-		     << "# radial_grid = uniform_inner_geometric_width_capped_v5\n"
+		     << "# radial_grid = uniform_inner_geometric_width_unbounded_v7\n"
 		     << "# inner_bin_width_rsun = " << BIN_WIDTH_KM / R_SUN_KM << '\n'
 		     << "# exterior_bin_growth_factor = " << EXTERIOR_BIN_GROWTH_FACTOR << '\n'
-		     << "# exterior_max_bin_width_rsun = " << EXTERIOR_MAX_BIN_WIDTH_RSUN << '\n'
 		     << "# radial_bins = " << edges.size() - 1 << '\n'
 		     << "# jackknife_blocks = " << RESIDENCE_JACKKNIFE_BLOCKS << '\n'
 		     << "# jackknife_assignment = splitmix64(base_seed,rank,trajectory_id)%64\n"
@@ -3327,10 +3393,10 @@ void Simulation_Data::Write_Bincount(const std::string& dir, obscura::DM_Particl
 		     << "# radial_covariance_available = selected_observables_and_integrals\n"
 		     << "# capture_normalization_uncertainty_included = false\n"
 		     << "# completed_residence_history_policy = validated_outward_escape\n"
-		     << "# captured_residence = recorded portions within R_output_rsun from first capture to validated matching-surface escape\n"
-		     << "# bound_exterior_motion = complete analytic return to R_match_rsun; R_output_rsun clips recorded histograms only\n"
-		     << "# residence_histogram_time = sum records time within R_output_rsun and need not equal the complete capture-to-escape duration\n"
-		     << "# ever_captured_path = recorded inbound + pre-capture + residence + outgoing within the finite recording windows of completed captured histories\n"
+		     << "# captured_residence = complete residence from first capture to validated matching-surface escape; all bound exterior arcs recorded\n"
+		     << "# bound_exterior_motion = complete analytic return to R_match_rsun; histogram expands through every bound apoapsis\n"
+		     << "# residence_histogram_time = sum over all radial bins equals the complete capture-to-escape duration before output rounding\n"
+		     << "# ever_captured_path = inbound + pre-capture + complete residence + outgoing; unbound legs use R_path_reference_rsun\n"
 		     << "# never_captured_path = complete recorded paths of all completed never-captured histories\n"
 		     << "# second_moments = sum of per-history bin times squared after path components are combined\n"
 		     << "# normalization = independent fixed-injection Capture supplies p_cap; captured moments use N_residence_samples; never-captured moments use N_never_captured; failed histories are excluded\n"

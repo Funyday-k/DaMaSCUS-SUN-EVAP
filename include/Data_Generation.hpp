@@ -243,6 +243,16 @@ class Simulation_Data
 	void Gather_Invalid_Trajectories();
 	void Write_Invalid_Trajectories(const std::string& output_dir);
 	std::string Run_Metadata_JSON(obscura::DM_Particle& DM, obscura::DM_Distribution& halo) const;
+	std::vector<double> Radial_Output_Grid() const;
+	void Extend_Unbound_Paths_To_Common_Range();
+	struct CompletedPathExtension
+	{
+	    std::size_t block = 0;
+	    bool captured = false;
+	    UnboundPathExtension path;
+	    RadialHistogram residence_tail;
+	};
+	std::vector<CompletedPathExtension> completed_path_extensions;
 	double max_trajectory_wall_time_sec = 0.0;
 
 	// Reflection samples remain active inputs to parameter-scan detector limits.
@@ -253,6 +263,7 @@ class Simulation_Data
 
   public:
 	std::vector<std::vector<libphysica::DataPoint>> data;
+	// Minimum initial output extent; recorded bound residence is unbounded.
 	double output_radius_rsun = DEFAULT_OUTPUT_RADIUS_RSUN;
 	unsigned int interpolation_points = 0;
 	unsigned int rate_radius_points = 0;

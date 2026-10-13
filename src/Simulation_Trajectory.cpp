@@ -80,15 +80,15 @@ constexpr double BINCOUNT_DENSE_POSITION_TOLERANCE_KM = 2.0e-3 * BIN_WIDTH_KM;
 constexpr int BINCOUNT_DENSE_MAX_RECURSION = 20;
 constexpr double BINCOUNT_GAUSS_LEGENDRE_OFFSET = 0.77459666924148337704;
 
-const std::array<double, EXTERIOR_FIRST_CAPPED_BIN + 1>& ExteriorGeometricEdgesKm()
+const std::vector<double>& ExteriorGeometricEdgesKm()
 {
-	static const std::array<double, EXTERIOR_FIRST_CAPPED_BIN + 1> edges = []() {
-		std::array<double, EXTERIOR_FIRST_CAPPED_BIN + 1> result{};
-		result[0] = BIN_MAX_KM;
+	// Immutable after initialization, including when snapshot writers access it.
+	static const std::vector<double> edges = []() {
+		std::vector<double> result{BIN_MAX_KM};
 		double width_km = BIN_WIDTH_KM;
-		for(std::size_t bin = 0; bin < EXTERIOR_FIRST_CAPPED_BIN; bin++)
+		while(std::isfinite(result.back()))
 		{
-			result[bin + 1] = result[bin] + width_km;
+			result.push_back(result.back() + width_km);
 			width_km *= EXTERIOR_BIN_GROWTH_FACTOR;
 		}
 		return result;
@@ -1210,10 +1210,9 @@ double BincountBinLowerKm(std::size_t bin)
 		return static_cast<double>(bin) * BIN_WIDTH_KM;
 	const std::size_t exterior_bin = bin - NUM_BINS;
 	const auto& edges = ExteriorGeometricEdgesKm();
-	if(exterior_bin <= EXTERIOR_FIRST_CAPPED_BIN)
+	if(exterior_bin < edges.size())
 		return edges[exterior_bin];
-	return edges.back() + static_cast<double>(exterior_bin - EXTERIOR_FIRST_CAPPED_BIN)
-	    * EXTERIOR_MAX_BIN_WIDTH_KM;
+	return std::numeric_limits<double>::infinity();
 }
 
 double BincountBinUpperKm(std::size_t bin)
@@ -1234,17 +1233,8 @@ int BincountBinIndexKm(double radius_km)
 		return bin;
 	}
 	const auto& edges = ExteriorGeometricEdgesKm();
-	if(radius_km < edges.back())
-		return NUM_BINS + static_cast<int>(
-		    std::upper_bound(edges.begin(), edges.end(), radius_km) - edges.begin()) - 1;
-	const double index = NUM_BINS + EXTERIOR_FIRST_CAPPED_BIN
-	    + std::floor((radius_km - edges.back()) / EXTERIOR_MAX_BIN_WIDTH_KM);
-	if(index >= static_cast<double>(std::numeric_limits<int>::max()))
-		return -1;  // Not representable by BincountContribution::bin.
-	int bin = static_cast<int>(index);
-	if(radius_km < BincountBinLowerKm(bin)) --bin;
-	else if(radius_km >= BincountBinUpperKm(bin)) ++bin;
-	return bin;
+	return NUM_BINS + static_cast<int>(
+	    std::upper_bound(edges.begin(), edges.end(), radius_km) - edges.begin()) - 1;
 }
 
 std::vector<double> BuildRadialGrid(double outer_radius_km)
@@ -1254,6 +1244,23 @@ std::vector<double> BuildRadialGrid(double outer_radius_km)
 	std::vector<double> edges{0.0};
 	for(std::size_t bin = 0; edges.back() < outer_radius_km; ++bin)
 		edges.push_back(std::min(outer_radius_km, BincountBinUpperKm(bin)));
+	return edges;
+}
+
+std::vector<double> BuildDynamicRadialGrid(std::size_t recorded_bins, double initial_radius_km)
+{
+	if(!std::isfinite(initial_radius_km) || initial_radius_km < BIN_MAX_KM)
+		throw std::invalid_argument("initial output radius must cover the native grid");
+	const std::size_t initial_bins = static_cast<std::size_t>(
+	    BincountBinIndexKm(std::nextafter(initial_radius_km, 0.0))) + 1;
+	const std::size_t bins = std::max(recorded_bins, initial_bins);
+	std::vector<double> edges(bins + 1);
+	for(std::size_t bin = 0; bin <= bins; ++bin)
+	{
+		edges[bin] = BincountBinLowerKm(bin);
+		if(!std::isfinite(edges[bin]))
+			throw std::overflow_error("radial grid exceeds finite shell geometry");
+	}
 	return edges;
 }
 
@@ -1358,32 +1365,73 @@ bool Compute_Bound_Kepler_Exterior_Arc(
 	return true;
 }
 
-bool Compute_Unbound_Kepler_Exterior_Arc(const Event& outward, double end_km, BoundKeplerExteriorArc& arc)
+bool Make_Unbound_Kepler_Orbit(const Event& outward, UnboundKeplerOrbit& orbit)
 {
-    const long double r0 = In_Units(outward.Radius(), km);
-    const long double shell_start = std::max(r0, static_cast<long double>(R_SUN_KM));
+    const long double r = In_Units(outward.Radius(), km);
     const long double v = In_Units(outward.Speed(), km/sec);
     const long double h = In_Units(outward.Angular_Momentum(), km*km/sec);
     const long double mu = In_Units(G_Newton*mSun, km*km*km/(sec*sec));
-    const long double energy = v*v/2 - mu/r0;
-    if(!std::isfinite(end_km) || !(r0 >= R_SUN_KM * (1.0L - 1.0e-10L) && energy > 0)
-       || !std::isfinite(energy) || outward.position.Dot(outward.velocity) <= 0) return false;
-    if(std::fabs(end_km-static_cast<double>(r0)) < 1e-10*end_km) {
-        arc=BoundKeplerExteriorArc(); arc.terminal_event=outward; return true;
-    }
-    if(end_km <= r0) return false;
-    const long double a = mu/(2*energy);
-    const long double e = sqrtl(1 + 2*energy*h*h/(mu*mu));
+    const long double energy = v*v/2 - mu/r;
+    if(!(r >= R_SUN_KM*(1.0L-1e-10L)) || !(energy > 0)
+       || !std::isfinite(energy) || !std::isfinite(h) || h < 0
+       || outward.position.Dot(outward.velocity) <= 0) return false;
+    orbit.energy_km2_s2 = static_cast<double>(energy);
+    orbit.angular_momentum_km2_s = static_cast<double>(h);
+    return std::isfinite(orbit.energy_km2_s2) && orbit.energy_km2_s2 > 0;
+}
+
+bool IsValidUnboundPathExtension(const UnboundPathExtension& path)
+{
+    auto valid = [](const UnboundKeplerOrbit& orbit) {
+        return std::isfinite(orbit.energy_km2_s2) && orbit.energy_km2_s2 > 0
+            && std::isfinite(orbit.angular_momentum_km2_s) && orbit.angular_momentum_km2_s >= 0;
+    };
+    return path.first_bin >= NUM_BINS && valid(path.incoming) && valid(path.outgoing);
+}
+
+std::array<double, 2> Unbound_Kepler_Shell_Moments(
+    const UnboundKeplerOrbit& orbit, double lower_km, double upper_km)
+{
+    const double missing = std::numeric_limits<double>::quiet_NaN();
+    if(!std::isfinite(lower_km) || !std::isfinite(upper_km) || lower_km < R_SUN_KM*(1-1e-10)
+       || upper_km < lower_km || !std::isfinite(orbit.energy_km2_s2) || orbit.energy_km2_s2 <= 0
+       || !std::isfinite(orbit.angular_momentum_km2_s) || orbit.angular_momentum_km2_s < 0)
+        return {{missing, missing}};
+    const long double energy = orbit.energy_km2_s2, h = orbit.angular_momentum_km2_s;
+    const long double mu = In_Units(G_Newton*mSun, km*km*km/(sec*sec));
+    const long double a = mu/(2*energy), e = sqrtl(1 + 2*energy*h*h/(mu*mu));
     const long double n = sqrtl(mu/(a*a*a));
-    const long double periapsis=h*h/(mu*(1+e));
-    const long double e_minus_one=2*energy*h*h/(mu*mu*(1+e));
+    const long double periapsis = h*h/(mu*(1+e));
+    const long double e_minus_one = 2*energy*h*h/(mu*mu*(1+e));
     auto primitives = [&](long double radius) {
-        const long double q=std::max(0.0L,(radius-periapsis)/(2*a*e));
-        const long double H=2*asinhl(sqrtl(q)), sh=2*sqrtl(q*(1+q));
+        const long double q = std::max(0.0L,(radius-periapsis)/(2*a*e));
+        const long double H = 2*asinhl(sqrtl(q)), sh = 2*sqrtl(q*(1+q));
         return std::array<long double,2>{{
             (e_minus_one*H+e*Hyperbolic_Sine_Minus_Anomaly(H))/n,
             mu/(a*n)*(e*sh+H)}};
     };
+    const auto low = primitives(lower_km), high = primitives(upper_km);
+    return {{static_cast<double>(high[0]-low[0]), static_cast<double>(high[1]-low[1])}};
+}
+
+std::array<double, 2> Unbound_Path_Shell_Moments(const UnboundPathExtension& path, std::size_t bin)
+{
+    const double low = BincountBinLowerKm(bin), high = BincountBinUpperKm(bin);
+    const auto incoming = Unbound_Kepler_Shell_Moments(path.incoming,low,high);
+    const auto outgoing = Unbound_Kepler_Shell_Moments(path.outgoing,low,high);
+    return {{incoming[0]+outgoing[0],incoming[1]+outgoing[1]}};
+}
+
+bool Compute_Unbound_Kepler_Exterior_Arc(const Event& outward, double end_km, BoundKeplerExteriorArc& arc)
+{
+    const long double r0 = In_Units(outward.Radius(), km);
+    const long double shell_start = std::max(r0, static_cast<long double>(R_SUN_KM));
+    UnboundKeplerOrbit orbit;
+    if(!std::isfinite(end_km) || !Make_Unbound_Kepler_Orbit(outward,orbit)) return false;
+    if(std::fabs(end_km-static_cast<double>(r0)) < 1e-10*end_km) {
+        arc=BoundKeplerExteriorArc(); arc.terminal_event=outward; return true;
+    }
+    if(end_km <= r0) return false;
     arc = BoundKeplerExteriorArc();
     arc.terminal_event = outward;
     if(!Hyperbolic_Kepler_Shift(arc.terminal_event,end_km*km)) return false;
@@ -1394,9 +1442,9 @@ bool Compute_Unbound_Kepler_Exterior_Arc(const Event& outward, double end_km, Bo
         const double lo=std::max(static_cast<double>(shell_start),BincountBinLowerKm(b));
         const double hi=std::min(end_km,BincountBinUpperKm(b));
         if(hi<=lo) continue;
-        const auto p0=primitives(lo), p1=primitives(hi);
-        arc.dt_hist[b]=static_cast<double>(p1[0]-p0[0]);
-        arc.v2dt_hist[b]=static_cast<double>(p1[1]-p0[1]);
+        const auto moments=Unbound_Kepler_Shell_Moments(orbit,lo,hi);
+        arc.dt_hist[b]=moments[0];
+        arc.v2dt_hist[b]=moments[1];
         if(!std::isfinite(arc.dt_hist[b]) || arc.dt_hist[b]<0 || !std::isfinite(arc.v2dt_hist[b]) || arc.v2dt_hist[b]<0) return false;
         arc.elapsed_time_sec+=arc.dt_hist[b];
     }

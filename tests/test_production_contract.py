@@ -52,7 +52,7 @@ def validate_snapshots(directory: Path, final_header: dict[str, str], ranks: int
             assert header['note'] == 'heartbeat woke too late; no state rewind is available'
             assert not rows, path
             continue
-        assert header['format_version'] == '10'
+        assert header['format_version'] == '12'
         ready = [int(value) for value in header['ready_ranks'].split(',')] if header['ready_ranks'] else []
         missing = [int(value) for value in header['missing_ranks'].split(',')] if header['missing_ranks'] else []
         assert ready == sorted(set(ready)) and missing == sorted(set(missing))
@@ -64,6 +64,13 @@ def validate_snapshots(directory: Path, final_header: dict[str, str], ranks: int
             assert ready and missing
             assert header['WARNING'] == 'partial snapshot; not all ranks reached this checkpoint'
         assert rows and [row[0] for row in rows] == list(range(len(rows)))
+        assert header['radial_range'] == 'dynamic_complete_shells'
+        assert header['exterior_grid'] == 'geometric_width_unbounded'
+        assert math.isclose(rows[-1][2], float(header['R_output_rsun']), rel_tol=1e-10)
+        assert float(header['R_output_rsun']) >= float(header['R_output_min_rsun'])
+        assert header['R_path_reference_rsun'] == header['R_output_rsun']
+        for first, second in zip(rows[1100:], rows[1101:]):
+            assert math.isclose((second[2]-second[1])/(first[2]-first[1]), 1.02, rel_tol=1e-7)
         total = int(header['total_trajectories'])
         captured = int(header['captured_particles'])
         classified = int(header['valid_trajectories'])
@@ -169,8 +176,8 @@ def main() -> None:
         assert result.returncode != 0 and 'not empty' in result.stderr
         assert sentinel.read_text() == 'previous snapshot' and (product / 'bincount.tsv').read_bytes() == saved
 
-        # A finite radial window changes statistical coverage, while the same
-        # RNG streams retain capture, completion and exclusion decisions.
+        # A smaller initial extent must never truncate statistics. The same
+        # streams retain all recorded shells, moments and completion decisions.
         result, output, _ = run('small_window', run_mode='"Parameter point"', sample_size='64',
                                 output_radius_rsun='2.05', snapshot_enabled='false')
         assert result.returncode == 0, result.stdout + result.stderr
@@ -182,11 +189,12 @@ def main() -> None:
         for key in ('N_injected', 'N_ever_captured', 'N_never_captured', 'N_residence_samples',
                     'N_excluded_trajectories', 'numerical_failures', 'computational_failures', 'stop_reason'):
             assert small_header[key] == full_header[key], key
-        assert small_rows[-1][2] == 2.05 and len(small_rows) < len(full_rows)
-        # Every unchanged full shell preserves its measured moments exactly;
-        # the final partial shell is covered by the analytic quadrature tests.
+        assert float(small_header['R_output_rsun']) > 2.05
+        assert len(small_rows) <= len(full_rows)
+        assert float(small_header['R_path_reference_rsun']) == small_rows[-1][2]
+        assert float(full_header['R_path_reference_rsun']) == full_rows[-1][2]
         assert all(a == b or (math.isnan(a) and math.isnan(b))
-                   for small, full in zip(small_rows[:-1], full_rows) for a, b in zip(small, full))
+                   for small, full in zip(small_rows, full_rows) for a, b in zip(small, full))
 
         # This fixed stream includes a numerical failure before completing 1000
         # captures. It must continue and retain correct conditional denominators.
@@ -227,11 +235,11 @@ def main() -> None:
             lifetime = float(row['lifetime_validated_escape_s'])
             physical_time = float(row['time_inside_sun_s']) + float(row['time_outside_sun_s'])
             assert math.isclose(physical_time, lifetime, rel_tol=1e-8, abs_tol=1e-5)
-        # Recorded radial residence may omit exterior waiting time and is not
-        # an evaporation lifetime. The default window bounds only this sum.
+        # Full radial residence retains every bound exterior waiting interval.
+        # Compare rounded production totals to full-precision lifetimes.
         recorded = math.fsum(row[3] for row in full_rows)
         lifetime_total = math.fsum(float(row['lifetime_validated_escape_s']) for row in complete)
-        assert recorded <= lifetime_total * (1 + 2e-3)
+        assert math.isclose(recorded, lifetime_total, rel_tol=2e-3)
         assert len((local / 'trajectory_events.tsv').read_text().splitlines()) > 1
         result, output, config = run('local_invalid', ('--diagnostic',), run_mode='"Parameter point"', sample_size='1',
                                      max_trajectories='1', maximum_number_of_scatterings='1', snapshot_enabled='false')

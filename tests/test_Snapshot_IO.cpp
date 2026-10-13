@@ -860,7 +860,75 @@ TEST_F(SnapshotIOTest, FinalizationRetriesMergedCheckpointCleanup)
 	EXPECT_FALSE(PathExists(rank_snapshot_dir));
 }
 
-TEST_F(SnapshotIOTest, FiniteOutputWindowClipsLastSnapshotShellExactly)
+TEST_F(SnapshotIOTest, EarlierUnboundPathsExtendToAnotherRanksBoundExtent)
+{
+    const uint64_t run_id = 99005;
+    const double interval = 10.0, initial_radius = 2.05;
+    const auto initial_edges = BuildDynamicRadialGrid(NUM_BINS,initial_radius*R_SUN_KM);
+    Event incoming(0.0,libphysica::Vector({libphysica::natural_units::rSun,0.0,0.0}),
+        libphysica::Vector({700*libphysica::natural_units::km/libphysica::natural_units::sec,
+                           100*libphysica::natural_units::km/libphysica::natural_units::sec,0.0}));
+    Event outgoing = incoming;
+    outgoing.velocity[0] *= 0.95;
+    UnboundPathExtension extension;
+    extension.first_bin = initial_edges.size()-1;
+    ASSERT_TRUE(Make_Unbound_Kepler_Orbit(incoming,extension.incoming));
+    ASSERT_TRUE(Make_Unbound_Kepler_Orbit(outgoing,extension.outgoing));
+    SnapshotRankState earlier;
+    earlier.run_id=run_id; earlier.rank=0; earlier.snapshot_index=1;
+    earlier.local_total=earlier.local_classified=earlier.bincount_never_captured_samples=1;
+    earlier.never_captured_path_extensions.push_back(extension);
+    ASSERT_TRUE(WriteSnapshotRankState(SnapshotRankCheckpointPath(rank_snapshot_dir,0,1,interval),earlier));
+    SnapshotRankState recovered;
+    ASSERT_TRUE(ReadSnapshotRankState(SnapshotRankCheckpointPath(rank_snapshot_dir,0,1,interval),run_id,recovered));
+    ASSERT_EQ(recovered.never_captured_path_extensions.size(),1U);
+    EXPECT_DOUBLE_EQ(recovered.never_captured_path_extensions[0].incoming.energy_km2_s2,extension.incoming.energy_km2_s2);
+
+    SnapshotRankState later=MakeMergeState(run_id,1);
+    const int outer_bin=BincountBinIndexKm(100*AU_KM);
+    GrowRadialHistograms(outer_bin+1,later.captured_dt_hist,later.captured_v2dt_hist,
+        later.captured_dt_sq_hist,later.captured_v2dt_sq_hist);
+    later.captured_dt_hist[outer_bin]=1.0;
+    later.captured_v2dt_hist[outer_bin]=2.0;
+    later.captured_dt_sq_hist[outer_bin]=1.0;
+    later.captured_v2dt_sq_hist[outer_bin]=4.0;
+    ASSERT_TRUE(WriteSnapshotRankState(SnapshotRankCheckpointPath(rank_snapshot_dir,1,1,interval),later));
+    SnapshotMergeCache cache;
+    ASSERT_EQ(TryWriteSnapshotCached(snapshot_root,rank_snapshot_dir,1,interval,2,run_id,
+        0.1,1e-36,cache,false,initial_radius).status,SnapshotMergeStatus::Merged);
+    const std::string path=SnapshotTextFilePath(snapshot_root,1,interval);
+    std::array<double,8> actual{};
+    ASSERT_TRUE(ReadHistogramBin(path,outer_bin,actual));
+    // Independent midpoint quadrature in log radius checks the newly added
+    // incoming AND outgoing segments, beyond the former 1100 R_sun surface.
+    auto quadrature=[&](const UnboundKeplerOrbit& orbit) {
+        using namespace libphysica::natural_units;
+        const double mu=In_Units(G_Newton*mSun,km*km*km/(sec*sec));
+        const double low=BincountBinLowerKm(outer_bin),high=BincountBinUpperKm(outer_bin);
+        const int steps=20000;
+        const double dlog=std::log(high/low)/steps;
+        std::array<double,2> result{};
+        for(int i=0;i<steps;++i) {
+            const double r=low*std::exp((i+0.5)*dlog);
+            const double v2=2*(orbit.energy_km2_s2+mu/r);
+            const double dt=r*dlog/std::sqrt(v2-std::pow(orbit.angular_momentum_km2_s/r,2));
+            result[0]+=dt;result[1]+=v2*dt;
+        }
+        return result;
+    };
+    const auto a=quadrature(extension.incoming),b=quadrature(extension.outgoing);
+    EXPECT_NEAR(actual[4]/(a[0]+b[0]),1.0,1e-8);
+    EXPECT_NEAR(actual[5]/(a[1]+b[1]),1.0,1e-8);
+    const auto cached_before=cache.report.never_captured_path_dt_hist;
+    ASSERT_EQ(TryWriteSnapshotCached(snapshot_root,rank_snapshot_dir,1,interval,2,run_id,
+        0.1,1e-36,cache,false,initial_radius).status,SnapshotMergeStatus::Merged);
+    EXPECT_EQ(cached_before,cache.report.never_captured_path_dt_hist);
+    std::array<double,8> retried{};
+    ASSERT_TRUE(ReadHistogramBin(path,outer_bin,retried));
+    EXPECT_EQ(actual,retried);
+}
+
+TEST_F(SnapshotIOTest, DynamicOutputIncludesRecordedBinsBeyondInitialExtent)
 {
     const uint64_t run_id = 99004;
     const double interval = 10.0, output_radius = 2.05;
@@ -903,16 +971,20 @@ TEST_F(SnapshotIOTest, FiniteOutputWindowClipsLastSnapshotShellExactly)
         std::size_t bin = 0;
         ASSERT_TRUE(static_cast<bool>(row >> bin >> last_low >> last_high >> dt >> v2dt));
         EXPECT_EQ(bin, rows++);
-        EXPECT_LE(last_high, output_radius);
+        EXPECT_NEAR(last_high, BincountBinUpperKm(bin) / R_SUN_KM, 1e-9);
     }
-    EXPECT_EQ(rows, edges.size() - 1);
-    EXPECT_NEAR(last_low, edges[last_bin] / R_SUN_KM, 1e-10);
-    EXPECT_DOUBLE_EQ(last_high, output_radius);
-    EXPECT_DOUBLE_EQ(dt, 2.5);
-    EXPECT_DOUBLE_EQ(v2dt, 5.0);
+    EXPECT_EQ(rows, last_bin + 2);
+    EXPECT_GT(last_high, output_radius);
+    EXPECT_NEAR(last_low, BincountBinLowerKm(last_bin + 1) / R_SUN_KM, 1e-9);
+    EXPECT_DOUBLE_EQ(dt, 0.0);
+    EXPECT_DOUBLE_EQ(v2dt, 0.0);
     std::array<double, 8> moments{};
     ASSERT_TRUE(ReadHistogramBin(path, last_bin, moments));
+    EXPECT_DOUBLE_EQ(moments[0], 2.5);
+    EXPECT_DOUBLE_EQ(moments[1], 5.0);
     EXPECT_DOUBLE_EQ(moments[4], 7.5);
     EXPECT_DOUBLE_EQ(moments[5], 15.0);
-    EXPECT_NE(ReadAll(path).find("# residence_time_scope = within_output_radius_only"), std::string::npos);
+    ASSERT_TRUE(ReadHistogramBin(path, last_bin + 1, moments));
+    EXPECT_DOUBLE_EQ(moments[4], 999.0);
+    EXPECT_NE(ReadAll(path).find("# radial_range = dynamic_complete_shells"), std::string::npos);
 }

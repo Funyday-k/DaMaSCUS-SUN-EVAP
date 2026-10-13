@@ -34,6 +34,7 @@ void SnapshotSharedState::Initialize(uint64_t run_id, int rank)
 	never_captured_path_v2dt_hist_.assign(NUM_BINS, 0.0);
 	never_captured_path_dt_sq_hist_.assign(NUM_BINS, 0.0);
 	never_captured_path_v2dt_sq_hist_.assign(NUM_BINS, 0.0);
+	never_captured_path_extensions_.clear();
 }
 
 void SnapshotSharedState::BeginTrajectory(uint64_t trajectory_id, double initial_simulated_time_sec)
@@ -174,6 +175,12 @@ void SnapshotSharedState::RecordCompletedTrajectory(
 	   && valid_path_histogram(bincount.transit_v2dt_hist))
 	{
 		bincount_never_captured_samples_++;
+        if(bincount.unbound_path_extension_available)
+        {
+            if(!IsValidUnboundPathExtension(bincount.unbound_path_extension))
+                throw std::invalid_argument("invalid snapshot unbound path invariants");
+            never_captured_path_extensions_.push_back(bincount.unbound_path_extension);
+        }
 		GrowRadialHistograms(bincount.transit_dt_hist.size(),
 		    never_captured_path_dt_hist_, never_captured_path_v2dt_hist_,
 		    never_captured_path_dt_sq_hist_, never_captured_path_v2dt_sq_hist_);
@@ -235,6 +242,7 @@ SnapshotRankState SnapshotSharedState::CopyLocked(
 	state.local_numerical_failures = numerical_failures_;
 	state.bincount_captured_samples = bincount_captured_samples_;
 	state.bincount_never_captured_samples = bincount_never_captured_samples_;
+	state.never_captured_path_extensions = never_captured_path_extensions_;
 	state.current_trajectory_id = state.trajectory_in_progress ? current_trajectory_id_ : 0;
 	state.rank_elapsed_wall_sec = rank_elapsed_wall_sec;
 	state.current_trajectory_captured = (state.trajectory_in_progress && current_trajectory_captured_) ? 1 : 0;

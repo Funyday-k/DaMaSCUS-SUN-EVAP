@@ -403,7 +403,7 @@ TEST(TestSimulationTrajectory, RadialGridExtendsBeyondFormerCutoffs)
 {
 	EXPECT_DOUBLE_EQ(BincountBinLowerKm(0), 0.0);
 	EXPECT_DOUBLE_EQ(BincountBinLowerKm(NUM_BINS), BIN_MAX_KM);
-	for(std::size_t exterior_bin = 0; exterior_bin + 1 < EXTERIOR_FIRST_CAPPED_BIN; exterior_bin++)
+	for(std::size_t exterior_bin = 0; exterior_bin < 1000; exterior_bin++)
 	{
 		const std::size_t bin = NUM_BINS + exterior_bin;
 		const double width = BincountBinUpperKm(bin) - BincountBinLowerKm(bin);
@@ -411,7 +411,8 @@ TEST(TestSimulationTrajectory, RadialGridExtendsBeyondFormerCutoffs)
 		EXPECT_NEAR(next_width / width, EXTERIOR_BIN_GROWTH_FACTOR, 1.0e-11);
 	}
 	const int last_bin = BincountBinIndexKm(100.0 * AU_KM);
-	ASSERT_GT(last_bin, NUM_BINS + static_cast<int>(EXTERIOR_FIRST_CAPPED_BIN));
+	ASSERT_GT(last_bin, NUM_BINS + 466);
+	EXPECT_LT(last_bin, NUM_BINS + 1000);
 	for(int bin = 0; bin <= last_bin; bin++)
 	{
 		const double lower = BincountBinLowerKm(bin);
@@ -420,10 +421,9 @@ TEST(TestSimulationTrajectory, RadialGridExtendsBeyondFormerCutoffs)
 		EXPECT_EQ(BincountBinIndexKm(lower), bin);
 		EXPECT_EQ(BincountBinIndexKm(std::nextafter(upper, 0.0)), bin);
 		EXPECT_EQ(BincountBinIndexKm(upper), bin + 1);
-		if(bin >= NUM_BINS + static_cast<int>(EXTERIOR_FIRST_CAPPED_BIN))
-			EXPECT_NEAR(upper - lower, EXTERIOR_MAX_BIN_WIDTH_KM, 1.0e-12 * EXTERIOR_MAX_BIN_WIDTH_KM);
+
 	}
-	for(double radius_au : {1.0, 5.2, 100.0})
+	for(double radius_au : {1.0, 5.2, 100.0, 2000.0, 1.0e8})
 	{
 		const double radius = radius_au * AU_KM;
 		const int bin = BincountBinIndexKm(radius);

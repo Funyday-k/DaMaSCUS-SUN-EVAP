@@ -41,6 +41,7 @@ struct SnapshotRankState
 	RadialHistogram never_captured_path_v2dt_hist = RadialHistogram(NUM_BINS, 0.0);
 	RadialHistogram never_captured_path_dt_sq_hist = RadialHistogram(NUM_BINS, 0.0);
 	RadialHistogram never_captured_path_v2dt_sq_hist = RadialHistogram(NUM_BINS, 0.0);
+	std::vector<UnboundPathExtension> never_captured_path_extensions;
 };
 
 enum class SnapshotMergeStatus
@@ -91,6 +92,7 @@ struct SnapshotReportState
 	RadialHistogram never_captured_path_v2dt_hist = RadialHistogram(NUM_BINS, 0.0);
 	RadialHistogram never_captured_path_dt_sq_hist = RadialHistogram(NUM_BINS, 0.0);
 	RadialHistogram never_captured_path_v2dt_sq_hist = RadialHistogram(NUM_BINS, 0.0);
+	std::vector<UnboundPathExtension> never_captured_path_extensions;
 	std::vector<RankProgress> rank_progress;
 };
 

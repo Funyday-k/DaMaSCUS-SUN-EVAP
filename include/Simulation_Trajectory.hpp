@@ -26,23 +26,19 @@ namespace DaMaSCUS_SUN
 class SnapshotRecorder;
 
 // Numerical/analytic matching is at the solar surface. The distant incident
-// sampling sphere, transit diagnostic surface, and radial recording limit
-// serve different purposes and must remain independent.
+// sampling sphere and initial output extent serve different purposes.
+// Incoming and outgoing shell statistics follow the common dynamic extent.
 constexpr double TRAJECTORY_BOUNDARY_RSUN = 1.0;
 constexpr double INCIDENT_INJECTION_RSUN = 2.0;
-constexpr double TRANSIT_REFERENCE_RSUN = 1100.0;
 constexpr double DEFAULT_OUTPUT_RADIUS_RSUN = 1100.0;
 constexpr double R_SUN_KM = 6.957e5;  // km
 constexpr double AU_KM = 1.495978707e8;  // IAU 2012 exact astronomical unit [km]
 constexpr double BIN_WIDTH_KM = R_SUN_KM / 1000.0;  // 0.001 R_sun
 constexpr int NUM_BINS = 1100;  // base grid through 1.1 R_sun
 constexpr double BIN_MAX_KM = NUM_BINS * BIN_WIDTH_KM;
-// Exterior shell widths grow by 2% from the inner-grid width and are capped
-// at 10 R_sun, preserving resolution of the planetary-sensitive domain.
+// Exterior shell widths grow by 2% without a cap, so the number of shells
+// grows logarithmically with the radial extent.
 constexpr double EXTERIOR_BIN_GROWTH_FACTOR = 1.02;
-constexpr double EXTERIOR_MAX_BIN_WIDTH_RSUN = 10.0;
-constexpr double EXTERIOR_MAX_BIN_WIDTH_KM = EXTERIOR_MAX_BIN_WIDTH_RSUN * R_SUN_KM;
-constexpr std::size_t EXTERIOR_FIRST_CAPPED_BIN = 466;
 using RadialHistogram = std::vector<double>;
 
 // Missing outer bins represent zero residence. Grow related histograms
@@ -75,13 +71,16 @@ void Compute_Bincount_Interval_Contributions(
 	std::vector<BincountContribution>& contributions);
 
 // The histogram is uniform through 1.1 R_sun. Exterior shell widths grow
-// geometrically from 0.001 R_sun and are capped at 10 R_sun. These helpers are the single source of truth for
+// geometrically from 0.001 R_sun without a cap. These helpers are the single source of truth for
 // writers, snapshots, and exact exterior Kepler shell integration.
 double BincountBinLowerKm(std::size_t bin);
 double BincountBinUpperKm(std::size_t bin);
 int BincountBinIndexKm(double radius_km);
 // Native geometry clipped at the requested recording boundary [km].
 std::vector<double> BuildRadialGrid(double outer_radius_km);
+// Whole native shells covering all recorded bins and the initial output extent.
+// Final output and snapshots use identical boundaries as the histogram grows.
+std::vector<double> BuildDynamicRadialGrid(std::size_t recorded_bins, double initial_radius_km);
 
 struct BoundKeplerExteriorArc
 {
@@ -101,6 +100,24 @@ bool Compute_Bound_Kepler_Exterior_Arc(const Event& outward_event, BoundKeplerEx
     double recording_radius_km = std::numeric_limits<double>::infinity());
 // Exact hyperbolic shell moments, between two radii on one outgoing branch.
 bool Compute_Unbound_Kepler_Exterior_Arc(const Event& outward_event, double end_radius_km, BoundKeplerExteriorArc& arc);
+
+// Compact exterior invariants allow completed unbound paths to be extended
+// when a later bound orbit enlarges the common statistical domain.
+struct UnboundKeplerOrbit
+{
+    double energy_km2_s2 = 0.0;
+    double angular_momentum_km2_s = 0.0;
+};
+struct UnboundPathExtension
+{
+    uint64_t first_bin = 0;
+    UnboundKeplerOrbit incoming, outgoing;
+};
+bool Make_Unbound_Kepler_Orbit(const Event& outward_event, UnboundKeplerOrbit& orbit);
+bool IsValidUnboundPathExtension(const UnboundPathExtension& path);
+std::array<double, 2> Unbound_Kepler_Shell_Moments(
+    const UnboundKeplerOrbit& orbit, double lower_km, double upper_km);
+std::array<double, 2> Unbound_Path_Shell_Moments(const UnboundPathExtension& path, std::size_t bin);
 
 enum class TrajectoryTerminationReason
 {
@@ -254,6 +271,8 @@ struct TrajectoryBincount
 	RadialHistogram transit_v2dt_hist = RadialHistogram(NUM_BINS, 0.0);
 	RadialHistogram post_evap_dt_hist = RadialHistogram(NUM_BINS, 0.0);
 	RadialHistogram post_evap_v2dt_hist = RadialHistogram(NUM_BINS, 0.0);
+	bool unbound_path_extension_available = false;
+	UnboundPathExtension unbound_path_extension;
 	TrajectoryTerminationReason termination_reason = TrajectoryTerminationReason::Unknown;
 	TrajectoryNumericalFailureDetail numerical_failure_detail =
 	    TrajectoryNumericalFailureDetail::None;
@@ -365,8 +384,8 @@ class Trajectory_Simulator
 	unsigned long int maximum_time_steps;
 	unsigned long int maximum_scatterings;
 	double maximum_distance;  // numerical matching / validated escape surface
-	double recording_radius_km = DEFAULT_OUTPUT_RADIUS_RSUN * R_SUN_KM;
-	double outgoing_recording_radius_km = TRANSIT_REFERENCE_RSUN * R_SUN_KM;
+	double recording_radius_km = std::numeric_limits<double>::infinity();
+	double outgoing_recording_radius_km = DEFAULT_OUTPUT_RADIUS_RSUN * R_SUN_KM;
 
 	// 单条轨迹的 wall-clock 时间上限（秒）。超过后 Propagate_Freely 会返回 WallTimeLimit，
 	// 防止任一 rank 被单条病态轨迹卡死从而阻塞 snapshot / MPI_Barrier。

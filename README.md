@@ -3,7 +3,7 @@
 Dark Matter Simulation Code for the Sun, with capture- and evaporation-focused
 extensions.
 
-The format-5 `bincount.tsv` transport contract, configuration and validation scope are documented below.
+The format-7 `bincount.tsv` transport contract, configuration and validation scope are documented below.
 
 ## Overview
 
@@ -154,13 +154,14 @@ To build and run the test suite, configure separately with
 Incident particles are sampled on a fixed 1100 AU reference sphere, mapped
 analytically through 2 R_sun to the 1 R_sun solar matching surface, and then
 propagated through the Sun. Every bound exterior orbit completes its analytic
-Kepler return to the solar matching surface, even when its apoapsis exceeds the
-configured output radius. The finite `output_radius_rsun` (default 1100 R_sun)
-clips recorded radial statistics only; it never terminates an orbit. Incoming
-shell moments are recorded from the diagnostic reference (up to 1100 R_sun)
-to the solar surface; capture-conditioned residence starts only after capture.
-Time spent outside the recording window remains part of the full simulated
-history and physical evaporation lifetime. Snapshot files are progress products.
+Kepler return to the solar matching surface, with its full residence recorded
+through apoapsis. Histograms and output expand dynamically to include every
+recorded shell. `output_radius_rsun` (default 1100 R_sun) specifies only the
+initial output extent; it never clips residence or terminates an orbit.
+Incoming/outgoing unbound paths use the same dynamically determined outer
+shell as bound residence. Capture-conditioned residence starts only after capture. Final
+output and snapshots share the same native shell boundaries and extend the
+range as needed without changing earlier bins. Snapshot files are progress products.
 
 ## Configuration
 
@@ -170,8 +171,8 @@ Configuration files use libconfig syntax. The most important controls are:
 | --- | --- |
 | `run_mode` | `"Parameter point"` for the main evaporation workflow, `"Capture"` for capture-rate runs, or `"Parameter scan"` for detector-limit scans. |
 | `sample_size` | In Parameter point and Parameter scan modes, the exact number of complete captured histories ending in validated physical evaporation. In Capture mode, the exact number of physically classified incident histories. Numerical/computationally failed histories are discarded and replaced by fresh draws until the target or the explicit attempt budget is reached. |
-| `output_radius_rsun` | Finite radial statistics window in R_sun, default 1100; must be finite and exceed the native 1.1 R_sun grid. It clips histogram recording without removing bound orbits, in every run mode. |
-| `outer_removal_radius_rsun` | Deprecated compatibility alias for `output_radius_rsun`; emits a warning and no longer terminates trajectories. Specifying both keys is rejected, even if their values match. The obsolete `outer_boundary_radius_au` key is rejected; migrate it to `output_radius_rsun` with units converted to R_sun. |
+| `output_radius_rsun` | Initial minimum output extent in R_sun, default 1100; must be finite and exceed the native 1.1 R_sun grid. Final output and snapshots expand to whole native shells covering all recorded statistics. This setting never clips bound residence. |
+| `outer_removal_radius_rsun` | Deprecated compatibility alias for `output_radius_rsun`; emits a warning and sets only the initial output extent; it neither clips bound residence nor terminates trajectories. Specifying both keys is rejected, even if their values match. The obsolete `outer_boundary_radius_au` key is rejected; migrate it to `output_radius_rsun` with units converted to R_sun. |
 | `fixed_seed` | Optional non-negative PRNG seed. `0` or an omitted setting uses nondeterministic seeding; a nonzero value is expanded independently by MPI rank. |
 | `max_trajectories` | Optional hard cap on generated trajectories. `0` or unset means no trajectory-count cap. |
 | `interpolation_points` | Legacy square scattering-rate grid size. It remains supported; the three `rate_*` settings below override its corresponding defaults. `0` disables interpolation when no rectangular-grid settings are supplied. |
@@ -279,13 +280,13 @@ The same file contains exactly 64 comment records:
 # block_count = 0 3041 157 2883 156
 ```
 
-Format 5 writes **one row per radial bin**, with 31 named columns. Statistical
+Format 7 writes **one row per radial bin**, with 31 named columns. Statistical
 values, standard errors and covariances use **at most four significant digits**.
 All calculations use the existing internal precision and are rounded only when
 written. Counts are exact integers. Fixed parameters and radial boundaries use
 compact decimal notation (up to 12 significant digits), so `0.01`, `0.4` and
 `0.08` do not acquire binary floating-point tails. Geometry keeps enough digits
-to distinguish narrow bins, including the clipped final shell.
+to distinguish narrow bins, including narrow exterior shells.
 
 Cross sections are represented by a coefficient and an integer exponent:
 
@@ -299,7 +300,7 @@ This denotes 10^-36 cm². A non-unit coefficient preserves points such as
 2.5 × 10^-36 cm²; a zero cross section uses coefficient 0 and exponent 0.
 The old `sigma_p_cm2`, `sigma_neutron_cm2` and `sigma_e_cm2` header keys are
 replaced by the corresponding `sigma_{p,neutron,e}_{coefficient,exponent}` keys.
-Readers must recognize version 5 and reconstruct `coefficient * 10**(-exponent)`.
+Readers must recognize version 7 and reconstruct `coefficient * 10**(-exponent)`.
 
 The precision fields are `output_significant_digits = 4` and
 `parameter_significant_digits = 12`. Derived estimates and SE are computed
@@ -325,10 +326,15 @@ second moment and derived observables:
 | `{residence_pair,ever_pair,never_pair,ever_never_cross}_s2`, corresponding `_se_s2` | Four conditional quadratic estimates and jackknife SE [s²]. |
 | Six `*_cov_s4` columns | Off-diagonal covariance of the four quadratic estimates [s⁴]; diagonal is SE². |
 
-Rows include zero bins. The unchanged grid has 0.001 R_sun shells through
-1.1 R_sun, followed by widths growing by 2%, capped at 10 R_sun and clipped at
-the output radius. The default 1100 R_sun recording window gives **1626 rows**, versus
-104064 in format 2. Ordinary Transport publishes no per-block radial profiles.
+Rows include zero bins. The grid has 0.001 R_sun shells through 1.1 R_sun,
+followed by widths growing by 2% without a width cap. Its size grows
+logarithmically with radial extent. The last shell is always a complete native
+shell covering the initial output extent and all recorded contributions.
+`R_output_min_rsun` records the configured minimum; `R_output_rsun` records the
+actual outer shell boundary. `radial_range = dynamic_complete_shells` identifies
+this policy. Snapshots use the same geometry and can have fewer outer shells
+than the final file as the simulation progresses. Ordinary Transport publishes
+no per-block radial profiles.
 Read column names from `# columns = ...`, rather than assuming a column count.
 
 For each first-moment sum `S`, per-history square sum `Q`, and complete-history
@@ -404,12 +410,18 @@ Captured residence ends at validated physical escape on the solar matching
 surface. Ever-captured paths include inbound, pre-capture, residence and outgoing
 components; these are added **before squaring each history's bin time**.
 Never-captured paths include scattered and unscattered completed escapes.
-Incoming/outgoing paths are recorded within `R_path_reference_rsun`, the smaller
-of `R_output_rsun` and the 1100 R_sun transit reference. Captured bound paths are
-recorded within `R_output_rsun`. Complete Kepler round trips advance the simulated
-clock, while only their intersections with recorded shells contribute moments.
-A finite-window residence sum therefore does not equal the complete evaporation
-lifetime when the orbit leaves that window.
+Incoming/outgoing unbound paths are recorded through the same outer shell as
+bound residence: `R_path_reference_rsun = R_output_rsun`. Completed histories
+retain compact exterior orbital invariants in memory. Once the common range
+is known across MPI ranks, their incoming/outgoing shell integrals are extended
+analytically, with per-history cross terms retained before squaring. A later
+wide orbit therefore never leaves earlier histories missing outer contributions.
+Snapshots carry the same compact invariants and extend all completed
+never-captured paths to the merged checkpoint's common outer shell. Captured bound paths are
+recorded through their full apoapsis regardless of the initial output extent.
+Complete Kepler round trips advance the simulated clock and contribute all
+of their shell residence and velocity moments. Before textual rounding, each
+complete captured history's residence sum equals its capture-to-escape lifetime.
 
 Counts distinguish all ever-captured histories from complete captured histories:
 `N_ever_captured` includes captures that later failed, while `N_residence_samples`
@@ -424,12 +436,13 @@ injected count minus its two complete-history counts. `N_unclassified` records
 failed histories that were never classified as captured. Captured histories that
 later failed are the difference `N_ever_captured - N_residence_samples`.
 When there are no failures, these reduce to the original two-population closure.
-Format 5 retains the format-4 totals, per-bin standard errors and four-digit
-statistical precision. It records `R_output_rsun` in place of `R_remove_rsun` and
-omits `N_outer_removed`: captured completion now requires validated physical
-escape, with no outer-boundary removal category. Historical files produced with
-orbit removal describe a different ensemble and must not be pooled with these
-complete-evaporation statistics.
+Format 7 retains the 31 columns, per-bin standard errors and four-digit
+statistical precision of format 5, while removing finite residence clipping,
+the exterior 10 R_sun width cap, and the independent unbound-path cutoff. It records the dynamically determined
+`R_output_rsun` separately from `R_output_min_rsun`. Captured completion requires
+validated physical escape. Historical orbit-removal files describe a different
+ensemble; format-5 files have clipped residence and different outer shells,
+and format-6 files retain an independent unbound-path reference. Readers must check the format and shell geometry before combining results.
 
 A run that reaches its target writes `target_reached = true` even when failure
 counts are nonzero. Exhausting an explicit attempt budget writes
@@ -447,8 +460,8 @@ The derived columns and selected integrals supply its jackknife uncertainty.
 Per-history cross-bin second moments and full velocity distributions are not provided.
 
 Analysis and plotting live in the sibling DaMaSCUS-SUN repository. Readers of
-old `metadata.json`/`radial_blocks.tsv` products and format-2/3/4 `bincount.tsv`
-must migrate to format 5;
+old `metadata.json`/`radial_blocks.tsv` products and format-2/3/4/5/6 `bincount.tsv`
+must migrate to format 7;
 there is no dual-write compatibility mode. Keep cfg files and scheduler logs
 outside the result directory.
 
@@ -480,8 +493,9 @@ validation may retain computationally truncated residence prefixes and is
 never accepted for absolute production analysis.
 
 The replay helper restores the recorded RNG state and shifted initial condition
-and prints the original/replayed termination details. No trajectory ledger or
-replay data is collected by ordinary scientific runs.
+and prints the original/replayed termination details. Ordinary scientific runs collect no trajectory or replay ledger. Only compact
+exterior invariants and the necessary captured-residence tails remain in memory
+for extending unbound statistics; they are not exported as individual histories.
 
 When snapshots are enabled, intermediate files are written under `snapshot/`:
 
@@ -499,8 +513,9 @@ When snapshots are enabled, intermediate files are written under `snapshot/`:
   population. An in-progress trajectory that has already captured contributes
   its accumulated residence prefix provisionally. Bound exterior arcs are
   published after each complete round trip, including the full residence
-  integral inside `R_output_rsun` and the simulated clock advanced through the
-  orbit. Status rows remain comments so data readers see only histogram bins.
+  integral through apoapsis and the simulated clock advanced through the
+  orbit. Snapshot extent grows to cover all published histogram contributions;
+  it never clips them at the configured initial extent. Status rows remain comments so data readers see only histogram bins.
 
 Snapshot files are progress diagnostics. They do not replace the final
 post-reduction `bincount.tsv`, and they are

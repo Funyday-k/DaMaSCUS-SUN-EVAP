@@ -46,7 +46,7 @@ def read_table(path: Path) -> tuple[dict[str, str], dict[int, tuple[int, ...]], 
 
 def read_bincount(path: Path) -> tuple[dict[str, str], dict[int, tuple[int, ...]], list[list[float]]]:
     header, blocks, rows = read_table(path)
-    assert header['bincount_format_version'] == '5'
+    assert header['bincount_format_version'] == '7'
     assert header['derived_observables_version'] == '1'
     assert header['columns'].split() == COLUMNS
     assert header['output_significant_digits'] == '4'
@@ -75,8 +75,15 @@ def read_bincount(path: Path) -> tuple[dict[str, str], dict[int, tuple[int, ...]
     assert int(header['N_complete_evaporation']) == int(header['N_residence_samples'])
     assert int(header['integrated_stat_count']) == 24
     assert 'R_remove_rsun' not in header and 'N_outer_removed' not in header
-    assert 'recorded portions within R_output_rsun' in header['captured_residence']
+    assert 'complete residence' in header['captured_residence']
+    assert header['radial_grid'] == 'uniform_inner_geometric_width_unbounded_v7'
+    assert header['radial_range'] == 'dynamic_complete_shells'
+    assert 'exterior_max_bin_width_rsun' not in header
+    assert float(header['R_output_rsun']) >= float(header['R_output_min_rsun'])
+    for first, second in zip(rows[1100:], rows[1101:]):
+        assert math.isclose((second[2]-second[1])/(first[2]-first[1]), 1.02, rel_tol=1e-7)
     outer = float(header['R_output_rsun'])
+    assert float(header['R_path_reference_rsun']) == outer
     expected_windows = [('solar_interior', 0, 1, 'rate'), ('within_10_rsun', 0, 10, 'rate'),
                         ('within_30_rsun', 0, 30, 'rate'), ('solar_exterior', 1, outer, 'rate'),
                         ('full_domain', 0, outer, 'rate'), ('gamma_1_30_rsun_1au', 1, 30, 'gamma_flux')]

@@ -656,14 +656,13 @@ TEST(TestDataGeneration, TestExplicitLegacyDiagnosticContract)
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# total_radial_bins = 1100"));
 		EXPECT_TRUE(FileContains(
 		    output_dir + "bincount.txt",
-		    "# radial_grid = uniform_inner_geometric_width_capped_v5"));
+		    "# radial_grid = uniform_inner_geometric_width_unbounded_v7"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# exterior_bins = 0"));
 		EXPECT_TRUE(FileContains(
 		    output_dir + "bincount.txt",
 		    "# exterior_bin_growth_factor = 1.0200000000e+00"));
-		EXPECT_TRUE(FileContains(
-		    output_dir + "bincount.txt",
-		    "# exterior_max_bin_width_Rsun = 1.0000000000e+01"));
+		EXPECT_FALSE(FileContains(
+		    output_dir + "bincount.txt", "# exterior_max_bin_width_Rsun = "));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# mpi_scheduler = dynamic_rma_work_queue_v1"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# mpi_scheduler_progress = main_thread_iprobe_v1"));
 		EXPECT_TRUE(FileContains(output_dir + "bincount.txt", "# mpi_scheduler_work_claims = 1"));

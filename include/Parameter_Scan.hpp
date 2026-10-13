@@ -32,6 +32,7 @@ class Configuration : public obscura::Configuration
 
   public:
 	std::string run_mode;
+	// Minimum initial output extent; recorded bound residence is unbounded.
 	double output_radius_rsun = DEFAULT_OUTPUT_RADIUS_RSUN;
 	bool diagnostic_mode = false;
 	bool thermal_validation_mode = false;
@@ -71,6 +72,7 @@ class Parameter_Scan
 	std::vector<double> couplings;
 	unsigned int sample_size, scattering_rate_radius_points, scattering_rate_speed_points;
 	double scattering_rate_max_speed;
+	// Minimum initial output extent; recorded bound residence is unbounded.
 	double output_radius_rsun = DEFAULT_OUTPUT_RADIUS_RSUN;
 	unsigned long int maximum_number_of_scatterings;
 	SnapshotConfig snapshot_config;

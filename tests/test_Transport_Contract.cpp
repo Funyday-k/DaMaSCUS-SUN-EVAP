@@ -101,6 +101,24 @@ TEST(TransportContract, WideBoundOrbitReturnsBeyondTheRecordingWindow) {
     EXPECT_GT(arc.dt_hist.back(),0.0);
     EXPECT_GT(sum(arc.v2dt_hist),0.0);
 }
+TEST(TransportContract, DynamicGridCoversCompleteWideArcWithCanonicalShells) {
+    const double peri=0.5*rSun, apo=2000*AU;
+    const double e=(apo-peri)/(apo+peri);
+    const Event out=ellipse(e,1.2*rSun,peri);
+    BoundKeplerExteriorArc arc;
+    ASSERT_TRUE(Compute_Bound_Kepler_Exterior_Arc(out,arc));
+    EXPECT_NEAR(sum(arc.dt_hist)/arc.elapsed_time_sec,1.0,2e-8);
+    const auto edges=BuildDynamicRadialGrid(arc.dt_hist.size(),1100*R_SUN_KM);
+    ASSERT_EQ(edges.size(),arc.dt_hist.size()+1);
+    EXPECT_GE(edges.back(),arc.apoapsis_km);
+    EXPECT_GT(edges.back(),1100*R_SUN_KM);
+    EXPECT_LT(edges.size(),2100U);
+    for(std::size_t b=0;b<edges.size();++b)
+        EXPECT_DOUBLE_EQ(edges[b],BincountBinLowerKm(b));
+    const auto smaller=BuildDynamicRadialGrid(0,2.05*R_SUN_KM);
+    for(std::size_t b=0;b<smaller.size();++b)
+        EXPECT_DOUBLE_EQ(smaller[b],edges[b]);
+}
 TEST(TransportContract, HyperbolicMomentsAgreeWithRadialQuadrature) {
     const auto out=Event(0.0,libphysica::Vector({1.2*rSun,0.0,0.0}),libphysica::Vector({600*km/sec,150*km/sec,0.0}));
     BoundKeplerExteriorArc arc; ASSERT_TRUE(Compute_Unbound_Kepler_Exterior_Arc(out,1100*R_SUN_KM,arc));
@@ -129,11 +147,11 @@ TEST(TransportContract, Incoming1100AUPathClosesAtTheSolarSurface) {
         BoundKeplerExteriorArc inbound;
         ASSERT_TRUE(Compute_Unbound_Kepler_Exterior_Arc(
             Event(0.0,surface.position,(-1.0)*surface.velocity),
-            TRANSIT_REFERENCE_RSUN*R_SUN_KM,inbound));
+            DEFAULT_OUTPUT_RADIUS_RSUN*R_SUN_KM,inbound));
         EXPECT_NEAR(sum(inbound.dt_hist)/inbound.elapsed_time_sec,1.0,1e-10);
         EXPECT_GT(inbound.dt_hist[BincountBinIndexKm(R_SUN_KM)],0.0);
         EXPECT_GT(inbound.dt_hist.back(),0.0);
-        EXPECT_NEAR(In_Units(inbound.terminal_event.Radius(),rSun),TRANSIT_REFERENCE_RSUN,1e-9);
+        EXPECT_NEAR(In_Units(inbound.terminal_event.Radius(),rSun),DEFAULT_OUTPUT_RADIUS_RSUN,1e-9);
         EXPECT_NEAR(inbound.terminal_event.Angular_Momentum()/sampled.Angular_Momentum(),1.0,1e-9);
     }
 }
@@ -162,7 +180,7 @@ TEST(TransportContract, SolarSurfaceOneSidedCrossingsRemainFinite) {
     BoundKeplerExteriorArc outgoing;
     ASSERT_TRUE(Compute_Unbound_Kepler_Exterior_Arc(
         Event(0.0,inbound.position,(-1.0)*inbound.velocity),
-        TRANSIT_REFERENCE_RSUN*R_SUN_KM,outgoing));
+        DEFAULT_OUTPUT_RADIUS_RSUN*R_SUN_KM,outgoing));
     EXPECT_GT(outgoing.dt_hist[BincountBinIndexKm(R_SUN_KM)],0.0);
     EXPECT_NEAR(sum(outgoing.dt_hist)/outgoing.elapsed_time_sec,1.0,1e-9);
 
@@ -182,7 +200,7 @@ TEST(TransportContract, SolarSurfaceOneSidedCrossingsRemainFinite) {
         BoundKeplerExteriorArc arc;
         ASSERT_TRUE(offset<0
             ? Compute_Bound_Kepler_Exterior_Arc(state,arc,DEFAULT_OUTPUT_RADIUS_RSUN*R_SUN_KM)
-            : Compute_Unbound_Kepler_Exterior_Arc(state,TRANSIT_REFERENCE_RSUN*R_SUN_KM,arc));
+            : Compute_Unbound_Kepler_Exterior_Arc(state,DEFAULT_OUTPUT_RADIUS_RSUN*R_SUN_KM,arc));
         if(offset<0) EXPECT_LT(sum(arc.dt_hist),arc.elapsed_time_sec);
         else EXPECT_NEAR(sum(arc.dt_hist)/arc.elapsed_time_sec,1.0,1e-8);
     }

@@ -719,6 +719,16 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Celestial_Model& s
 		if(mpi_thread_level < MPI_THREAD_FUNNELED)
 			throw std::runtime_error("snapshot heartbeat requires MPI_THREAD_FUNNELED or stronger thread support");
 	}
+	// Make the nondeterministic seed observable and replayable.
+	if(fixed_seed == 0)
+	{
+		if(mpi_rank == 0)
+		{
+			std::random_device rd;
+			do { fixed_seed = rd(); } while(fixed_seed == 0);
+		}
+		MPI_Bcast(&fixed_seed, 1, MPI_UNSIGNED, 0, MPI_COMM_WORLD);
+	}
 	diagnostic_base_seed = fixed_seed;
 	diagnostic_run_id = 0;
 	if(evaporation_diagnostics_enabled && mpi_rank == 0)

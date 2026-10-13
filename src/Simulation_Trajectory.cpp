@@ -239,11 +239,22 @@ bool Bound_Kepler_Return_At_Same_Radius(const Event& outward_event, Event& inbou
 	if(!std::isfinite(apoapsis_radius) || apoapsis_radius < radius)
 		return false;
 
+
 	const libphysica::Vector radial_unit = outward_event.position / radius;
+	const libphysica::Vector h_vec = outward_event.position.Cross(outward_event.velocity);
+	if(!std::isfinite(h_vec.Norm()) || h_vec.Norm() <= 0.0) return false;
+	const libphysica::Vector e_vec = outward_event.velocity.Cross(h_vec) / mu - radial_unit;
+	const double e_norm = e_vec.Norm();
+	if(!std::isfinite(e_norm) || e_norm <= 1.0e-14) return false;
+	const libphysica::Vector axis = e_vec / e_norm;
 	inbound_event = outward_event;
 	inbound_event.time += return_time;
-	inbound_event.velocity = outward_event.velocity - 2.0 * radial_velocity * radial_unit;
-	return inbound_event.time > outward_event.time && std::isfinite(inbound_event.Speed());
+	// Equal-radius crossings are reflected about the line of apsides.
+	inbound_event.position = 2.0 * outward_event.position.Dot(axis) * axis - outward_event.position;
+	inbound_event.velocity = outward_event.velocity - 2.0 * outward_event.velocity.Dot(axis) * axis;
+	return inbound_event.time > outward_event.time
+		&& std::isfinite(inbound_event.Radius()) && std::isfinite(inbound_event.Speed())
+		&& Radial_Velocity(inbound_event) < 0.0;
 }
 
 // Overwrite an Event in place. Assigning a libphysica::Vector allocates twice

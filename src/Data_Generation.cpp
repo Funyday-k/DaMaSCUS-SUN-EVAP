@@ -1112,11 +1112,9 @@ void Simulation_Data::Generate_Data(obscura::DM_Particle& DM, Celestial_Model& s
 			    && trajectory.bincount.event_observed
 			    && trajectory.bincount.termination_reason
 			       == TrajectoryTerminationReason::OutwardEscape;
-			const bool accepted_residence_sample =
-			    !capture_mode
-			    && trajectory.bincount.is_captured
-			    && !TrajectoryTerminationInvalidatesResidenceBincount(
-			        trajectory.bincount.termination_reason);
+			// Production residence excludes any incomplete, truncated, or outer-removed
+			// history. Keep the existing termination categories for diagnostics.
+			const bool accepted_residence_sample = accepted_evaporation_sample;
 
 			if(trajectory.bincount.is_captured)
 			{

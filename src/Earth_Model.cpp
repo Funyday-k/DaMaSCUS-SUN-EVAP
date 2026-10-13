@@ -159,18 +159,8 @@ std::vector<std::vector<double>> Earth_Model::Create_Escape_Speed_Table()
 
 void Earth_Model::Initialize_Composition()
 {
-    // 如果沒有元素數據，使用硬編碼（向後相容）
     if(raw_element_ppm.empty() || raw_element_ppm[0].empty())
-    {
-        // ... 保留原有的 8 種硬編碼 ...
-        layer_outer_radii = {3480.0 * km, 6346.0 * km, Radius()};
-        std::vector<std::vector<double>> layers;
-        layers.push_back(Normalize_Layer_Fractions({0.0, 0.0, 0.0, 0.85, 0.05, 0.10, 0.0, 0.0}));
-        layers.push_back(Normalize_Layer_Fractions({0.440, 0.228, 0.210, 0.063, 0.0, 0.0, 0.025, 0.034}));
-        layers.push_back(Normalize_Layer_Fractions({0.466, 0.021, 0.277, 0.050, 0.001, 0.003, 0.036, 0.081}));
-        // ... 後續硬編碼 ...
-        return;
-    }
+        throw std::runtime_error("Missing Earth elemental composition table");
 
     // ============================================
     // 動態讀取所有元素
@@ -283,30 +273,44 @@ void Earth_Model::Initialize_Composition()
     obscura::Import_Nuclear_Data();
     target_isotopes.clear();
     
-    // 對每個元素建立同位素
-    int num_to_load = std::min(num_elements, (int)element_ZA.size());
-    for(int e = 0; e < num_to_load; e++)
+    // Resolve natural isotope number abundances into mass fractions.
+    if(num_elements != static_cast<int>(element_ZA.size()))
+        throw std::runtime_error("Earth elemental columns do not match Z mapping");
+    for(const auto& row : raw_element_ppm)
+        if(static_cast<int>(row.size()) != num_elements)
+            throw std::runtime_error("Inconsistent Earth elemental columns");
+    for(int e = 0; e < num_elements; ++e)
     {
-        int Z = element_ZA[e].first;
-        int A = element_ZA[e].second;
-        
-        try {
-            obscura::Isotope isotope = obscura::Get_Isotope(Z, A);
-            isotope.abundance = 1.0;
-            
+        const int Z = element_ZA[e].first;
+        const obscura::Nucleus element = obscura::Get_Nucleus(Z);
+        double abundance_sum = 0.0, mass_sum = 0.0;
+        for(const auto& isotope : element.isotopes)
+        {
+            if(!std::isfinite(isotope.abundance) || isotope.abundance < 0.0)
+                throw std::runtime_error("Invalid isotope abundance");
+            abundance_sum += isotope.abundance;
+            mass_sum += isotope.abundance * isotope.mass;
+        }
+        if(!(abundance_sum > 0.0) || !(mass_sum > 0.0))
+            throw std::runtime_error("No usable isotope data for Z=" + std::to_string(Z));
+        const double average_mass = mass_sum / abundance_sum;
+        for(const auto& isotope : element.isotopes)
+        {
+            if(isotope.abundance <= 0.0) continue;
+            const double fraction = isotope.abundance / abundance_sum;
             std::vector<double> mass_fractions;
-            for(int l = 0; l < num_layers; l++)
+            mass_fractions.reserve(num_layers);
+            for(int l = 0; l < num_layers; ++l)
             {
-                double ppm = (e < raw_element_ppm[l].size()) ? raw_element_ppm[l][e] : 0.0;
-                mass_fractions.push_back(ppm / 1e6);
+                const double ppm = raw_element_ppm[l][e];
+                if(!std::isfinite(ppm) || ppm < 0.0)
+                    throw std::runtime_error("Invalid Earth ppm");
+                mass_fractions.push_back(ppm / 1.0e6 * fraction * isotope.mass / average_mass);
             }
             target_isotopes.push_back(Earth_Isotope(isotope, mass_fractions));
-        } catch(...) {
-            // 如果同位素不存在，跳過
-            continue;
         }
     }
-    
+
     // 除錯輸出
     int mpi_rank = 0;
     MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
@@ -314,7 +318,7 @@ void Earth_Model::Initialize_Composition()
     {
         std::cout << "========================================" << std::endl;
         std::cout << "Earth Composition: " << num_layers << " layers, " 
-                  << target_isotopes.size() << " elements loaded." << std::endl;
+                  << target_isotopes.size() << " natural isotopes loaded." << std::endl;
         std::cout << "========================================" << std::endl;
     }
 }
